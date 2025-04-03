@@ -1,9 +1,16 @@
-//! BEncoding 实现。原作者未把ParseError暴露出来，导致无法实现子错误包含
-//!
-//! 原项目地址：https://github.com/max-muoto/bencoding-rs/tree/master
+//! BEncoding 实现。原项目地址：https://github.com/max-muoto/bencoding-rs/tree/master
+//! 修改如下：
+//! - 用 Bytes 代替原始字节流
+//! - 保留字节块，便于后续对 info 的 sha1 计算
+//! - 暴露 ParseError，便于错误处理
+//! - 实现编码功能
+
+use crate::Integer;
+use bytes::{BufMut, Bytes, BytesMut};
+use hashlink::LinkedHashMap;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::Display;
+use std::fmt::{Debug, Display, Formatter};
 
 /// Possible errors that can occur during bencode parsing.
 #[derive(PartialEq, Eq, Debug)]
@@ -32,84 +39,173 @@ impl Error for ParseError {
     }
 }
 
+#[derive(Eq, PartialEq)]
+pub struct BEncode {
+    bytes: Bytes,       // 原始字节流
+    value: BencodeItem, // 编码后的值
+}
+
+impl Debug for BEncode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.value)
+    }
+}
+
+impl BEncode {
+    fn new(bytes: Bytes, value: BencodeItem) -> Self {
+        Self { bytes, value }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+pub trait BEncoder {
+    fn encode(self) -> Bytes;
+}
+
+impl BEncoder for &[u8] {
+    fn encode(self) -> Bytes {
+        let binding = self.len().to_string();
+        let mut bytes = BytesMut::with_capacity(binding.as_bytes().len() + 1 + self.len()); // 1个字节的 ':'
+        bytes.put_slice(binding.as_bytes());
+        bytes.put_u8(b':' as u8);
+        bytes.put_slice(self);
+        bytes.freeze()
+    }
+}
+
+impl BEncoder for &str {
+    fn encode(self) -> Bytes {
+        self.as_bytes().encode()
+    }
+}
+
+impl<T> BEncoder for T
+where
+    T: Integer + ToString,
+{
+    fn encode(self) -> Bytes {
+        let binding = self.to_string();
+        let data = binding.as_bytes();
+        let mut bytes = BytesMut::with_capacity(data.len() + 2); // 1个字节的 'i' 和 1个字节的 'e'
+        bytes.put_u8('i' as u8);
+        bytes.put_slice(data);
+        bytes.put_u8(b'e' as u8);
+        bytes.freeze()
+    }
+}
+
+impl<T> BEncoder for Vec<T>
+where
+    T: BEncoder,
+{
+    fn encode(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(b'l' as u8);
+        for item in self {
+            bytes.put_slice(&item.encode());
+        }
+        bytes.put_u8(b'e' as u8);
+        bytes.freeze()
+    }
+}
+
+impl<T> BEncoder for LinkedHashMap<String, T>
+where
+    T: BEncoder,
+{
+    fn encode(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(b'd' as u8);
+        for (key, value) in self.into_iter() {
+            bytes.put_slice(&key.as_bytes().encode());
+            bytes.put_slice(&value.encode())
+        }
+        bytes.put_u8(b'e' as u8);
+        bytes.freeze()
+    }
+}
+
 /// Represents a bencode value.
 #[derive(PartialEq, Eq, Debug)]
-pub enum Bencode {
+pub enum BencodeItem {
     /// Represents an integer value.
     Int(i64),
     /// Represents a string value.
-    Str(Vec<u8>),
+    Str,
     /// Represents a list of bencode values.
-    List(Vec<Bencode>),
+    List(Vec<BEncode>),
     /// Represents a dictionary of bencode values.
-    Dict(HashMap<String, Bencode>),
+    Dict(HashMap<String, BEncode>),
 }
 
-impl Bencode {
-    /// Returns the integer value if this is a `Bencode::Int`.
+impl BEncode {
+    /// Returns the integer value if this is a `BEncode::Int`.
     ///
     /// # Returns
     ///
-    /// An `Option` containing the integer value or `None` if this is not a `Bencode::Int`.
+    /// An `Option` containing the integer value or `None` if this is not a `BEncode::Int`.
     pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Bencode::Int(i) => Some(*i),
+        match self.value {
+            BencodeItem::Int(value) => Some(value),
             _ => None,
         }
     }
 
-    /// Returns the string value if this is a `Bencode::Str`.
+    /// Returns the string value if this is a `BEncode::Str`.
     ///
     /// # Returns
     ///
-    /// An `Option` containing the string value or `None` if this is not a `Bencode::Str`.
-    pub fn as_bytes(&self) -> Option<&Vec<u8>> {
-        match self {
-            Bencode::Str(s) => Some(s),
+    /// An `Option` containing the string value or `None` if this is not a `BEncode::Str`.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match &self.value {
+            BencodeItem::Str => Some(&self.bytes[..]),
             _ => None,
         }
     }
 
-    /// Returns the list value if this is a `Bencode::List`.
+    /// Returns the list value if this is a `BEncode::List`.
     ///
     /// # Returns
     ///
-    /// An `Option` containing the list value or `None` if this is not a `Bencode::List`.
-    pub fn as_list(&self) -> Option<&Vec<Bencode>> {
-        match self {
-            Bencode::List(l) => Some(l),
+    /// An `Option` containing the list value or `None` if this is not a `BEncode::List`.
+    pub fn as_list(&self) -> Option<&Vec<BEncode>> {
+        match &self.value {
+            BencodeItem::List(value) => Some(value),
             _ => None,
         }
     }
 
-    /// Returns the dictionary value if this is a `Bencode::Dict`.
+    /// Returns the dictionary value if this is a `BEncode::Dict`.
     ///
     /// # Returns
     ///
-    /// An `Option` containing the dictionary value or `None` if this is not a `Bencode::Dict`.
-    pub fn as_dict(&self) -> Option<&HashMap<String, Bencode>> {
-        match self {
-            Bencode::Dict(d) => Some(d),
+    /// An `Option` containing the dictionary value or `None` if this is not a `BEncode::Dict`.
+    pub fn as_dict(&self) -> Option<&HashMap<String, BEncode>> {
+        match &self.value {
+            BencodeItem::Dict(value) => Some(value),
             _ => None,
         }
     }
 }
 
-struct Decoder<'a> {
-    stream: &'a [u8],
+struct Decoder {
+    stream: Bytes,
     pos: usize,
 }
 
-impl<'a> Decoder<'a> {
-    pub fn new(stream: &'a [u8]) -> Self {
+impl Decoder {
+    pub fn new(stream: Bytes) -> Self {
         Decoder { stream, pos: 0 }
     }
 
-    pub fn decode(&mut self) -> Result<Bencode, ParseError> {
+    pub fn decode(&mut self) -> Result<BEncode, ParseError> {
         self.parse()
     }
 
-    fn parse(&mut self) -> Result<Bencode, ParseError> {
+    fn parse(&mut self) -> Result<BEncode, ParseError> {
         if self.pos >= self.stream.len() {
             return Err(ParseError::UnexpectedEndOfStream);
         }
@@ -124,37 +220,48 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn parse_list(&mut self) -> Result<Bencode, ParseError> {
-        let mut list: Vec<Bencode> = Vec::new();
+    fn parse_list(&mut self) -> Result<BEncode, ParseError> {
+        let mut list: Vec<BEncode> = Vec::new();
         self.pos += 1; // Skip the 'l'
+        let start_pos = self.pos;
         while self.stream[self.pos] != b'e' {
             let parsed = self.parse()?;
             list.push(parsed);
         }
         self.pos += 1; // Skip the 'e'
-        Ok(Bencode::List(list))
+        Ok(BEncode::new(
+            self.stream.slice(start_pos..self.pos - 1),
+            BencodeItem::List(list),
+        ))
     }
 
-    fn parse_dict(&mut self) -> Result<Bencode, ParseError> {
-        let mut dict: HashMap<String, Bencode> = HashMap::new();
+    fn parse_dict(&mut self) -> Result<BEncode, ParseError> {
+        let mut dict: HashMap<String, BEncode> = HashMap::new();
         self.pos += 1; // Skip the 'd'
+        let start_pos = self.pos;
         while self.stream[self.pos] != b'e' {
             let key = match self.parse_str()? {
-                Bencode::Str(s) => s,
+                BEncode {
+                    value: BencodeItem::Str,
+                    bytes,
+                } => bytes,
                 _ => return Err(ParseError::InvalidByte(self.pos)),
             };
             let value = self.parse()?;
-            let key = match String::from_utf8(key) {
+            let key = match String::from_utf8(key.to_vec()) {
                 Ok(s) => s,
                 Err(_) => return Err(ParseError::InvalidUtf8),
             };
             dict.insert(key, value);
         }
         self.pos += 1; // Skip the 'e'
-        Ok(Bencode::Dict(dict))
+        Ok(BEncode::new(
+            self.stream.slice(start_pos..self.pos - 1),
+            BencodeItem::Dict(dict),
+        ))
     }
 
-    fn parse_str(&mut self) -> Result<Bencode, ParseError> {
+    fn parse_str(&mut self) -> Result<BEncode, ParseError> {
         let mut str_size: usize = 0;
         while self.stream[self.pos] != b':' {
             if self.stream[self.pos].is_ascii_digit() {
@@ -165,20 +272,21 @@ impl<'a> Decoder<'a> {
             self.pos += 1;
         }
         self.pos += 1;
-
+        let start_pos = self.pos;
         if self.pos + str_size > self.stream.len() {
             return Err(ParseError::UnexpectedEndOfStream);
         }
 
-        let s = &self.stream[self.pos..self.pos + str_size];
         self.pos += str_size;
-
-        Ok(Bencode::Str(s.to_vec()))
+        Ok(BEncode::new(
+            self.stream.slice(start_pos..self.pos),
+            BencodeItem::Str,
+        ))
     }
 
-    fn parse_int(&mut self) -> Result<Bencode, ParseError> {
+    fn parse_int(&mut self) -> Result<BEncode, ParseError> {
         self.pos += 1; // Skip the 'i'
-
+        let start_pos = self.pos;
         let mut is_negative = false;
         if self.stream[self.pos] == b'-' {
             is_negative = true;
@@ -201,22 +309,21 @@ impl<'a> Decoder<'a> {
             curr_int = -curr_int;
         }
 
-        Ok(Bencode::Int(curr_int))
+        Ok(BEncode::new(
+            self.stream.slice(start_pos..self.pos - 1),
+            BencodeItem::Int(curr_int),
+        ))
     }
 }
 
-/// Decodes a bencode-encoded byte stream.
-///
-/// # Arguments
-///
-/// * `stream` - A byte slice containing the bencode-encoded data.
-///
-/// # Returns
-///
-/// A `Result` containing the decoded `Bencode` value or a `ParseError`.
-pub fn decode(stream: &[u8]) -> Result<Bencode, ParseError> {
-    let mut decoder = Decoder::new(stream);
-    decoder.decode()
+/// 对一个字节流进行 BEncode 解码。输出 BEncode
+pub fn decode(stream: Bytes) -> Result<BEncode, ParseError> {
+    Decoder::new(stream.into()).decode()
+}
+
+/// 编码一个实现了 BEncoder trait 的实例。输出 Bytes
+pub fn encode<T: BEncoder>(data: T) -> Bytes {
+    data.encode()
 }
 
 #[cfg(test)]
@@ -234,71 +341,78 @@ mod tests {
 
     #[test]
     fn test_decode_str() {
-        let mut decoder = Decoder::new(b"4:spam");
-        let result = decoder.decode().unwrap();
-        assert_eq!(result, Bencode::Str("spam".into()));
+        let mut decoder = Decoder::new(Bytes::from(&b"4:spam"[..]));
+        let binding = decoder.decode().unwrap();
+        let result = binding.as_bytes().unwrap();
+        assert_eq!(result, b"spam");
     }
 
     #[test]
     fn test_decode_invalid_str() {
         let invalid_utf8: Vec<u8> = vec![0xF0, 0x28, 0x8C, 0xBC];
-        let mut decoder = Decoder::new(&invalid_utf8);
+        let mut decoder = Decoder::new(Bytes::from(invalid_utf8));
         let result = decoder.decode();
         assert_eq!(result, Err(ParseError::InvalidByte(0)));
     }
 
     #[test]
     fn test_decode_int() {
-        let mut decoder = Decoder::new(b"i42e");
-        let result = decoder.decode().unwrap();
-        assert_eq!(result, Bencode::Int(42));
+        let mut decoder = Decoder::new(Bytes::from(&b"i42e"[..]));
+        let result = decoder.decode().unwrap().value;
+        assert_eq!(result, BencodeItem::Int(42));
     }
 
     #[test]
     fn test_decode_negative_int() {
-        let mut decoder = Decoder::new(b"i-42e");
-        let result = decoder.decode().unwrap();
-        assert_eq!(result, Bencode::Int(-42));
+        let mut decoder = Decoder::new(Bytes::from(&b"i-42e"[..]));
+        let result = decoder.decode().unwrap().value;
+        assert_eq!(result, BencodeItem::Int(-42));
     }
 
     #[test]
     fn test_decode_invalid_int() {
-        let mut decoder = Decoder::new(b"iae");
+        let mut decoder = Decoder::new(Bytes::from_owner(b"iae"));
         let result = decoder.decode();
         assert_eq!(result, Err(ParseError::InvalidByte(1)));
     }
 
     #[test]
     fn test_decode_list() {
-        let mut decoder = Decoder::new(b"l4:spam4:eggse");
-        let result = decoder.decode().unwrap();
+        let mut decoder = Decoder::new(Bytes::from_owner(b"l4:spam4:eggse"));
+        let result = decoder.decode().unwrap().value;
         assert_eq!(
             result,
-            Bencode::List(vec![
-                Bencode::Str("spam".into()),
-                Bencode::Str("eggs".into())
+            BencodeItem::List(vec![
+                BEncode::new(Bytes::from(&b"spam"[..]), BencodeItem::Str),
+                BEncode::new(Bytes::from(&b"eggs"[..]), BencodeItem::Str),
             ])
         );
     }
 
     #[test]
     fn test_decode_dict() {
-        let mut decoder = Decoder::new(b"d3:cow3:moo4:spam4:eggse");
-        let result = decoder.decode().unwrap();
+        let mut decoder = Decoder::new(Bytes::from_owner(b"d3:cow3:moo4:spam4:eggse"));
+        let result = decoder.decode().unwrap().value;
         let mut expected_dict = HashMap::new();
-        expected_dict.insert("cow".to_string(), Bencode::Str("moo".into()));
-        expected_dict.insert("spam".to_string(), Bencode::Str("eggs".into()));
-        assert_eq!(result, Bencode::Dict(expected_dict));
+        expected_dict.insert(
+            "cow".to_string(),
+            BEncode::new(Bytes::from(&b"moo"[..]), BencodeItem::Str),
+        );
+        expected_dict.insert(
+            "spam".to_string(),
+            BEncode::new(Bytes::from(&b"eggs"[..]), BencodeItem::Str),
+        );
+        assert_eq!(result, BencodeItem::Dict(expected_dict));
     }
 
     #[test]
     fn test_decode_torrent() {
         // Read the file into a byte vector
-        let path = "test_data/linuxmint.torrent";
+        let path = "tests/resources/a4a88248f0b76a3ff7d7c9bd7a7a134c12090cbe.torrent";
         let torrent_stream = read_file(path);
 
-        // Decode the torrent file (assuming you have a `decode` function handling Bencoding)
-        let result = decode(&torrent_stream).expect("Failed to decode");
+        // Decode the torrent file (assuming you have a `encode` function handling Bencoding)
+        let result = decode(Bytes::from(torrent_stream)).expect("Failed to encode");
 
         // Check for required keys in the top-level dictionary
         let required_keys = [
@@ -324,5 +438,32 @@ mod tests {
         for key in required_keys {
             assert!(info_dict.contains_key(key));
         }
+    }
+
+    #[test]
+    fn test_encode_str() {
+        let binding = "spam".encode();
+        assert_eq!(binding, Bytes::from(&b"4:spam"[..]));
+    }
+
+    #[test]
+    fn test_encode_int() {
+        let int = 42.encode();
+        assert_eq!(int, Bytes::from(&b"i42e"[..]))
+    }
+
+    #[test]
+    fn test_encode_list() {
+        let list = vec!["spam", "eggs", "123"].encode();
+        assert_eq!(list, Bytes::from_owner(b"l4:spam4:eggs3:123e"))
+    }
+
+    #[test]
+    fn test_encode_dict() {
+        let mut dict = LinkedHashMap::new();
+        dict.insert("cow".to_string(), "moo");
+        dict.insert("spam".to_string(), "eggs");
+        let dict = dict.encode();
+        assert_eq!(dict, Bytes::from_owner(b"d3:cow3:moo4:spam4:eggse"))
     }
 }

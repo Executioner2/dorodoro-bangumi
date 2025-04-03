@@ -2,12 +2,13 @@
 
 use super::bencoding;
 use TorrentError::*;
-use bencoding::Bencode;
+use bencoding::BEncode;
+use bytes::Bytes;
+use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
 use std::fs;
-
 type Result<T> = std::result::Result<T, TorrentError>;
 
 /// 错误类型
@@ -17,7 +18,7 @@ pub enum TorrentError {
     TransformError,
     DecodeError(bencoding::ParseError),
     Utf8Error(std::string::FromUtf8Error),
-    FileError(std::io::Error)
+    FileError(std::io::Error),
 }
 
 impl Display for TorrentError {
@@ -62,32 +63,33 @@ impl From<std::io::Error> for TorrentError {
 /// 种子结构体
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct Torrent {
-    announce: String,                // Tracker地址
-    announce_list: Vec<Vec<String>>, // Tracker列表
-    created_by: String,              // 制作程序
-    creation_date: u64,              // 创建时间
-    info: Info,                      // 种子信息
-    _comment: Option<String>,        // 种子描述
-    _encoding: Option<String>,       // 编码方式
+    pub announce: String,                // Tracker地址
+    pub announce_list: Vec<Vec<String>>, // Tracker列表
+    pub created_by: Option<String>,      // 制作程序
+    pub creation_date: u64,              // 创建时间
+    pub info: Info,                      // 种子信息
+    pub info_hash: [u8; 20],             // 种子信息hash值
+    _comment: Option<String>,            // 种子描述
+    _encoding: Option<String>,           // 编码方式
 }
 
 /// 种子信息结构体
 #[derive(Debug, Hash, Eq, PartialEq)]
-struct Info {
-    length: u64,             // 文件大小
-    piece_length: u64,       // 分片大小
-    pieces: Vec<u8>,         // 每20个字节一块的校验码
-    name: String,            // 文件名
-    files: Vec<File>,        // 文件列表
+pub struct Info {
+    pub length: u64,         // 文件大小
+    pub piece_length: u64,   // 分片大小
+    pub pieces: Vec<u8>,     // 每20个字节一块的校验码
+    pub name: String,        // 文件名
+    pub files: Vec<File>,    // 文件列表
     _md5sum: Option<String>, // 文件md5值
     _private: Option<u8>,    // 是否私有
 }
 
 /// 文件结构体，适用于多文件种子
 #[derive(Debug, Hash, Eq, PartialEq)]
-struct File {
-    length: u64,             // 文件大小
-    path: Vec<String>,       // 文件路径
+pub struct File {
+    pub length: u64,         // 文件大小
+    pub path: Vec<String>,   // 文件路径
     _md5sum: Option<String>, // 文件md5值
 }
 
@@ -95,9 +97,10 @@ impl Torrent {
     fn new(
         announce: String,
         announce_list: Vec<Vec<String>>,
-        created_by: String,
+        created_by: Option<String>,
         creation_date: u64,
         info: Info,
+        info_hash: [u8; 20],
     ) -> Self {
         Self {
             announce,
@@ -105,6 +108,7 @@ impl Torrent {
             created_by,
             creation_date,
             info,
+            info_hash,
             _comment: None,
             _encoding: None,
         }
@@ -142,7 +146,7 @@ impl File {
 }
 
 /// 解析 announce
-fn parse_announce(encode: &HashMap<String, Bencode>) -> Result<String> {
+fn parse_announce(encode: &HashMap<String, BEncode>) -> Result<String> {
     let announce = encode
         .get("announce")
         .ok_or(InvalidTorrent("缺少announce"))?
@@ -152,7 +156,7 @@ fn parse_announce(encode: &HashMap<String, Bencode>) -> Result<String> {
 }
 
 /// 解析 List<String> 这种格式的数据。重复出现，所以抽出来
-fn parse_list_str(encode: &Bencode) -> Result<Vec<String>> {
+fn parse_list_str(encode: &BEncode) -> Result<Vec<String>> {
     encode
         .as_list()
         .ok_or(TransformError)?
@@ -166,7 +170,7 @@ fn parse_list_str(encode: &Bencode) -> Result<Vec<String>> {
 }
 
 /// 解析 announce-list
-fn parse_announce_list(encode: &HashMap<String, Bencode>) -> Result<Vec<Vec<String>>> {
+fn parse_announce_list(encode: &HashMap<String, BEncode>) -> Result<Vec<Vec<String>>> {
     match encode.get("announce-list") {
         Some(announce_list) => announce_list
             .as_list()
@@ -182,17 +186,16 @@ fn parse_announce_list(encode: &HashMap<String, Bencode>) -> Result<Vec<Vec<Stri
 }
 
 /// 解析 created by
-fn parse_created_by(encode: &HashMap<String, Bencode>) -> Result<String> {
-    let created_by = encode
-        .get("created by")
-        .ok_or(InvalidTorrent("缺少created by"))?
-        .as_bytes()
-        .ok_or(TransformError)?;
-    Ok(String::from_utf8(created_by.to_vec())?)
+fn parse_created_by(encode: &HashMap<String, BEncode>) -> Result<Option<String>> {
+    let created_by = match encode.get("created by") {
+        Some(created_by) => Some(String::from_utf8(created_by.as_bytes().ok_or(TransformError)?.to_vec())?),
+        None => None,
+    };
+    Ok(created_by)
 }
 
 /// 解析创建时间
-fn parse_creation_date(encode: &HashMap<String, Bencode>) -> Result<u64> {
+fn parse_creation_date(encode: &HashMap<String, BEncode>) -> Result<u64> {
     let creation_date = encode
         .get("creation date")
         .ok_or(InvalidTorrent("缺少creation date"))?
@@ -204,19 +207,23 @@ fn parse_creation_date(encode: &HashMap<String, Bencode>) -> Result<u64> {
     Ok(creation_date as u64)
 }
 
-/// 解析 info
-fn parse_info(encode: &HashMap<String, Bencode>) -> Result<Info> {
-    let info = encode
-        .get("info")
-        .ok_or(InvalidTorrent("缺少info"))?
-        .as_dict()
-        .ok_or(TransformError)?;
+fn info_hash(data: &[u8]) -> [u8; 20] {
+    let mut hasher = Sha1::new();
+    hasher.update(data.to_vec());
+    let mut result = [0; 20];
+    result.copy_from_slice(&hasher.finalize());
+    result
+}
 
-    let length = info
-        .get("length")
-        .ok_or(InvalidTorrent("缺少info.length"))?
-        .as_int()
-        .ok_or(TransformError)?;
+/// 解析 info
+fn parse_info(encode: &HashMap<String, BEncode>) -> Result<(Info, [u8; 20])> {
+    let info_bencode = encode.get("info").ok_or(InvalidTorrent("缺少info"))?;
+
+    let info = info_bencode.as_dict().ok_or(TransformError)?;
+    let mut length = match info.get("length") {
+        Some(length) => length.as_int().ok_or(TransformError)?,
+        None => 0,
+    };
     let piece_length = info
         .get("piece length")
         .ok_or(InvalidTorrent("缺少info.piece length"))?
@@ -241,17 +248,18 @@ fn parse_info(encode: &HashMap<String, Bencode>) -> Result<Info> {
     let name = String::from_utf8(name.to_vec())?;
     let files = parse_info_files(info)?;
 
-    Ok(Info::new(
-        name,
-        length as u64,
-        piece_length as u64,
-        pieces,
-        files,
+    if length == 0 && !files.is_empty() {
+        length = files.iter().fold(0, |acc, file| acc + file.length as i64);
+    }
+
+    Ok((
+        Info::new(name, length as u64, piece_length as u64, pieces, files),
+        info_hash(info_bencode.bytes()),
     ))
 }
 
 /// 解析 info.files
-fn parse_info_files(info: &HashMap<String, Bencode>) -> Result<Vec<File>> {
+fn parse_info_files(info: &HashMap<String, BEncode>) -> Result<Vec<File>> {
     match info.get("files") {
         Some(files) => {
             files
@@ -286,16 +294,18 @@ pub trait Parse<T> {
 }
 
 /// 直接传入字节数组
-impl Parse<&[u8]> for Torrent {
-    fn parse_torrent(data: &[u8]) -> Result<Torrent> {
-        let binding = bencoding::decode(data)?;
+impl Parse<Vec<u8>> for Torrent {
+    fn parse_torrent(data: Vec<u8>) -> Result<Torrent> {
+        let binding = bencoding::decode(Bytes::from(data))?;
         let encode = binding.as_dict().ok_or(TransformError)?;
+        let (info, info_hash) = parse_info(encode)?;
         Ok(Torrent::new(
             parse_announce(encode)?,
             parse_announce_list(encode)?,
             parse_created_by(encode)?,
             parse_creation_date(encode)?,
-            parse_info(encode)?,
+            info,
+            info_hash,
         ))
     }
 }
@@ -304,6 +314,6 @@ impl Parse<&[u8]> for Torrent {
 impl Parse<&str> for Torrent {
     fn parse_torrent(data: &str) -> Result<Torrent> {
         let data = fs::read(data)?;
-        Torrent::parse_torrent(data.as_slice())
+        Torrent::parse_torrent(data)
     }
 }
