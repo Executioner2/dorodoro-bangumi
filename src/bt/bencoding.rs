@@ -154,14 +154,19 @@ impl BEncode {
         }
     }
 
+    /// 返回原始字节块
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..]
+    }
+
     /// Returns the string value if this is a `BEncode::Str`.
     ///
     /// # Returns
     ///
     /// An `Option` containing the string value or `None` if this is not a `BEncode::Str`.
-    pub fn as_bytes(&self) -> Option<&[u8]> {
+    pub fn as_str(&self) -> Option<&str> {
         match &self.value {
-            BencodeItem::Str => Some(&self.bytes[..]),
+            BencodeItem::Str => Some(std::str::from_utf8(&self.bytes[..]).unwrap()),
             _ => None,
         }
     }
@@ -343,8 +348,8 @@ mod tests {
     fn test_decode_str() {
         let mut decoder = Decoder::new(Bytes::from(&b"4:spam"[..]));
         let binding = decoder.decode().unwrap();
-        let result = binding.as_bytes().unwrap();
-        assert_eq!(result, b"spam");
+        let result = binding.as_str().unwrap();
+        assert_eq!(result, "spam");
     }
 
     #[test]

@@ -147,12 +147,12 @@ impl File {
 
 /// 解析 announce
 fn parse_announce(encode: &HashMap<String, BEncode>) -> Result<String> {
-    let announce = encode
+    Ok(encode
         .get("announce")
         .ok_or(InvalidTorrent("缺少announce"))?
-        .as_bytes()
-        .ok_or(TransformError)?;
-    Ok(String::from_utf8(announce.to_vec())?)
+        .as_str()
+        .ok_or(TransformError)?
+        .to_string())
 }
 
 /// 解析 List<String> 这种格式的数据。重复出现，所以抽出来
@@ -162,9 +162,7 @@ fn parse_list_str(encode: &BEncode) -> Result<Vec<String>> {
         .ok_or(TransformError)?
         .iter()
         .try_fold(Vec::new(), |mut acc, announce| {
-            let announce = announce.as_bytes().ok_or(TransformError)?;
-            let announce = String::from_utf8(announce.to_vec())?;
-            acc.push(announce);
+            acc.push(announce.as_str().ok_or(TransformError)?.to_string());
             Ok(acc)
         })
 }
@@ -188,7 +186,7 @@ fn parse_announce_list(encode: &HashMap<String, BEncode>) -> Result<Vec<Vec<Stri
 /// 解析 created by
 fn parse_created_by(encode: &HashMap<String, BEncode>) -> Result<Option<String>> {
     let created_by = match encode.get("created by") {
-        Some(created_by) => Some(String::from_utf8(created_by.as_bytes().ok_or(TransformError)?.to_vec())?),
+        Some(created_by) => Some(created_by.as_str().ok_or(TransformError)?.to_string()),
         None => None,
     };
     Ok(created_by)
@@ -238,14 +236,13 @@ fn parse_info(encode: &HashMap<String, BEncode>) -> Result<(Info, [u8; 20])> {
         .get("pieces")
         .ok_or(InvalidTorrent("缺少info.pieces"))?
         .as_bytes()
-        .ok_or(TransformError)?
         .to_vec();
     let name = info
         .get("name")
         .ok_or(InvalidTorrent("缺少info.name"))?
-        .as_bytes()
-        .ok_or(TransformError)?;
-    let name = String::from_utf8(name.to_vec())?;
+        .as_str()
+        .ok_or(TransformError)?
+        .to_string();
     let files = parse_info_files(info)?;
 
     if length == 0 && !files.is_empty() {

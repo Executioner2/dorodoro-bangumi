@@ -27,9 +27,9 @@ fn test_parse_announce_file() {
         .unwrap()
         .get("peers")
         .unwrap()
-        .as_bytes()
+        .as_str()
         .unwrap();
-    println!("peers: {:?}", String::from_utf8(peers.to_vec()));
+    println!("peers: {:?}", peers);
 }
 
 /// 种子文件解析测试
@@ -39,15 +39,15 @@ fn test_parse_torrent_file() {
 }
 
 /// UDP tracker 握手测试
-/// TODO - UDP tracker 大多处于无法使用的状态，暂时不做实现与测试
 #[test]
 fn test_udp_tracker_handshake() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
     println!("tracker: {}", torrent.announce);
 
-    let socket = UdpSocket::bind("127.0.0.1:7789").unwrap();
-    socket.connect("tracker.torrent.eu.org:451").unwrap();
+    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+    socket.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+    // socket.connect("tracker.torrent.eu.org:451").unwrap();
 
     let mut request = Vec::new();
     request.write_u64::<BigEndian>(0x41727101980).unwrap(); // protocol_id
@@ -55,8 +55,7 @@ fn test_udp_tracker_handshake() {
     let transaction_id = rand::rng().random::<u32>();
     request.write_u32::<BigEndian>(transaction_id).unwrap(); // transaction_id
 
-    // let tracker_addr: SocketAddr = "tracker.opentrackr.org:1337".parse().unwrap();
-    socket.send(&request).unwrap();
+    socket.send_to(&request, "tracker.torrent.eu.org:451").unwrap();
     let mut response = [0u8; 16];
     let (size, _) = socket.recv_from(&mut response).unwrap();
     println!("收到的响应大小: {}\n收到的数据: {:?}", size, response)
