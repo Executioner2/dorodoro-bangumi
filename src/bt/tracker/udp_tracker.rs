@@ -10,9 +10,9 @@ mod tests;
 
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
-use crate::datetime;
 use crate::tracker::udp_tracker::error::SocketError;
 use crate::tracker::udp_tracker::socket::SocketArc;
+use crate::{datetime, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
@@ -57,7 +57,6 @@ pub struct UdpTracker<'a> {
 }
 
 impl<'a> UdpTracker<'a> {
-
     /// 创建一个 UDP Tracker 实例（默认读超时时间为 15 秒）
     ///
     /// # Example
@@ -95,12 +94,6 @@ impl<'a> UdpTracker<'a> {
         todo!()
     }
 
-    /// 随机生成请求传输 ID
-    #[inline]
-    fn gen_tran_id() -> u32 {
-        rand::rng().random::<u32>()
-    }
-
     /// 生成协议头，协议头格式：
     /// - 协议 ID（u64）
     /// - 动作类型（u32）
@@ -109,7 +102,7 @@ impl<'a> UdpTracker<'a> {
     /// 返回（请求传输 ID，Buffer）
     fn gen_protocol_head(connect_id: u64, action: Action) -> (u32, Buffer) {
         let mut buffer = Buffer::with_capacity(16);
-        let req_tran_id = Self::gen_tran_id();
+        let req_tran_id = util::rand::gen_tran_id();
         buffer.write_u64::<BigEndian>(connect_id).unwrap();
         buffer.write_u32::<BigEndian>(action as u32).unwrap();
         buffer.write_u32::<BigEndian>(req_tran_id).unwrap();
@@ -135,7 +128,8 @@ impl<'a> UdpTracker<'a> {
                 self.retry_count = 0;
                 Ok(resp)
             }
-            Err(_) => { // 可能需要针对不同任务做处理
+            Err(_) => {
+                // 可能需要针对不同任务做处理
                 self.retry_count += 1;
                 // 开启一个延迟任务，等待一段时间后再重试
                 todo!()
