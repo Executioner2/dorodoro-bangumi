@@ -37,6 +37,8 @@ impl Error for TorrentError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             DecodeError(e) => Some(e),
+            Utf8Error(e) => Some(e),
+            FileError(e) => Some(e),
             _ => None,
         }
     }

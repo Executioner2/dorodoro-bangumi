@@ -12,3 +12,10 @@ bytes = "1.10.1"
 sha1 = "0.10.6"
 hashlink = "0.10.0"
 percent-encoding = "2.3.1"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "socket_buffer_benchmark"
+harness = false

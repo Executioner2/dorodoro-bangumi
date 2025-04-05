@@ -9,6 +9,7 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
 use std::fs;
 use std::net::UdpSocket;
+use dorodoro_bangumi::util::bytes::Bytes2Int;
 
 #[test]
 fn test_parse_bencoded_string() {
@@ -50,15 +51,22 @@ fn test_udp_tracker_handshake() {
     // socket.connect("tracker.torrent.eu.org:451").unwrap();
 
     let mut request = Vec::new();
+    let transaction_id = rand::rng().random::<u32>();
     request.write_u64::<BigEndian>(0x41727101980).unwrap(); // protocol_id
     request.write_u32::<BigEndian>(0).unwrap(); // action = 0 (connect)
-    let transaction_id = rand::rng().random::<u32>();
     request.write_u32::<BigEndian>(transaction_id).unwrap(); // transaction_id
+    println!("send_transaction_id: {}", transaction_id);
 
     socket.send_to(&request, "tracker.torrent.eu.org:451").unwrap();
     let mut response = [0u8; 16];
     let (size, _) = socket.recv_from(&mut response).unwrap();
-    println!("收到的响应大小: {}\n收到的数据: {:?}", size, response)
+    println!("收到的响应大小: {}\n收到的数据: {:?}", size, response);
+
+    let action = u32::from_be_slice(&response[0..4]);
+    let transaction_id = u32::from_be_slice(&response[4..8]);
+    let connection_id = u64::from_be_slice(&response[8..16]);
+
+    println!("action: {}, transaction_id: {}, connection_id: {}", action, transaction_id, connection_id)
 }
 
 /// HTTP tracker 握手测试
