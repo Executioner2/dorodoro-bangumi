@@ -21,6 +21,14 @@ impl Clone for SocketArc {
 }
 
 impl SocketArc {
+
+    /// 创建一个新的套接字
+    ///
+    /// # Examples
+    /// ```
+    /// use dorodoro_bangumi::bt::tracker::udp_tracker::socket::SocketArc;
+    /// let socket = SocketArc::new().unwrap();
+    /// ```
     pub fn new() -> Result<Self> {
         let socket = UdpSocket::bind(DEFAULT_ADDR)?;
         socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
@@ -30,6 +38,15 @@ impl SocketArc {
     }
 
     /// 发送数据到指定地址，并接收期望大小的数据。如果 expect_size 为负数，则接收默认大小（）的数据。
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - 要发送的数据
+    /// * `target` - 发送的目标地址
+    /// * `expect_size` - 期望接收的数据大小，如果为负数，则接收默认大小（[`MAX_PAYLOAD_SIZE`]）的数据
+    ///
+    /// # Returns
+    /// 正常的情况下，返回接收到的数据。
     pub fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
         self.socket.send_to(data, target)?;
         let expect_size = if expect_size < 0 {

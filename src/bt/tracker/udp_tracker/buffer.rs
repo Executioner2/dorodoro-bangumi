@@ -14,6 +14,14 @@ unsafe impl Send for ByteBuffer {}
 unsafe impl Sync for ByteBuffer {}
 
 impl ByteBuffer {
+
+    /// 创建一个新的 ByteBuffer，分配 `capacity` 字节的内存
+    ///
+    /// # Examples
+    /// ```
+    /// use dorodoro_bangumi::bt::tracker::udp_tracker::buffer::ByteBuffer;
+    /// let buffer = ByteBuffer::new(1024);
+    /// ```
     pub fn new(capacity: usize) -> Self {
         if capacity == 0 {
             Self { bytes: NonNull::dangling(), size: 0, capacity: 0 }
@@ -25,12 +33,26 @@ impl ByteBuffer {
     }
 
     /// 设置有效的大小，不会重新分配内存
+    ///
+    /// # Examples
+    /// ```
+    /// use dorodoro_bangumi::bt::tracker::udp_tracker::buffer::ByteBuffer;
+    /// let mut buffer = ByteBuffer::new(1024);
+    /// buffer.resize(512);
+    /// ```
     pub fn resize(&mut self, size: usize) {
         let size = size.min(self.capacity);
         self.size = size;
     }
 
     /// self.size 必须小于 capacity 的一半时，缩减分配的多余容量
+    ///
+    /// # Examples
+    /// ```
+    /// use dorodoro_bangumi::bt::tracker::udp_tracker::buffer::ByteBuffer;
+    /// let mut buffer = ByteBuffer::new(1024);
+    /// buffer.shrink(512);
+    /// ```
     pub fn shrink(&mut self, capacity: usize) {
         if self.size < capacity { return; }
         let old_layout = Layout::array::<u8>(self.capacity).unwrap();

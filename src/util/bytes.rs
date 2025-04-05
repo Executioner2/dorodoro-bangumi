@@ -26,55 +26,42 @@ macro_rules! impl_bytes2int {
 /// 字节数组转无符号整数
 pub trait Bytes2Int<T> {
     /// 字节数组转无符号整数，大端字节序
+    ///
+    /// Examples:
+    /// ```
+    /// use dorodoro_bangumi::util::bytes::Bytes2Int;
+    ///
+    /// assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78]), 0x12345678);
+    /// assert_eq!(u32::from_be_slice(&[0x56, 0x78]), 0x00005678); // 高位补零
+    /// assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78, 0x9A]), 0x12345678); // 截断超长数据
+    ///
+    /// assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78]), u32::from_be_bytes([0x12, 0x34, 0x56, 0x78]));
+    /// assert_eq!(u32::from_be_slice(&[0x56, 0x78]), u32::from_be_bytes([0, 0, 0x56, 0x78]));
+    /// assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78, 0x9A]), u32::from_be_bytes([0x12, 0x34, 0x56, 0x78]));
+    ///
+    /// assert_eq!(u32::from_be_slice(&[]), 0);
+    /// assert_eq!(u32::from_be_slice(&[0xFF]), 0x000000FF);
+    ///```
     fn from_be_slice(data: &[u8]) -> Self;
 
     /// 字节数组转无符号整数，小端字节序
+    ///
+    /// Examples:
+    /// ```
+    /// use dorodoro_bangumi::util::bytes::Bytes2Int;
+    ///
+    /// assert_eq!(u32::from_le_slice(&[0x78, 0x56, 0x34, 0x12]), 0x12345678);
+    /// assert_eq!(u32::from_le_slice(&[0x78, 0x56]), 0x00005678); // 低位补零
+    /// assert_eq!(u32::from_le_slice(&[0x9A, 0x78, 0x56, 0x34, 0x12]), 0x3456789A); // 截断超长数据
+    ///
+    /// assert_eq!(u32::from_le_slice(&[0x78, 0x56, 0x34, 0x12]), u32::from_le_bytes([0x78, 0x56, 0x34, 0x12]));
+    /// assert_eq!(u32::from_le_slice(&[0x78, 0x56]), u32::from_le_bytes([0x78, 0x56, 0, 0]));
+    /// assert_eq!(u32::from_le_slice(&[0x9A, 0x78, 0x56, 0x34, 0x12]), u32::from_le_bytes([0x9A, 0x78, 0x56, 0x34]));
+    ///
+    /// assert_eq!(u32::from_le_slice(&[]), 0);
+    /// assert_eq!(u32::from_le_slice(&[0xFF]), 0x000000FF);
+    ///```
     fn from_le_slice(data: &[u8]) -> Self;
 }
 
 impl_bytes2int!(u8, u16, u32, u64, u128);
-
-// ===========================================================================
-// TEST
-// ===========================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 大端序测试
-    #[test]
-    fn test_be_slice() {
-        assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78]), 0x12345678);
-        assert_eq!(u32::from_be_slice(&[0x56, 0x78]), 0x00005678); // 高位补零
-        assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78, 0x9A]), 0x12345678); // 截断超长数据
-
-        assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78]), u32::from_be_bytes([0x12, 0x34, 0x56, 0x78]));
-        assert_eq!(u32::from_be_slice(&[0x56, 0x78]), u32::from_be_bytes([0, 0, 0x56, 0x78]));
-        assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78, 0x9A]), u32::from_be_bytes([0x12, 0x34, 0x56, 0x78]));
-    }
-
-    /// 小端序测试
-    #[test]
-    fn test_le_slice() {
-        assert_eq!(u32::from_le_slice(&[0x78, 0x56, 0x34, 0x12]), 0x12345678);
-        assert_eq!(u32::from_le_slice(&[0x78, 0x56]), 0x00005678); // 低位补零
-        assert_eq!(u32::from_le_slice(&[0x9A, 0x78, 0x56, 0x34, 0x12]), 0x3456789A); // 截断超长数据
-
-        assert_eq!(u32::from_le_slice(&[0x78, 0x56, 0x34, 0x12]), u32::from_le_bytes([0x78, 0x56, 0x34, 0x12]));
-        assert_eq!(u32::from_le_slice(&[0x78, 0x56]), u32::from_le_bytes([0x78, 0x56, 0, 0]));
-        assert_eq!(u32::from_le_slice(&[0x9A, 0x78, 0x56, 0x34, 0x12]), u32::from_le_bytes([0x9A, 0x78, 0x56, 0x34]));
-    }
-
-    /// 边界测试
-    #[test]
-    fn test_edge_cases() {
-        // 空输入测试
-        assert_eq!(u32::from_be_slice(&[]), 0);
-        assert_eq!(u32::from_le_slice(&[]), 0);
-
-        // 单字节测试
-        assert_eq!(u32::from_be_slice(&[0xFF]), 0x000000FF);
-        assert_eq!(u32::from_le_slice(&[0xFF]), 0x000000FF);
-    }
-}

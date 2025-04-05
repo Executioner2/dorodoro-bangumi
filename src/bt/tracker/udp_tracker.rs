@@ -4,7 +4,7 @@
 
 pub mod buffer;
 mod error;
-mod socket;
+pub mod socket;
 #[cfg(test)]
 mod tests;
 
@@ -57,10 +57,19 @@ pub struct UdpTracker<'a> {
 }
 
 impl<'a> UdpTracker<'a> {
+
     /// 创建一个 UDP Tracker 实例（默认读超时时间为 15 秒）
     ///
-    /// - socket：Socket 实例
-    /// - announce：Tracker 地址
+    /// # Example
+    ///
+    /// ```
+    /// use dorodoro_bangumi::tracker::udp_tracker as udp_tracker;
+    /// use udp_tracker::socket::SocketArc;
+    /// use udp_tracker::UdpTracker;
+    ///
+    /// let socket = SocketArc::new().unwrap();
+    /// let mut tracker = UdpTracker::new(socket.clone(), "tracker.torrent.eu.org:451").unwrap();
+    /// ```
     pub fn new(socket: SocketArc, announce: &'a str) -> Result<Self> {
         Ok(Self {
             socket,
@@ -70,7 +79,23 @@ impl<'a> UdpTracker<'a> {
         })
     }
 
-    /// 随机生成传输 id
+    /// 向 Tracker 发送广播请求
+    ///
+    /// 正常情况下返回可用资源的地址
+    pub fn announcing(&mut self) -> Result<Announce> {
+        self.update_connect()?;
+        todo!()
+    }
+
+    /// 向 Tracker 发送抓取请求
+    ///
+    /// 返回 Tracker 上的资源信息
+    pub fn scraping(&mut self) -> Result<Scrape> {
+        self.update_connect()?;
+        todo!()
+    }
+
+    /// 随机生成请求传输 ID
     #[inline]
     fn gen_tran_id() -> u32 {
         rand::rng().random::<u32>()
@@ -91,7 +116,15 @@ impl<'a> UdpTracker<'a> {
         (req_tran_id, buffer)
     }
 
-    /// 发送数据
+    /// 发送数据并接收响应的数据
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - 要发送的数据
+    /// * `expect_size` - 期望返回的字节数，-1表示采用默认值（[`MAX_PAYLOAD_SIZE`]）
+    ///
+    /// # Returns
+    /// 正确的情况下，返回响应的数据
     fn send(&mut self, data: &[u8], expect_size: isize) -> Result<Bytes> {
         if self.retry_count > MAX_RETRY_NUM {
             return Err(SocketError::Timeout);
@@ -111,6 +144,9 @@ impl<'a> UdpTracker<'a> {
     }
 
     /// 更新连接信息
+    ///
+    /// # Returns
+    /// 正确的情况下返回 `OK(())`
     fn update_connect(&mut self) -> Result<()> {
         let now = datetime::now_secs();
         if self.connect.timestamp <= now && now - self.connect.timestamp <= CONNECTION_ID_TIMEOUT {
@@ -124,7 +160,10 @@ impl<'a> UdpTracker<'a> {
         Ok(())
     }
 
-    /// 向 Tracker 发送连接请求
+    /// 连接到 Tracker
+    ///
+    /// # Returns
+    /// 正确的情况下，返回 Connect
     fn connecting(&mut self) -> Result<Connect> {
         let (req_tran_id, req) = Self::gen_protocol_head(TRACKER_PROTOCOL_ID, Action::Connect);
         let resp = self.send(&req, CONNECT_RESP_SIZE)?;
@@ -150,21 +189,5 @@ impl<'a> UdpTracker<'a> {
             connection_id,
             timestamp: datetime::now_secs(),
         })
-    }
-
-    /// 向 Tracker 发送广播请求
-    ///
-    /// 正常情况下返回可用资源的地址
-    pub fn announcing(&mut self) -> Result<Announce> {
-        self.update_connect()?;
-        todo!()
-    }
-
-    /// 向 Tracker 发送抓取请求
-    ///
-    /// 返回 Tracker 上的资源信息
-    pub fn scraping(&mut self) -> Result<Scrape> {
-        self.update_connect()?;
-        todo!()
     }
 }
