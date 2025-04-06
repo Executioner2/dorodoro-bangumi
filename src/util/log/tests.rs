@@ -1,8 +1,9 @@
 mod tests {
+    use std::io::Error;
     use crate::log::{register_logger, SizeBasedWriter};
     use std::path::Path;
     use std::thread::spawn;
-    use tracing::Level;
+    use tracing::{error, Level};
 
     const PATH_STR: &str = "logs";
     const LOG_FILE_NAME: &str = "dorodoro-bangumi.log";
@@ -43,5 +44,13 @@ mod tests {
         for handle in list {
             handle.join().unwrap();
         }
+    }
+
+    /// 测试错误日志打印
+    #[test]
+    fn test_log_err_print() {
+        let _guard = register_logger(PATH_STR, LOG_FILE_NAME, LOG_FILE_SIZE, LOG_FILE_CHUNKS, LOG_FILE_LEVEL).unwrap();
+        let err = Error::new(std::io::ErrorKind::Other, "测试一下错误打印");
+        error!("test error log {}", err)
     }
 }

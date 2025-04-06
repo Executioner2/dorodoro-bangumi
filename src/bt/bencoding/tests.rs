@@ -59,8 +59,8 @@ mod tests {
         assert_eq!(
             result,
             BencodeItem::List(vec![
-                BEncode::new(Bytes::from(&b"spam"[..]), BencodeItem::Str),
-                BEncode::new(Bytes::from(&b"eggs"[..]), BencodeItem::Str),
+                BEncode::new(Bytes::from(&b"4:spam"[..]), BencodeItem::Str(Bytes::from(&b"spam"[..]))),
+                BEncode::new(Bytes::from(&b"4:eggs"[..]), BencodeItem::Str(Bytes::from(&b"eggs"[..]))),
             ])
         );
     }
@@ -72,11 +72,11 @@ mod tests {
         let mut expected_dict = HashMap::new();
         expected_dict.insert(
             "cow".to_string(),
-            BEncode::new(Bytes::from(&b"moo"[..]), BencodeItem::Str),
+            BEncode::new(Bytes::from(&b"3:moo"[..]), BencodeItem::Str(Bytes::from(&b"moo"[..]))),
         );
         expected_dict.insert(
             "spam".to_string(),
-            BEncode::new(Bytes::from(&b"eggs"[..]), BencodeItem::Str),
+            BEncode::new(Bytes::from(&b"4:eggs"[..]), BencodeItem::Str(Bytes::from(&b"eggs"[..]))),
         );
         assert_eq!(result, BencodeItem::Dict(expected_dict));
     }

@@ -23,6 +23,12 @@ pub mod udp_tracker {
     /// 协议 ID
     pub const TRACKER_PROTOCOL_ID: u64 = 0x41727101980;
 
-    /// 连接响应的大小
-    pub const CONNECT_RESP_SIZE: isize = 16;
+    /// 最小 connect 响应数据包大小
+    pub const MIN_CONNECT_RESP_SIZE: usize = 16;
+
+    /// 最小 announce 响应数据包大小
+    pub const MIN_ANNOUNCE_RESP_SIZE: usize = 20;
+
+    /// 最小 scrape 响应数据包大小
+    pub const MIN_SCRAPE_RESP_SIZE: usize = 12;
 }

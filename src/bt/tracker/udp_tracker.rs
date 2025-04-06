@@ -10,15 +10,19 @@ mod tests;
 
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
+use crate::parse::Torrent;
 use crate::tracker::udp_tracker::error::SocketError;
 use crate::tracker::udp_tracker::socket::SocketArc;
-use crate::{datetime, util};
+use crate::{datetime, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
 use rand::Rng;
+use std::io::Write;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tracing::warn;
 
 type Buffer = Vec<u8>;
 
@@ -37,6 +41,14 @@ enum Action {
     Error = 3,
 }
 
+/// announce event
+enum Event {
+    None = 0,
+    Completed = 1,
+    Started = 2,
+    Stopped = 3,
+}
+
 /// 连接信息
 #[derive(Default, Debug)]
 struct Connect {
@@ -47,6 +59,7 @@ struct Connect {
     timestamp: u64,
 }
 
+#[derive(Debug)]
 pub struct Announce {}
 
 pub struct Scrape {}
@@ -56,6 +69,12 @@ pub struct UdpTracker<'a> {
     connect: Connect,
     retry_count: u8,
     announce: &'a str,
+    info_hash: &'a [u8; 20],
+    peer_id: &'a [u8; 20],
+    download: u64,
+    left: u64,
+    uploaded: u64,
+    port: u16,
 }
 
 impl<'a> UdpTracker<'a> {
@@ -64,28 +83,79 @@ impl<'a> UdpTracker<'a> {
     /// # Example
     ///
     /// ```
-    /// use dorodoro_bangumi::tracker::udp_tracker as udp_tracker;
+    /// use dorodoro_bangumi::tracker::{gen_peer_id, udp_tracker as udp_tracker};
     /// use udp_tracker::socket::SocketArc;
     /// use udp_tracker::UdpTracker;
     ///
     /// let socket = SocketArc::new().unwrap();
-    /// let mut tracker = UdpTracker::new(socket.clone(), "tracker.torrent.eu.org:451").unwrap();
+    /// let info_hash = [0u8; 20];
+    /// let peer_id = gen_peer_id();
+    /// let mut tracker = UdpTracker::new(socket.clone(), "tracker.torrent.eu.org:451", &info_hash, &peer_id, 0, 9999, 9987).unwrap();
     /// ```
-    pub fn new(socket: SocketArc, announce: &'a str) -> Result<Self> {
+    pub fn new(
+        socket: SocketArc,
+        announce: &'a str,
+        info_hash: &'a [u8; 20],
+        peer_id: &'a [u8; 20],
+        download: u64,
+        left: u64,
+        port: u16,
+    ) -> Result<Self> {
         Ok(Self {
             socket,
             connect: Connect::default(),
             retry_count: 0,
             announce,
+            info_hash,
+            peer_id,
+            download,
+            left,
+            uploaded: 0,
+            port,
         })
     }
 
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
+    /// TODO - 已连通，响应数据正常，待完整实现
     pub fn announcing(&mut self) -> Result<Announce> {
         self.update_connect()?;
-        todo!()
+        let (req_tran_id, mut req) =
+            Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
+
+        req.write(self.info_hash)?;
+        req.write(self.peer_id)?;
+        req.write_u64::<BigEndian>(self.download)?;
+        req.write_u64::<BigEndian>(self.left)?;
+        req.write_u64::<BigEndian>(self.uploaded)?;
+        req.write_u32::<BigEndian>(Event::Started as u32)?;
+        req.write_u32::<BigEndian>(0)?; // ip
+        req.write_u32::<BigEndian>(tracker::gen_process_key())?;
+        req.write_i32::<BigEndian>(-1)?; // 期望的 peer 数量
+        req.write_u16::<BigEndian>(self.port)?;
+
+        let resp = self.send(&req, -1)?;
+
+        println!("tracker 响应：{:?}", resp);
+
+        // 解析响应数据
+        if resp.len() < MIN_ANNOUNCE_RESP_SIZE {
+            return Err(SocketError::ResponseLengthError(resp.len()));
+        }
+        self.check_resp_data(&resp, req_tran_id)?;
+        let interval = u32::from_be_slice(&resp[8..12]);
+        let leechers = u32::from_be_slice(&resp[12..16]); // 未完成下载的 peer 数
+        let seedrs = u32::from_be_slice(&resp[16..20]);
+
+        println!(
+            "interval: {}, leechers: {}, seedrs: {}",
+            interval, leechers, seedrs
+        );
+        println!("peers: {:?}", &resp[20..]);
+        // 解析 peers 列表
+
+        Ok(Announce {})
     }
 
     /// 向 Tracker 发送抓取请求
@@ -94,6 +164,64 @@ impl<'a> UdpTracker<'a> {
     pub fn scraping(&mut self) -> Result<Scrape> {
         self.update_connect()?;
         todo!()
+    }
+
+    /// 更新连接信息
+    ///
+    /// # Returns
+    /// 正确的情况下返回 `OK(())`
+    fn update_connect(&mut self) -> Result<()> {
+        let now = datetime::now_secs();
+        if self.connect.timestamp <= now && now - self.connect.timestamp <= CONNECTION_ID_TIMEOUT {
+            // 无需重新获取连接 ID
+            return Ok(());
+        }
+
+        // 重新获取连接 ID
+        let connect = self.connecting()?;
+        self.connect = connect;
+        Ok(())
+    }
+
+    /// 连接到 Tracker
+    ///
+    /// # Returns
+    /// 正确的情况下，返回 Connect
+    fn connecting(&mut self) -> Result<Connect> {
+        let (req_tran_id, req) = Self::gen_protocol_head(TRACKER_PROTOCOL_ID, Action::Connect);
+        let resp = self.send(&req, MIN_CONNECT_RESP_SIZE as isize)?;
+
+        // 解析响应数据
+        if resp.len() < MIN_CONNECT_RESP_SIZE {
+            return Err(SocketError::ResponseLengthError(resp.len()));
+        }
+        self.check_resp_data(&resp, req_tran_id)?;
+        let connection_id = u64::from_be_slice(&resp[8..16]);
+
+        Ok(Connect {
+            connection_id,
+            timestamp: datetime::now_secs(),
+        })
+    }
+
+    /// 检查响应数据（在调用前，应该先检查数据是否够 8 个字节大小）
+    fn check_resp_data(&self, data: &Bytes, req_tran_id: u32) -> Result<()> {
+        let action = u32::from_be_slice(&data[0..4]);
+        let resp_tran_id = u32::from_be_slice(&data[4..8]);
+
+        if resp_tran_id != req_tran_id {
+            return Err(SocketError::TransactionIdMismatching(
+                req_tran_id,
+                resp_tran_id,
+            ));
+        } else if action == Action::Error as u32 {
+            return Err(SocketError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Tracker 出现错误",
+            )));
+        }
+
+        Ok(())
     }
 
     /// 生成协议头，协议头格式：
@@ -130,9 +258,9 @@ impl<'a> UdpTracker<'a> {
                 self.retry_count = 0;
                 Ok(resp)
             }
-            Err(_) => {
-                // 可能需要针对不同任务做处理
-                println!("电波无法传达！");
+            Err(e) => {
+                // todo - 可能需要针对不同任务做处理，以及需要做基准测试
+                warn!("电波无法传达！\n{}", e);
                 self.retry_count += 1;
                 let lazy = Duration::from_millis(
                     SOCKET_READ_TIMEOUT.as_millis() as u64 * self.retry_count as u64,
@@ -141,53 +269,5 @@ impl<'a> UdpTracker<'a> {
                 self.send(data, expect_size)
             }
         }
-    }
-
-    /// 更新连接信息
-    ///
-    /// # Returns
-    /// 正确的情况下返回 `OK(())`
-    fn update_connect(&mut self) -> Result<()> {
-        let now = datetime::now_secs();
-        if self.connect.timestamp <= now && now - self.connect.timestamp <= CONNECTION_ID_TIMEOUT {
-            // 无需重新获取连接 ID
-            return Ok(());
-        }
-
-        // 重新获取连接 ID
-        let connect = self.connecting()?;
-        self.connect = connect;
-        Ok(())
-    }
-
-    /// 连接到 Tracker
-    ///
-    /// # Returns
-    /// 正确的情况下，返回 Connect
-    fn connecting(&mut self) -> Result<Connect> {
-        let (req_tran_id, req) = Self::gen_protocol_head(TRACKER_PROTOCOL_ID, Action::Connect);
-        let resp = self.send(&req, CONNECT_RESP_SIZE)?;
-
-        // 解析响应数据
-        let action = u32::from_be_slice(&resp[0..4]);
-        let resp_tran_id = u32::from_be_slice(&resp[4..8]);
-        let connection_id = u64::from_be_slice(&resp[8..16]);
-
-        if resp_tran_id != req_tran_id {
-            return Err(SocketError::TransactionIdMismatching(
-                req_tran_id,
-                resp_tran_id,
-            ));
-        } else if action == Action::Error as u32 {
-            return Err(SocketError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Tracker 出现错误",
-            )));
-        }
-
-        Ok(Connect {
-            connection_id,
-            timestamp: datetime::now_secs(),
-        })
     }
 }

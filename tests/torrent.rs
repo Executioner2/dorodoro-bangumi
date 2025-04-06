@@ -42,6 +42,14 @@ fn test_parse_torrent_file() {
     assert!(Torrent::parse_torrent("tests/resources/test2.torrent").is_ok())
 }
 
+/// 验证 info hash 正确性
+#[test]
+fn test_info_hash() {
+    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
+    let s = hex::encode(torrent.info_hash);
+    assert_eq!(s, "a4a88248f0b76a3ff7d7c9bd7a7a134c12090cbe");
+}
+
 /// UDP tracker 握手测试
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉

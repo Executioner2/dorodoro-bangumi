@@ -8,8 +8,15 @@ pub type Result<T> = std::result::Result<T, SocketError>;
 pub enum SocketError {
     /// 连接超时
     Timeout,
+
+    /// 传输 ID 不匹配
     TransactionIdMismatching(u32, u32),
+
+    /// IO 错误
     IoError(std::io::Error),
+
+    /// 响应长度错误
+    ResponseLengthError(usize),
 }
 
 impl Display for SocketError {
@@ -21,6 +28,7 @@ impl Display for SocketError {
                 "传输 ID 不匹配，req tran id: {req}, resp tran id: {resp}"
             ),
             IoError(e) => write!(f, "IO 错误: {}", e),
+            ResponseLengthError(len) => write!(f, "响应长度错误: {}", len),
         }
     }
 }

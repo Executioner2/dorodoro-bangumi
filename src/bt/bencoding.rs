@@ -4,6 +4,8 @@
 //! - 保留字节块，便于后续对 info 的 sha1 计算
 //! - 暴露 ParseError，便于错误处理
 //! - 实现编码功能
+//!
+//! TODO - 这个鬼东西以后一定找时间重构下
 
 #[cfg(test)]
 mod tests;
@@ -137,7 +139,7 @@ pub enum BencodeItem {
     /// Represents an integer value.
     Int(i64),
     /// Represents a string value.
-    Str,
+    Str(Bytes),
     /// Represents a list of bencode values.
     List(Vec<BEncode>),
     /// Represents a dictionary of bencode values.
@@ -169,7 +171,7 @@ impl BEncode {
     /// An `Option` containing the string value or `None` if this is not a `BEncode::Str`.
     pub fn as_str(&self) -> Option<&str> {
         match &self.value {
-            BencodeItem::Str => Some(std::str::from_utf8(&self.bytes[..]).unwrap()),
+            BencodeItem::Str(byte) => Some(std::str::from_utf8(&byte[..]).unwrap()),
             _ => None,
         }
     }
@@ -230,28 +232,28 @@ impl Decoder {
 
     fn parse_list(&mut self) -> Result<BEncode, ParseError> {
         let mut list: Vec<BEncode> = Vec::new();
-        self.pos += 1; // Skip the 'l'
         let start_pos = self.pos;
+        self.pos += 1; // Skip the 'l'
         while self.stream[self.pos] != b'e' {
             let parsed = self.parse()?;
             list.push(parsed);
         }
         self.pos += 1; // Skip the 'e'
         Ok(BEncode::new(
-            self.stream.slice(start_pos..self.pos - 1),
+            self.stream.slice(start_pos..self.pos),
             BencodeItem::List(list),
         ))
     }
 
     fn parse_dict(&mut self) -> Result<BEncode, ParseError> {
         let mut dict: HashMap<String, BEncode> = HashMap::new();
-        self.pos += 1; // Skip the 'd'
         let start_pos = self.pos;
+        self.pos += 1; // Skip the 'd'
         while self.stream[self.pos] != b'e' {
             let key = match self.parse_str()? {
                 BEncode {
-                    value: BencodeItem::Str,
-                    bytes,
+                    value: BencodeItem::Str(bytes),
+                    ..
                 } => bytes,
                 _ => return Err(ParseError::InvalidByte(self.pos)),
             };
@@ -264,13 +266,14 @@ impl Decoder {
         }
         self.pos += 1; // Skip the 'e'
         Ok(BEncode::new(
-            self.stream.slice(start_pos..self.pos - 1),
+            self.stream.slice(start_pos..self.pos),
             BencodeItem::Dict(dict),
         ))
     }
 
     fn parse_str(&mut self) -> Result<BEncode, ParseError> {
         let mut str_size: usize = 0;
+        let start_pos = self.pos;
         while self.stream[self.pos] != b':' {
             if self.stream[self.pos].is_ascii_digit() {
                 str_size = str_size * 10 + (self.stream[self.pos] - b'0') as usize;
@@ -280,21 +283,21 @@ impl Decoder {
             self.pos += 1;
         }
         self.pos += 1;
-        let start_pos = self.pos;
         if self.pos + str_size > self.stream.len() {
             return Err(ParseError::UnexpectedEndOfStream);
         }
 
+        let string = Bytes::from(self.stream.slice(self.pos..self.pos + str_size));
         self.pos += str_size;
         Ok(BEncode::new(
             self.stream.slice(start_pos..self.pos),
-            BencodeItem::Str,
+            BencodeItem::Str(string),
         ))
     }
 
     fn parse_int(&mut self) -> Result<BEncode, ParseError> {
-        self.pos += 1; // Skip the 'i'
         let start_pos = self.pos;
+        self.pos += 1; // Skip the 'i'
         let mut is_negative = false;
         if self.stream[self.pos] == b'-' {
             is_negative = true;
@@ -318,7 +321,7 @@ impl Decoder {
         }
 
         Ok(BEncode::new(
-            self.stream.slice(start_pos..self.pos - 1),
+            self.stream.slice(start_pos..self.pos),
             BencodeItem::Int(curr_int),
         ))
     }
