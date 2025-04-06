@@ -12,6 +12,7 @@ use std::net::UdpSocket;
 use dorodoro_bangumi::util::bytes::Bytes2Int;
 
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_bencoded_string() {
     let bytes = fs::read("tests/resources/test1.torrent").unwrap();
     let data = bencoding::decode(Bytes::from_owner(bytes)).unwrap();
@@ -19,6 +20,7 @@ fn test_parse_bencoded_string() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_announce_file() {
     let bytes = fs::read("tests/resources/announce").unwrap();
     let data = bencoding::decode(Bytes::from_owner(bytes)).unwrap();
@@ -35,12 +37,14 @@ fn test_parse_announce_file() {
 
 /// 种子文件解析测试
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_torrent_file() {
     assert!(Torrent::parse_torrent("tests/resources/test2.torrent").is_ok())
 }
 
 /// UDP tracker 握手测试
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_udp_tracker_handshake() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
@@ -71,6 +75,7 @@ fn test_udp_tracker_handshake() {
 
 /// HTTP tracker 握手测试
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 

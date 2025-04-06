@@ -17,6 +17,8 @@ use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
 use rand::Rng;
+use std::thread;
+use std::time::Duration;
 
 type Buffer = Vec<u8>;
 
@@ -130,9 +132,13 @@ impl<'a> UdpTracker<'a> {
             }
             Err(_) => {
                 // 可能需要针对不同任务做处理
+                println!("电波无法传达！");
                 self.retry_count += 1;
-                // 开启一个延迟任务，等待一段时间后再重试
-                todo!()
+                let lazy = Duration::from_millis(
+                    SOCKET_READ_TIMEOUT.as_millis() as u64 * self.retry_count as u64,
+                );
+                thread::sleep(lazy);
+                self.send(data, expect_size)
             }
         }
     }

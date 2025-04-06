@@ -82,6 +82,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
     fn test_decode_torrent() {
         // Read the file into a byte vector
         let path = "tests/resources/test2.torrent";
