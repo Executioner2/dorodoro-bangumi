@@ -195,7 +195,7 @@ pub fn register_logger(
     let console = fmt::layer()
         .with_timer(timer)
         .with_line_number(true)
-        .with_thread_names(true)
+        .with_thread_names(false)
         .with_thread_ids(true)
         .with_writer(std::io::stderr.with_max_level(level));
 
