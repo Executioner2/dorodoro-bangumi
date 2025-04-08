@@ -1,6 +1,4 @@
 //! UDP Tracker 实现
-//!
-//! TODO - 当前是单线程处理，跑通后改为多线程处理
 
 pub mod buffer;
 mod error;
@@ -13,7 +11,7 @@ use crate::bytes::Bytes2Int;
 use crate::torrent::Torrent;
 use crate::tracker::udp_tracker::error::SocketError;
 use crate::tracker::udp_tracker::socket::SocketArc;
-use crate::tracker::{Host, HostV4, HostV6};
+use crate::tracker::{Event, Host, HostV4, HostV6};
 use crate::{datetime, if_else, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
@@ -41,21 +39,6 @@ enum Action {
 
     /// 出现错误
     Error = 3,
-}
-
-/// announce event
-pub enum Event {
-    /// 未发生特定事件，正常广播
-    None = 0,
-
-    /// 完成了资源下载
-    Completed = 1,
-
-    /// 参与资源下载，刚进入到 tracker 中时发送
-    Started = 2,
-
-    /// 停止资源下载，退出 tracker 时发送
-    Stopped = 3,
 }
 
 /// 连接信息
@@ -169,9 +152,9 @@ impl<'a> UdpTracker<'a> {
 
         // 解析 peers 列表
         let peers = if self.socket.is_ipv4() {
-            Self::parse_peers_v4(&resp[20..])
+            tracker::parse_peers_v4(&resp[20..])?
         } else {
-            Self::parse_peers_v6(&resp[20..])
+            tracker::parse_peers_v6(&resp[20..])?
         };
 
         Ok(Announce {
@@ -293,35 +276,5 @@ impl<'a> UdpTracker<'a> {
                 self.send(data, expect_size)
             }
         }
-    }
-
-    /// 解析 peer 列表 - IpV4
-    fn parse_peers_v4(peers: &[u8]) -> Vec<Host> {
-        assert_eq!(peers.len() % 6, 0, "peer 列表长度错误");
-        peers
-            .chunks(6)
-            .map(|chunk| {
-                let ip_bytes: [u8; 4] = chunk[..4].try_into().unwrap();
-                Host::from((
-                    ip_bytes,
-                    u16::from_be_slice(&chunk[4..]),
-                ))
-            })
-            .collect::<Vec<Host>>()
-    }
-
-    /// 解析 peer 列表 - IpV6
-    fn parse_peers_v6(peers: &[u8]) -> Vec<Host> {
-        assert_eq!(peers.len() % 18, 0, "peer 列表长度错误");
-        peers
-            .chunks(18)
-            .map(|chunk| {
-                let ip_bytes: [u8; 16] = chunk[..16].try_into().unwrap();
-                Host::from((
-                    ip_bytes,
-                    u16::from_be_slice(&chunk[16..]),
-                ))
-            })
-            .collect::<Vec<Host>>()
     }
 }

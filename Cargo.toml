@@ -11,14 +11,16 @@ reqwest = { version = "0.12.15", features = ["blocking"] }
 bytes = "1.10.1"
 sha1 = "0.10.6"
 hashlink = "0.10.0"
-percent-encoding = "2.3.1"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.15", features = ["env-filter", "local-time"] }
 tracing-appender = "0.2.3"
+percent-encoding = "2.3.1"
 time = { version = "0.3.41", features = ["local-offset"] }
 lazy_static = "1.5.0"
 nanoid = "0.4.0"
 hex = "0.4.3"
+serde_qs = "0.14.0"
+serde = { version = "1.0.219", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.5.1"

@@ -32,3 +32,11 @@ pub mod udp_tracker {
     /// 最小 scrape 响应数据包大小
     pub const MIN_SCRAPE_RESP_SIZE: usize = 12;
 }
+
+/// HTTP tracker 相关常量
+pub mod http_tracker {
+    use std::time::Duration;
+
+    /// UDP socket 读取超时时间 - 15秒
+    pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+}

@@ -1,6 +1,7 @@
 use crate::tracker::udp_tracker::error::SocketError::*;
 use core::fmt::Display;
 use std::error::Error;
+use crate::tracker;
 
 pub type Result<T> = std::result::Result<T, SocketError>;
 
@@ -17,6 +18,8 @@ pub enum SocketError {
 
     /// 响应长度错误
     ResponseLengthError(usize),
+
+    PeerHostError(tracker::PeerHostError)
 }
 
 impl Display for SocketError {
@@ -29,6 +32,7 @@ impl Display for SocketError {
             ),
             IoError(e) => write!(f, "IO 错误: {}", e),
             ResponseLengthError(len) => write!(f, "响应长度错误: {}", len),
+            PeerHostError(e) => write!(f, "PeerHostError: {}", e),
         }
     }
 }
@@ -37,6 +41,7 @@ impl Error for SocketError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             IoError(e) => Some(e),
+            PeerHostError(e) => Some(e),
             _ => None,
         }
     }
@@ -45,5 +50,11 @@ impl Error for SocketError {
 impl From<std::io::Error> for SocketError {
     fn from(e: std::io::Error) -> Self {
         IoError(e)
+    }
+}
+
+impl From<tracker::PeerHostError> for SocketError {
+    fn from(e: tracker::PeerHostError) -> Self {
+        PeerHostError(e)
     }
 }

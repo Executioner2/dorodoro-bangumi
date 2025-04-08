@@ -87,7 +87,7 @@ fn test_udp_tracker_handshake() {
 fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
-    let announce = "http://open.acgtracker.com:1096/announce";
+    let announce = "http://nyaa.tracker.wf:7777/announce";
     let port = "6881";
     let _left = "0";
     let downloaded = "0";

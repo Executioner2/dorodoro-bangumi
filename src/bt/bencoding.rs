@@ -26,6 +26,8 @@ pub enum ParseError {
     UnexpectedEndOfStream,
     /// Indicates the stream contained invalid UTF-8.
     InvalidUtf8,
+    /// 类型转换错误
+    TransformError
 }
 
 impl Display for ParseError {
@@ -34,6 +36,7 @@ impl Display for ParseError {
             ParseError::InvalidByte(pos) => write!(f, "Invalid byte at position {}", pos),
             ParseError::UnexpectedEndOfStream => write!(f, "Unexpected end of stream"),
             ParseError::InvalidUtf8 => write!(f, "Invalid UTF-8"),
+            ParseError::TransformError => write!(f, "Transform Error"),
         }
     }
 }
@@ -176,8 +179,10 @@ impl BEncode {
         }
     }
 
-    /// 返回字节串
-    pub fn as_str_byte(&self) -> Option<&[u8]> {
+    /// 返回内容的字节串（也就是不包含起始字符和结束字符）
+    ///
+    /// PS. 仅限字符串类型
+    pub fn as_bytes_conetnt(&self) -> Option<&[u8]> {
         match &self.value {
             BencodeItem::Str(byte) => Some(&byte[..]),
             _ => None,
@@ -206,6 +211,42 @@ impl BEncode {
             BencodeItem::Dict(value) => Some(value),
             _ => None,
         }
+    }
+}
+
+pub trait BEncodeHashMap {
+    fn get_int(&self, key: &str) -> Option<i64>;
+    fn get_str(&self, key: &str) -> Option<&str>;
+    fn as_bytes_conetnt(&self, key: &str) -> Option<&[u8]>;
+    fn get_list(&self, key: &str) -> Option<&Vec<BEncode>>;
+    fn get_dict(&self, key: &str) -> Option<&HashMap<String, BEncode>>;
+    fn get_bytes(&self, key: &str) -> Option<&[u8]>;
+}
+
+impl BEncodeHashMap for HashMap<String, BEncode> {
+
+    fn get_int(&self, key: &str) -> Option<i64> {
+        self.get(key).map_or(None, |value| value.as_int())
+    }
+
+    fn get_str(&self, key: &str) -> Option<&str> {
+        self.get(key).map_or(None, |value| value.as_str())
+    }
+
+    fn as_bytes_conetnt(&self, key: &str) -> Option<&[u8]> {
+        self.get(key).map_or(None, |value| value.as_bytes_conetnt())
+    }
+
+    fn get_list(&self, key: &str) -> Option<&Vec<BEncode>> {
+        self.get(key).map_or(None, |value| value.as_list())
+    }
+
+    fn get_dict(&self, key: &str) -> Option<&HashMap<String, BEncode>> {
+        self.get(key).map_or(None, |value| value.as_dict())
+    }
+
+    fn get_bytes(&self, key: &str) -> Option<&[u8]> {
+        self.get(key).map(|value| value.as_bytes())
     }
 }
 

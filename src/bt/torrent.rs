@@ -1,6 +1,7 @@
 //! 种子内容下载
 
 use super::bencoding;
+use crate::bencoding::ParseError::TransformError;
 use TorrentError::*;
 use bencoding::BEncode;
 use bytes::Bytes;
@@ -9,13 +10,13 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
 use std::fs;
+
 type Result<T> = std::result::Result<T, TorrentError>;
 
 /// 错误类型
 #[derive(Debug)]
 pub enum TorrentError {
     InvalidTorrent(&'static str),
-    TransformError,
     DecodeError(bencoding::ParseError),
     Utf8Error(std::string::FromUtf8Error),
     FileError(std::io::Error),
@@ -25,7 +26,6 @@ impl Display for TorrentError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             InvalidTorrent(msg) => write!(f, "Invalid torrent file: {}", msg),
-            TransformError => write!(f, "transform error"),
             DecodeError(e) => write!(f, "Decode error: {}", e),
             Utf8Error(e) => write!(f, "UTF8 error: {}", e),
             FileError(e) => write!(f, "File error: {}", e),
@@ -237,7 +237,7 @@ fn parse_info(encode: &HashMap<String, BEncode>) -> Result<(Info, [u8; 20])> {
     let pieces = info
         .get("pieces")
         .ok_or(InvalidTorrent("缺少info.pieces"))?
-        .as_str_byte()
+        .as_bytes_conetnt()
         .ok_or(TransformError)?
         .to_vec();
     let name = info
