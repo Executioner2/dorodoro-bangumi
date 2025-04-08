@@ -176,6 +176,14 @@ impl BEncode {
         }
     }
 
+    /// 返回字节串
+    pub fn as_str_byte(&self) -> Option<&[u8]> {
+        match &self.value {
+            BencodeItem::Str(byte) => Some(&byte[..]),
+            _ => None,
+        }
+    }
+
     /// Returns the list value if this is a `BEncode::List`.
     ///
     /// # Returns

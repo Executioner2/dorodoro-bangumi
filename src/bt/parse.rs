@@ -209,7 +209,7 @@ fn parse_creation_date(encode: &HashMap<String, BEncode>) -> Result<u64> {
 
 fn info_hash(data: &[u8]) -> [u8; 20] {
     let mut hasher = Sha1::new();
-    hasher.update(data.to_vec());
+    hasher.update(data);
     let mut result = [0; 20];
     result.copy_from_slice(&hasher.finalize());
     result
@@ -237,7 +237,8 @@ fn parse_info(encode: &HashMap<String, BEncode>) -> Result<(Info, [u8; 20])> {
     let pieces = info
         .get("pieces")
         .ok_or(InvalidTorrent("缺少info.pieces"))?
-        .as_bytes()
+        .as_str_byte()
+        .ok_or(TransformError)?
         .to_vec();
     let name = info
         .get("name")
