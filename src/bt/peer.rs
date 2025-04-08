@@ -5,7 +5,7 @@
 //!
 //! 长度的需要加上消息类型的 1 字节。
 //!
-//! 分片分块关系：分片是制作种子文件的单位，而分块是对种子文件进行下载的单位。分块可以有下载器动态控制，大小 <= 分片大小。
+//! 区块与分片的关系：区块是制作种子文件的单位，而分片是对种子文件进行下载的单位。分片可以有下载器动态控制，分片大小 <= 区块大小。
 
 /// Peer 通信的消息类型
 pub enum MsgType {
@@ -55,4 +55,16 @@ pub enum MsgType {
     ///
     /// 格式：`length:u32 | 8:u8 | piece_index:u32 | block_offset:u32`
     Cancel,
+}
+
+impl TryFrom<u8> for MsgType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value >= 0 && value <= 8 {
+            Ok(unsafe { std::mem::transmute(value) })
+        } else {
+            Err(())
+        }
+    }
 }
