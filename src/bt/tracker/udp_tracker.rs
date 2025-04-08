@@ -44,10 +44,17 @@ enum Action {
 }
 
 /// announce event
-enum Event {
+pub enum Event {
+    /// 未发生特定事件，正常广播
     None = 0,
+
+    /// 完成了资源下载
     Completed = 1,
+
+    /// 参与资源下载，刚进入到 tracker 中时发送
     Started = 2,
+
+    /// 停止资源下载，退出 tracker 时发送
     Stopped = 3,
 }
 
@@ -133,7 +140,7 @@ impl<'a> UdpTracker<'a> {
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub fn announcing(&mut self) -> Result<Announce> {
+    pub fn announcing(&mut self, event: Event) -> Result<Announce> {
         self.update_connect()?;
         let (req_tran_id, mut req) =
             Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
@@ -143,7 +150,7 @@ impl<'a> UdpTracker<'a> {
         req.write_u64::<BigEndian>(self.download)?;
         req.write_u64::<BigEndian>(self.left)?;
         req.write_u64::<BigEndian>(self.uploaded)?;
-        req.write_u32::<BigEndian>(Event::Started as u32)?;
+        req.write_u32::<BigEndian>(event as u32)?;
         req.write_u32::<BigEndian>(0)?; // ip
         req.write_u32::<BigEndian>(tracker::gen_process_key())?;
         req.write_i32::<BigEndian>(-1)?; // 期望的 peer 数量

@@ -4,7 +4,7 @@ use crate::bt::peer::MsgType;
 use crate::bytes::Bytes2Int;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker;
-use crate::tracker::udp_tracker::UdpTracker;
+use crate::tracker::udp_tracker::{Event, UdpTracker};
 use crate::tracker::udp_tracker::socket::SocketBuilder;
 use byteorder::{BigEndian, WriteBytesExt};
 use sha1::{Digest, Sha1};
@@ -60,7 +60,7 @@ fn test_announce() {
         9987,
     )
     .unwrap();
-    let announce = tracker.announcing().unwrap();
+    let announce = tracker.announcing(Event::None).unwrap();
     println!("announce result: {:?}", announce);
     println!("peers length: {}", announce.peers.len());
 }
