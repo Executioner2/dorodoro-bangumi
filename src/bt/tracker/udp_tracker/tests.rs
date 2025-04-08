@@ -7,13 +7,18 @@ use crate::tracker;
 use crate::tracker::udp_tracker::UdpTracker;
 use crate::tracker::udp_tracker::socket::SocketArc;
 use byteorder::{BigEndian, WriteBytesExt};
+use sha1::{Digest, Sha1};
+use std::cmp::min;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::runtime::Builder;
+use tokio::time::timeout;
 
 /// 测试是否能发起 connect 请求
 #[test]
@@ -112,7 +117,7 @@ fn test_request_download() {
 
 async fn request_download() {
     // 本机的 peer 客户端
-    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
+    let torrent = Arc::new(Torrent::parse_torrent("tests/resources/test3.torrent").unwrap());
 
     let protocol_len = 19u8;
     let protocol = b"BitTorrent protocol";
@@ -149,30 +154,76 @@ async fn request_download() {
     println!("响应内容: {:?}", handshake_resp);
     println!("是否在讨论同一个文件？: {}", info_hash == resp_info_hash);
     println!("对方的peer_id: {}", peer_id_str);
+    println!("文件大小: {}", torrent.info.length);
 
-    async fn reader_handler(mut reader: OwnedReadHalf) {
-        let mut count = 0;
-        while count <= 3 {
-            reader.readable().await.unwrap();
-            println!("================分割线================");
+    println!(
+        "区块数量: {}",
+        (torrent.info.length + torrent.info.piece_length - 1) / torrent.info.piece_length
+    );
+
+    // return;
+
+    async fn reader_handler(reader: &mut OwnedReadHalf, torrent: &Torrent) {
+        loop {
+            match timeout(Duration::from_secs(5), reader.readable()).await {
+                Ok(Ok(())) => {
+                    // println!("reader 可读");
+                    ()
+                }
+                Ok(Err(e)) => {
+                    println!("reader 读错误: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    println!("reader 读超时");
+                    break;
+                }
+            }
+            // println!("================分割线================");
 
             let mut length = [0u8; 4];
-            // if !read(&mut reader, &mut length).unwrap() {
-            //     continue;
-            // }
             reader.read_exact(&mut length).await.unwrap();
             let length = u32::from_be_bytes(length);
-            println!("对方响应的长度: {}", length);
+            // println!("对方响应的长度: {}", length);
 
             let mut resp = vec![0u8; length as usize];
-            // if !read(&mut reader, &mut resp).unwrap() {
-            //     continue;
-            // }
             reader.read_exact(&mut resp).await.unwrap();
-            println!("对方响应的内容: {:?}", resp);
+            // println!("对方响应的内容: {:?}", resp);
 
-            count += 1;
+            if let Ok(msg_type) = MsgType::try_from(resp[0]) {
+                match msg_type {
+                    MsgType::Piece => {
+                        let data = &resp[1..];
+                        writer_handler(data, &torrent.info.name, torrent.info.piece_length).await;
+                    }
+                    _ => {
+                        println!("其它响应，暂不处理: {:?}", resp)
+                    }
+                }
+            }
+            break;
         }
+    }
+
+    async fn writer_handler(writer: &[u8], filename: &str, piece_length: u64) {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(filename)
+            .unwrap();
+
+        let piece_index = u32::from_be_slice(&writer[0..4]);
+        let block_offset = u32::from_be_slice(&writer[4..8]);
+        let data = &writer[8..];
+        file.seek(SeekFrom::Start(
+            piece_index as u64 * piece_length + block_offset as u64,
+        ))
+        .unwrap();
+        file.write_all(data).unwrap();
+        file.flush().unwrap();
+        // if piece_index == 15 {
+        //     println!("写入文件成功: {}-{}-{}", piece_index, block_offset, data.len());
+        // }
     }
 
     println!("================分割线================");
@@ -186,12 +237,14 @@ async fn request_download() {
     WriteBytesExt::write_u8(&mut req, MsgType::Bitfield as u8).unwrap();
     std::io::Write::write(&mut req, &bitmap).unwrap();
     writer.write_all(&req).await.unwrap();
+    reader_handler(&mut reader, &torrent).await;
 
     println!("告诉对方允许对方发起请求");
     let mut req = vec![];
     WriteBytesExt::write_u32::<BigEndian>(&mut req, 1).unwrap();
     WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8).unwrap();
     writer.write_all(&req).await.unwrap();
+    reader_handler(&mut reader, &torrent).await;
 
     // 同时再告诉对方，我对你的资源感兴趣
     println!("同时再告诉对方，我对你的资源感兴趣");
@@ -199,21 +252,84 @@ async fn request_download() {
     WriteBytesExt::write_u32::<BigEndian>(&mut req, 1).unwrap();
     WriteBytesExt::write_u8(&mut req, MsgType::Interested as u8).unwrap();
     writer.write_all(&req).await.unwrap();
+    reader_handler(&mut reader, &torrent).await;
+
+    // 启动异步读取任务
+    // let read_handle = tokio::spawn({
+    //     let torrent = Arc::clone(&torrent);
+    //     async move {
+    //         reader_handler(reader, &torrent).await;
+    //     }
+    // });
 
     // 我要开始向你请求数据了
-    println!("小夫，我进来咯！request: {}", MsgType::Request as u8);
-    let mut req = vec![];
-    WriteBytesExt::write_u32::<BigEndian>(&mut req, 0).unwrap();
-    WriteBytesExt::write_u8(&mut req, MsgType::Request as u8).unwrap();
-    WriteBytesExt::write_u32::<BigEndian>(&mut req, 0).unwrap();
-    WriteBytesExt::write_u32::<BigEndian>(&mut req, 0).unwrap();
-    WriteBytesExt::write_u32::<BigEndian>(&mut req, 1 << 14).unwrap();
-    let len = req.len() as u32 - 4;
-    req[0..4].copy_from_slice(&len.to_be_bytes());
-    println!("request: {:?}", req);
-    writer.write_all(&req).await.unwrap();
+    let sharding_size = 1 << 14; // 分片大小
+    let piece_num =
+        (torrent.info.length + torrent.info.piece_length - 1) / torrent.info.piece_length;
+    for i in 0..piece_num {
+        let mut sharding_offset = 0u64;
+        let piece_length = torrent.info.piece_length.min(
+            torrent
+                .info
+                .length
+                .saturating_sub(i * torrent.info.piece_length),
+        );
+        println!("循环请求区块: {}\t区块大小: {}", i, piece_length);
+        while sharding_offset < piece_length {
+            let mut req = vec![];
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, 0).unwrap();
+            WriteBytesExt::write_u8(&mut req, MsgType::Request as u8).unwrap();
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, i as u32).unwrap();
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, sharding_offset as u32).unwrap();
+            WriteBytesExt::write_u32::<BigEndian>(
+                &mut req,
+                min(piece_length - sharding_offset, sharding_size) as u32,
+            )
+            .unwrap();
+            // if i == piece_num - 1 {
+            //     println!("分片偏移: {}\t下载分片大小: {}", sharding_offset, min(piece_length - sharding_offset, sharding_size))
+            // }
+            let len = req.len() as u32 - 4;
+            req[0..4].copy_from_slice(&len.to_be_bytes());
+            writer.write_all(&req).await.unwrap();
+            sharding_offset += sharding_size;
 
-    reader_handler(reader).await;
+            // 阻塞读取
+            reader_handler(&mut reader, &torrent).await;
+        }
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&torrent.info.name)
+            .unwrap();
+        println!(
+            "seek: {}\tpiece_length: {}",
+            i * torrent.info.piece_length,
+            piece_length
+        );
+        file.seek(SeekFrom::Start(i * torrent.info.piece_length))
+            .unwrap();
+        let mut data = vec![0u8; piece_length as usize];
+        file.read(&mut data).unwrap();
+
+        let mut hasher = Sha1::new();
+        hasher.update(data);
+        let mut result = [0; 20];
+        result.copy_from_slice(&hasher.finalize());
+        let hash = &torrent.info.pieces[i as usize * 20..(i as usize + 1) * 20];
+        let check = result == hash;
+        if check {
+            println!("第{}个区块校验成功", i);
+        } else {
+            eprintln!(
+                "第{}个区块校验不通过\n校验值: {:?}\n实际值: {:?}",
+                i, hash, result
+            );
+            return;
+        }
+    }
+
+    // tokio::join!(read_handle);
 }
 
 /// 握手响应数据解析
