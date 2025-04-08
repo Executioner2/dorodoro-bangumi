@@ -1,3 +1,4 @@
+use crate::bytes::Bytes2Int;
 use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::RngCore;
@@ -43,4 +44,76 @@ pub fn gen_peer_id() -> [u8; 20] {
 /// ```
 pub fn gen_process_key() -> u32 {
     *PROCESS_KEY
+}
+
+// ===========================================================================
+// Peer Host
+// ===========================================================================
+
+pub enum PeerHostError {
+    InvalidHost,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct HostV4 {
+    ip: [u8; 4],
+    port: u16,
+}
+
+impl HostV4 {
+    pub fn new(ip: [u8; 4], port: u16) -> Self {
+        Self { ip, port }
+    }
+
+    pub fn ip(&self) -> [u8; 4] {
+        self.ip
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct HostV6 {
+    ip: [u8; 16],
+    port: u16,
+}
+
+impl HostV6 {
+    pub fn new(ip: [u8; 16], port: u16) -> Self {
+        Self { ip, port }
+    }
+
+    pub fn ip(&self) -> [u8; 16] {
+        self.ip
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum Host {
+    V4(HostV4),
+    V6(HostV6),
+}
+
+impl From<([u8; 4], u16)> for Host {
+    fn from((ip, port): ([u8; 4], u16)) -> Self {
+        Self::V4 (HostV4 {
+            ip,
+            port,
+        })
+    }
+}
+
+impl From<([u8; 16], u16)> for Host {
+    fn from((ip, port): ([u8; 16], u16)) -> Self {
+        Self::V6 (HostV6 {
+            ip,
+            port,
+        })
+    }
 }

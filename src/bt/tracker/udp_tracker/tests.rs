@@ -2,10 +2,10 @@
 
 use crate::bt::peer::MsgType;
 use crate::bytes::Bytes2Int;
-use crate::parse::{Parse, Torrent};
+use crate::torrent::{Parse, Torrent};
 use crate::tracker;
 use crate::tracker::udp_tracker::UdpTracker;
-use crate::tracker::udp_tracker::socket::SocketArc;
+use crate::tracker::udp_tracker::socket::SocketBuilder;
 use byteorder::{BigEndian, WriteBytesExt};
 use sha1::{Digest, Sha1};
 use std::cmp::min;
@@ -24,7 +24,7 @@ use tokio::time::timeout;
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_connect() {
-    let socket = SocketArc::new().unwrap();
+    let socket = SocketBuilder::new().build().unwrap();
     let info_hash = [0u8; 20];
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
@@ -48,7 +48,7 @@ fn test_connect() {
 fn test_announce() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
-    let socket = SocketArc::new().unwrap();
+    let socket = SocketBuilder::new().build().unwrap();
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
         socket.clone(),
@@ -62,6 +62,7 @@ fn test_announce() {
     .unwrap();
     let announce = tracker.announcing().unwrap();
     println!("announce result: {:?}", announce);
+    println!("peers length: {}", announce.peers.len());
 }
 
 // ===========================================================================
@@ -128,7 +129,10 @@ async fn request_download() {
     println!("info_hash: {}", hex::encode(&info_hash));
 
     let peer = "192.168.2.177:3115";
-    let mut stream = TcpStream::connect(peer).await.unwrap();
+    // 下面两个是直接从 tracker 中获取到的远端 peer。测试是可以连接上并下载资源的。
+    // let peer = "175.0.72.46:63219";
+    // let peer = "124.91.148.150:25667";
+    let stream = TcpStream::connect(peer).await.unwrap();
     println!("启动的地址: {:?}", stream.local_addr().unwrap());
     let (mut reader, mut writer) = stream.into_split();
 
@@ -155,6 +159,11 @@ async fn request_download() {
     println!("是否在讨论同一个文件？: {}", info_hash == resp_info_hash);
     println!("对方的peer_id: {}", peer_id_str);
     println!("文件大小: {}", torrent.info.length);
+
+    if info_hash != resp_info_hash {
+        println!("没有在讨论同一个文件");
+        return;
+    }
 
     println!(
         "区块数量: {}",

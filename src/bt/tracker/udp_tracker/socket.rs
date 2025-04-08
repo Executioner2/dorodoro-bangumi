@@ -1,11 +1,63 @@
 //! 主要对 udp socket 的封装，包括创建、发送、接收等操作。
-use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE, SOCKET_READ_TIMEOUT};
+use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE};
 use crate::tracker::udp_tracker::buffer::ByteBuffer;
 use crate::tracker::udp_tracker::error;
 use bytes::Bytes;
 use error::Result;
 use std::net::UdpSocket;
 use std::sync::Arc;
+
+pub struct SocketBuilder<'a> {
+    local_addr: &'a str,
+    read_timeout: Option<u64>,
+    write_timeout: Option<u64>,
+    nonblocking: bool,
+}
+
+impl<'a> SocketBuilder<'a> {
+    pub fn new() -> Self {
+        Self {
+            local_addr: DEFAULT_ADDR,
+            read_timeout: None,
+            write_timeout: None,
+            nonblocking: false,
+        }
+    }
+
+    pub fn local_addr(mut self, local_addr: &'a str) -> Self {
+        self.local_addr = local_addr;
+        self
+    }
+
+    pub fn read_timeout(mut self, read_timeout: Option<u64>) -> Self {
+        self.read_timeout = read_timeout;
+        self
+    }
+
+    pub fn write_timeout(mut self, write_timeout: Option<u64>) -> Self {
+        self.write_timeout = write_timeout;
+        self
+    }
+
+    pub fn nonblocking(mut self, nonblocking: bool) -> Self {
+        self.nonblocking = nonblocking;
+        self
+    }
+
+    pub fn build(self) -> Result<SocketArc> {
+        let socket = UdpSocket::bind(self.local_addr)?;
+        if let Some(read_timeout) = self.read_timeout {
+            socket.set_read_timeout(Some(std::time::Duration::from_millis(read_timeout)))?;
+        }
+        if let Some(write_timeout) = self.write_timeout {
+            socket.set_write_timeout(Some(std::time::Duration::from_millis(write_timeout)))?;
+        }
+        if self.nonblocking {
+            socket.set_nonblocking(true)?;
+        }
+        Ok(SocketArc::new(socket))
+    }
+}
 
 /// 套接字的公共封装，便于多线程下，可以共享同一个套接字
 pub struct SocketArc {
@@ -21,20 +73,11 @@ impl Clone for SocketArc {
 }
 
 impl SocketArc {
-
-    /// 创建一个新的套接字
-    ///
-    /// # Examples
-    /// ```
-    /// use dorodoro_bangumi::bt::tracker::udp_tracker::socket::SocketArc;
-    /// let socket = SocketArc::new().unwrap();
-    /// ```
-    pub fn new() -> Result<Self> {
-        let socket = UdpSocket::bind(DEFAULT_ADDR)?;
-        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
-        Ok(Self {
+    /// 创建一个新的套接字，只能由 SocketBuilder 构建
+    fn new(socket: UdpSocket) -> Self {
+        Self {
             socket: Arc::new(socket),
-        })
+        }
     }
 
     /// 发送数据到指定地址，并接收期望大小的数据。如果 expect_size 为负数，则接收默认大小（）的数据。
@@ -62,5 +105,35 @@ impl SocketArc {
         buffer.resize(size);
 
         Ok(Bytes::from_owner(buffer))
+    }
+
+    /// 判断当前 socket 是否是 ipv4
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dorodoro_bangumi::bt::tracker::udp_tracker::socket;
+    /// use dorodoro_bangumi::tracker::udp_tracker::socket::{SocketArc, SocketBuilder};
+    ///
+    /// let socket = SocketBuilder::new().build().unwrap();
+    /// socket.is_ipv4()
+    /// ```
+    pub fn is_ipv4(&self) -> bool {
+        self.socket.local_addr().unwrap().is_ipv4()
+    }
+
+    /// 判断当前 socket 是否是 ipv6
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dorodoro_bangumi::bt::tracker::udp_tracker::socket;
+    /// use dorodoro_bangumi::tracker::udp_tracker::socket::{SocketArc, SocketBuilder};
+    ///
+    /// let socket = SocketBuilder::new().build().unwrap();
+    /// socket.is_ipv6()
+    /// ```
+    pub fn is_ipv6(&self) -> bool {
+        self.socket.local_addr().unwrap().is_ipv6()
     }
 }

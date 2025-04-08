@@ -3,8 +3,8 @@
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dorodoro_bangumi::bencoding;
-use dorodoro_bangumi::bt::parse::Torrent;
-use dorodoro_bangumi::parse::Parse;
+use dorodoro_bangumi::bt::torrent::Torrent;
+use dorodoro_bangumi::torrent::Parse;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
 use std::fs;

@@ -10,15 +10,17 @@ mod tests;
 
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
-use crate::parse::Torrent;
+use crate::torrent::Torrent;
 use crate::tracker::udp_tracker::error::SocketError;
 use crate::tracker::udp_tracker::socket::SocketArc;
-use crate::{datetime, tracker, util};
+use crate::tracker::{Host, HostV4, HostV6};
+use crate::{datetime, if_else, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
 use rand::Rng;
 use std::io::Write;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -60,7 +62,19 @@ struct Connect {
 }
 
 #[derive(Debug)]
-pub struct Announce {}
+pub struct Announce {
+    /// 下次 announce 间隔（秒）
+    interval: u32,
+
+    /// 当前未完成下载的 peer 数
+    leechers: u32,
+
+    /// 已完成下载的 peer 数
+    seedrs: u32,
+
+    /// peer 主机列表
+    peers: Vec<Host>,
+}
 
 pub struct Scrape {}
 
@@ -84,10 +98,11 @@ impl<'a> UdpTracker<'a> {
     ///
     /// ```
     /// use dorodoro_bangumi::tracker::{gen_peer_id, udp_tracker as udp_tracker};
+    /// use dorodoro_bangumi::tracker::udp_tracker::socket::SocketBuilder;
     /// use udp_tracker::socket::SocketArc;
     /// use udp_tracker::UdpTracker;
     ///
-    /// let socket = SocketArc::new().unwrap();
+    /// let socket = SocketBuilder::new().build().unwrap();
     /// let info_hash = [0u8; 20];
     /// let peer_id = gen_peer_id();
     /// let mut tracker = UdpTracker::new(socket.clone(), "tracker.torrent.eu.org:451", &info_hash, &peer_id, 0, 9999, 9987).unwrap();
@@ -118,7 +133,6 @@ impl<'a> UdpTracker<'a> {
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    /// TODO - 已连通，响应数据正常，待完整实现
     pub fn announcing(&mut self) -> Result<Announce> {
         self.update_connect()?;
         let (req_tran_id, mut req) =
@@ -137,8 +151,6 @@ impl<'a> UdpTracker<'a> {
 
         let resp = self.send(&req, -1)?;
 
-        println!("tracker 响应：{:?}", resp);
-
         // 解析响应数据
         if resp.len() < MIN_ANNOUNCE_RESP_SIZE {
             return Err(SocketError::ResponseLengthError(resp.len()));
@@ -148,14 +160,19 @@ impl<'a> UdpTracker<'a> {
         let leechers = u32::from_be_slice(&resp[12..16]); // 未完成下载的 peer 数
         let seedrs = u32::from_be_slice(&resp[16..20]);
 
-        println!(
-            "interval: {}, leechers: {}, seedrs: {}",
-            interval, leechers, seedrs
-        );
-        println!("peers: {:?}", &resp[20..]);
         // 解析 peers 列表
+        let peers = if self.socket.is_ipv4() {
+            Self::parse_peers_v4(&resp[20..])
+        } else {
+            Self::parse_peers_v6(&resp[20..])
+        };
 
-        Ok(Announce {})
+        Ok(Announce {
+            interval,
+            leechers,
+            seedrs,
+            peers,
+        })
     }
 
     /// 向 Tracker 发送抓取请求
@@ -269,5 +286,35 @@ impl<'a> UdpTracker<'a> {
                 self.send(data, expect_size)
             }
         }
+    }
+
+    /// 解析 peer 列表 - IpV4
+    fn parse_peers_v4(peers: &[u8]) -> Vec<Host> {
+        assert_eq!(peers.len() % 6, 0, "peer 列表长度错误");
+        peers
+            .chunks(6)
+            .map(|chunk| {
+                let ip_bytes: [u8; 4] = chunk[..4].try_into().unwrap();
+                Host::from((
+                    ip_bytes,
+                    u16::from_be_slice(&chunk[4..]),
+                ))
+            })
+            .collect::<Vec<Host>>()
+    }
+
+    /// 解析 peer 列表 - IpV6
+    fn parse_peers_v6(peers: &[u8]) -> Vec<Host> {
+        assert_eq!(peers.len() % 18, 0, "peer 列表长度错误");
+        peers
+            .chunks(18)
+            .map(|chunk| {
+                let ip_bytes: [u8; 16] = chunk[..16].try_into().unwrap();
+                Host::from((
+                    ip_bytes,
+                    u16::from_be_slice(&chunk[16..]),
+                ))
+            })
+            .collect::<Vec<Host>>()
     }
 }
