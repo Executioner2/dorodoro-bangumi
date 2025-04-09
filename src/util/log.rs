@@ -55,7 +55,7 @@ impl SizeBasedWriter {
         // 生成带时间戳的新文件名
         let format =
             format_description::parse("[year][month][day]_[hour][minute][second]").unwrap();
-        let timestamp = time::OffsetDateTime::now_utc().format(&format).unwrap();
+        let timestamp = time::OffsetDateTime::now_local().unwrap().format(&format).unwrap();
         let new_path = self
             .directory
             .join(format!("{}_{}.log", self.file_prefix, timestamp));
