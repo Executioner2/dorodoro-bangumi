@@ -1,25 +1,21 @@
 //! UDP Tracker 实现
 
 pub mod buffer;
-mod error;
+pub mod error;
 pub mod socket;
 #[cfg(test)]
 mod tests;
 
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
-use crate::torrent::Torrent;
-use crate::tracker::udp_tracker::error::SocketError;
+use crate::tracker::udp_tracker::error::Error;
 use crate::tracker::udp_tracker::socket::SocketArc;
-use crate::tracker::{Event, Host, HostV4, HostV6};
-use crate::{datetime, if_else, tracker, util};
+use crate::tracker::{Event, Host};
+use crate::{datetime, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
-use rand::Rng;
 use std::io::Write;
-use std::net::IpAddr;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
@@ -143,7 +139,7 @@ impl<'a> UdpTracker<'a> {
 
         // 解析响应数据
         if resp.len() < MIN_ANNOUNCE_RESP_SIZE {
-            return Err(SocketError::ResponseLengthError(resp.len()));
+            return Err(Error::ResponseLengthError(resp.len()));
         }
         self.check_resp_data(&resp, req_tran_id)?;
         let interval = u32::from_be_slice(&resp[8..12]);
@@ -200,7 +196,7 @@ impl<'a> UdpTracker<'a> {
 
         // 解析响应数据
         if resp.len() < MIN_CONNECT_RESP_SIZE {
-            return Err(SocketError::ResponseLengthError(resp.len()));
+            return Err(Error::ResponseLengthError(resp.len()));
         }
         self.check_resp_data(&resp, req_tran_id)?;
         let connection_id = u64::from_be_slice(&resp[8..16]);
@@ -217,12 +213,9 @@ impl<'a> UdpTracker<'a> {
         let resp_tran_id = u32::from_be_slice(&data[4..8]);
 
         if resp_tran_id != req_tran_id {
-            return Err(SocketError::TransactionIdMismatching(
-                req_tran_id,
-                resp_tran_id,
-            ));
+            return Err(Error::TransactionIdMismatching(req_tran_id, resp_tran_id));
         } else if action == Action::Error as u32 {
-            return Err(SocketError::IoError(std::io::Error::new(
+            return Err(Error::IoError(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Tracker 出现错误",
             )));
@@ -257,7 +250,7 @@ impl<'a> UdpTracker<'a> {
     /// 正确的情况下，返回响应的数据
     fn send(&mut self, data: &[u8], expect_size: isize) -> Result<Bytes> {
         if self.retry_count > MAX_RETRY_NUM {
-            return Err(SocketError::Timeout);
+            return Err(Error::Timeout);
         }
 
         match self.socket.send_recv(data, self.announce, expect_size) {

@@ -1,20 +1,19 @@
 //! HTTP Tracker 实现
 
-mod error;
+pub mod error;
 
 #[cfg(test)]
 mod tests;
 
-use crate::bencoding::ParseError::TransformError;
-use crate::bencoding::{BEncode, BEncodeHashMap};
-use crate::tracker::http_tracker::error::HttpTrackerError::{
+use crate::bt::bencoding;
+use crate::bt::bencoding::BEncodeHashMap;
+use crate::tracker;
+use crate::tracker::http_tracker::error::Error::{
     FieldValueError, MissingField, ResponseStatusNotOk,
 };
-use crate::tracker::{Event, Host, HostV4, HostV6};
-use crate::{bencoding, tracker};
+use crate::tracker::{Event, Host};
 use error::Result;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct Peer {
@@ -99,7 +98,9 @@ impl<'a> HttpTracker<'a> {
         }
 
         let encode = bencoding::decode(response.bytes()?)?;
-        let encode = encode.as_dict().ok_or(TransformError)?;
+        let encode = encode
+            .as_dict()
+            .ok_or(bencoding::error::Error::TransformError)?;
 
         let interval = encode.get_int("interval").ok_or(MissingField("interval"))?;
         if interval < 0 {
@@ -153,36 +154,6 @@ impl<'a> HttpTracker<'a> {
             peers,
             min_interval,
             peers6,
-        })
-    }
-
-    fn parse_peers_v4(peers: &Vec<BEncode>) -> Result<Vec<Peer>> {
-        peers.iter().try_fold(Vec::new(), |mut acc, peer| {
-            let peer = peer.as_dict().ok_or(TransformError)?;
-            let peer_id = peer
-                .get_str("peer_id")
-                .ok_or(MissingField("peer_id"))?
-                .to_string();
-            let ip = peer.get_str("ip").ok_or(MissingField("ip"))?;
-            let port = peer.get_int("port").ok_or(MissingField("port"))?;
-            let host = Host::V4(HostV4::try_from((ip, port))?);
-            acc.push(Peer { peer_id, host });
-            Ok(acc)
-        })
-    }
-
-    fn parse_peers_v6(peers: &Vec<BEncode>) -> Result<Vec<Peer>> {
-        peers.iter().try_fold(Vec::new(), |mut acc, peer| {
-            let peer = peer.as_dict().ok_or(TransformError)?;
-            let peer_id = peer
-                .get_str("peer_id")
-                .ok_or(MissingField("peer_id"))?
-                .to_string();
-            let ip = peer.get_str("ip").ok_or(MissingField("ip"))?;
-            let port = peer.get_int("port").ok_or(MissingField("port"))?;
-            let host = Host::V6(HostV6::try_from((ip, port))?);
-            acc.push(Peer { peer_id, host });
-            Ok(acc)
         })
     }
 }

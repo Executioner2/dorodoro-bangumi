@@ -1,12 +1,11 @@
-use crate::tracker::udp_tracker::error::SocketError::*;
-use core::fmt::Display;
-use std::error::Error;
 use crate::tracker;
+use Error::*;
+use core::fmt::Display;
 
-pub type Result<T> = std::result::Result<T, SocketError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
-pub enum SocketError {
+pub enum Error {
     /// 连接超时
     Timeout,
 
@@ -19,42 +18,43 @@ pub enum SocketError {
     /// 响应长度错误
     ResponseLengthError(usize),
 
-    PeerHostError(tracker::PeerHostError)
+    /// Tracker 错误
+    TrackerError(tracker::error::Error),
 }
 
-impl Display for SocketError {
+impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Timeout => write!(f, "连接超时"),
+            Timeout => write!(f, "connection timeout"),
             TransactionIdMismatching(req, resp) => write!(
                 f,
                 "传输 ID 不匹配，req tran id: {req}, resp tran id: {resp}"
             ),
-            IoError(e) => write!(f, "IO 错误: {}", e),
-            ResponseLengthError(len) => write!(f, "响应长度错误: {}", len),
-            PeerHostError(e) => write!(f, "PeerHostError: {}", e),
+            IoError(e) => write!(f, "io error: {}", e),
+            ResponseLengthError(len) => write!(f, "response length error: {}", len),
+            TrackerError(e) => write!(f, "tracker error: {}", e),
         }
     }
 }
 
-impl Error for SocketError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            IoError(e) => Some(e),
-            PeerHostError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for SocketError {
+impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         IoError(e)
     }
 }
 
-impl From<tracker::PeerHostError> for SocketError {
-    fn from(e: tracker::PeerHostError) -> Self {
-        PeerHostError(e)
+impl From<tracker::error::Error> for Error {
+    fn from(e: tracker::error::Error) -> Self {
+        TrackerError(e)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            IoError(e) => Some(e),
+            TrackerError(e) => Some(e),
+            _ => None,
+        }
     }
 }

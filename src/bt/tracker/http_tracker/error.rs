@@ -1,69 +1,69 @@
+use crate::{bencoding, tracker};
+use Error::*;
 use core::fmt::Display;
-use crate::bencoding::ParseError;
-use crate::tracker;
 
-pub type Result<T> = std::result::Result<T, HttpTrackerError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
-pub enum HttpTrackerError {
+pub enum Error {
     RequestError(reqwest::Error),
     ResponseStatusNotOk(reqwest::StatusCode, String),
-    ResponseParseError(ParseError),
+    BencodingError(bencoding::error::Error),
     MissingField(&'static str),
     FieldValueError(String),
-    PeerHostError(tracker::PeerHostError),
-    SerdeQsError(serde_qs::Error)
+    TrackerError(tracker::error::Error),
+    SerdeQsError(serde_qs::Error),
 }
 
-impl Display for HttpTrackerError {
+impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            HttpTrackerError::RequestError(e) => write!(f, "Request error: {}", e),
-            HttpTrackerError::ResponseStatusNotOk(status, msg) => {
-                write!(f, "Response status not ok. code: {}\tmgs: {}", status, msg)
-            },
-            HttpTrackerError::ResponseParseError(e) => write!(f, "Response parse error: {}", e),
-            HttpTrackerError::MissingField(field) => write!(f, "Missing field: {}", field),
-            HttpTrackerError::FieldValueError(msg) => {
-                write!(f, "Field value error: {}", msg)
-            },
-            HttpTrackerError::PeerHostError(e) => write!(f, "Peer host error: {}", e),
-            HttpTrackerError::SerdeQsError(e) => write!(f, "Serde qs error: {}", e),
+            RequestError(e) => write!(f, "request error: {}", e),
+            ResponseStatusNotOk(status, msg) => {
+                write!(f, "response status not ok. code: {}\tmgs: {}", status, msg)
+            }
+            BencodingError(e) => write!(f, "bencoding error: {}", e),
+            MissingField(field) => write!(f, "missing field: {}", field),
+            FieldValueError(msg) => {
+                write!(f, "field value error: {}", msg)
+            }
+            TrackerError(e) => write!(f, "tracker error: {}", e),
+            SerdeQsError(e) => write!(f, "serde qs error: {}", e),
         }
     }
 }
 
-impl From<reqwest::Error> for HttpTrackerError {
+impl From<reqwest::Error> for Error {
     fn from(e: reqwest::Error) -> Self {
-        HttpTrackerError::RequestError(e)
+        RequestError(e)
     }
 }
 
-impl From<ParseError> for HttpTrackerError {
-    fn from(e: ParseError) -> Self {
-        HttpTrackerError::ResponseParseError(e)
+impl From<bencoding::error::Error> for Error {
+    fn from(e: bencoding::error::Error) -> Self {
+        BencodingError(e)
     }
 }
 
-impl From<tracker::PeerHostError> for HttpTrackerError {
-    fn from(e: tracker::PeerHostError) -> Self {
-        HttpTrackerError::PeerHostError(e)
+impl From<tracker::error::Error> for Error {
+    fn from(e: tracker::error::Error) -> Self {
+        TrackerError(e)
     }
 }
 
-impl From<serde_qs::Error> for HttpTrackerError {
+impl From<serde_qs::Error> for Error {
     fn from(e: serde_qs::Error) -> Self {
-        HttpTrackerError::SerdeQsError(e)
+        SerdeQsError(e)
     }
 }
 
-impl std::error::Error for HttpTrackerError {
+impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            HttpTrackerError::RequestError(e) => Some(e),
-            HttpTrackerError::ResponseParseError(e) => Some(e),
-            HttpTrackerError::PeerHostError(e) => Some(e),
-            HttpTrackerError::SerdeQsError(e) => Some(e),
+            RequestError(e) => Some(e),
+            BencodingError(e) => Some(e),
+            TrackerError(e) => Some(e),
+            SerdeQsError(e) => Some(e),
             _ => None,
         }
     }

@@ -2,7 +2,7 @@
 
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
-use dorodoro_bangumi::bencoding;
+use dorodoro_bangumi::bt::bencoding;
 use dorodoro_bangumi::bt::torrent::Torrent;
 use dorodoro_bangumi::torrent::Parse;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
@@ -44,6 +44,7 @@ fn test_parse_torrent_file() {
 
 /// 验证 info hash 正确性
 #[test]
+#[cfg_attr(miri, ignore)]
 fn test_info_hash() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
     let s = hex::encode(torrent.info_hash);

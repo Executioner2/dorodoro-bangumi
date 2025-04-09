@@ -1,5 +1,4 @@
 use dorodoro_bangumi::log;
-use std::thread::sleep;
 use tracing::{Level, debug, error, info, trace, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 

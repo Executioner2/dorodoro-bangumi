@@ -1,66 +1,16 @@
 //! 种子内容下载
 
-use super::bencoding;
-use crate::bencoding::ParseError::TransformError;
-use TorrentError::*;
-use bencoding::BEncode;
+pub mod error;
+
+use self::error::Result;
+use crate::bencoding::error::Error::TransformError;
+use crate::bt::bencoding;
+use crate::bt::bencoding::BEncode;
+use crate::torrent::error::Error::InvalidTorrent;
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::Display;
 use std::fs;
-
-type Result<T> = std::result::Result<T, TorrentError>;
-
-/// 错误类型
-#[derive(Debug)]
-pub enum TorrentError {
-    InvalidTorrent(&'static str),
-    DecodeError(bencoding::ParseError),
-    Utf8Error(std::string::FromUtf8Error),
-    FileError(std::io::Error),
-}
-
-impl Display for TorrentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            InvalidTorrent(msg) => write!(f, "Invalid torrent file: {}", msg),
-            DecodeError(e) => write!(f, "Decode error: {}", e),
-            Utf8Error(e) => write!(f, "UTF8 error: {}", e),
-            FileError(e) => write!(f, "File error: {}", e),
-        }
-    }
-}
-
-impl Error for TorrentError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            DecodeError(e) => Some(e),
-            Utf8Error(e) => Some(e),
-            FileError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<bencoding::ParseError> for TorrentError {
-    fn from(e: bencoding::ParseError) -> Self {
-        DecodeError(e)
-    }
-}
-
-impl From<std::string::FromUtf8Error> for TorrentError {
-    fn from(e: std::string::FromUtf8Error) -> Self {
-        Utf8Error(e)
-    }
-}
-
-impl From<std::io::Error> for TorrentError {
-    fn from(e: std::io::Error) -> Self {
-        FileError(e)
-    }
-}
 
 /// 种子结构体
 #[derive(Debug, Hash, Eq, PartialEq)]

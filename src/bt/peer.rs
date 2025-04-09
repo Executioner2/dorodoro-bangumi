@@ -61,7 +61,7 @@ impl TryFrom<u8> for MsgType {
     type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value >= 0 && value <= 8 {
+        if value <= 8 {
             Ok(unsafe { std::mem::transmute(value) })
         } else {
             Err(())

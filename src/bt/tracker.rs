@@ -1,15 +1,16 @@
-use crate::Integer;
+pub mod error;
+pub mod http_tracker;
+pub mod udp_tracker;
+
 use crate::bytes::Bytes2Int;
+use crate::tracker::error::Error::{InvalidHost, PeerBytesInvalid};
 use core::fmt::Display;
 use core::str::FromStr;
+use error::Result;
 use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr};
-
-pub mod http_tracker;
-pub mod udp_tracker;
 
 lazy_static! {
     /// 进程 id，发送给 Tracker 的，用于区分多开情况
@@ -55,27 +56,6 @@ pub fn gen_process_key() -> u32 {
 // Peer Host
 // ===========================================================================
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum PeerHostError {
-    InvalidHost,
-    PeerBytesInvalid,
-}
-
-impl Display for PeerHostError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PeerHostError::InvalidHost => write!(f, "parse host error"),
-            PeerHostError::PeerBytesInvalid => write!(f, "peer bytes invalid"),
-        }
-    }
-}
-
-impl std::error::Error for PeerHostError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct HostV4 {
     ip: [u8; 4],
@@ -100,13 +80,11 @@ impl<T> TryFrom<(&str, T)> for HostV4
 where
     T: TryInto<u16>,
 {
-    type Error = PeerHostError;
+    type Error = error::Error;
 
-    fn try_from((ip, port): (&str, T)) -> Result<Self, Self::Error> {
-        let ip = Ipv4Addr::from_str(ip)
-            .map_err(|_| PeerHostError::InvalidHost)?
-            .octets();
-        let port = port.try_into().map_err(|_| PeerHostError::InvalidHost)?;
+    fn try_from((ip, port): (&str, T)) -> Result<Self> {
+        let ip = Ipv4Addr::from_str(ip).map_err(|_| InvalidHost)?.octets();
+        let port = port.try_into().map_err(|_| InvalidHost)?;
         Ok(HostV4::new(ip, port))
     }
 }
@@ -135,13 +113,11 @@ impl<T> TryFrom<(&str, T)> for HostV6
 where
     T: TryInto<u16>,
 {
-    type Error = PeerHostError;
+    type Error = error::Error;
 
-    fn try_from((ip, port): (&str, T)) -> Result<Self, Self::Error> {
-        let ip = Ipv6Addr::from_str(ip)
-            .map_err(|_| PeerHostError::InvalidHost)?
-            .octets();
-        let port = port.try_into().map_err(|_| PeerHostError::InvalidHost)?;
+    fn try_from((ip, port): (&str, T)) -> Result<Self> {
+        let ip = Ipv6Addr::from_str(ip).map_err(|_| InvalidHost)?.octets();
+        let port = port.try_into().map_err(|_| InvalidHost)?;
         Ok(HostV6::new(ip, port))
     }
 }
@@ -165,9 +141,9 @@ impl From<([u8; 16], u16)> for Host {
 }
 
 /// 解析 peer 列表 - IpV4
-pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<Host>, PeerHostError> {
+pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<Host>> {
     if peers.len() % 6 != 0 {
-        return Err(PeerHostError::PeerBytesInvalid);
+        return Err(PeerBytesInvalid);
     }
     Ok(peers
         .chunks(6)
@@ -179,9 +155,9 @@ pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<Host>, PeerHostError> {
 }
 
 /// 解析 peer 列表 - IpV6
-pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<Host>, PeerHostError> {
+pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<Host>> {
     if peers.len() % 18 != 0 {
-        return Err(PeerHostError::PeerBytesInvalid);
+        return Err(PeerBytesInvalid);
     }
     Ok(peers
         .chunks(18)

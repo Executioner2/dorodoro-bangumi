@@ -1,5 +1,6 @@
 //! bencoding 的单元测试
-use crate::bencoding::{BEncode, BEncoder, BencodeItem, Decoder, ParseError, decode};
+use crate::bt::bencoding::{BEncode, BEncoder, BencodeItem, Decoder, decode};
+use crate::bt::bencoding::error::Error::InvalidByte;
 use bytes::Bytes;
 use hashlink::LinkedHashMap;
 use std::collections::HashMap;
@@ -26,7 +27,7 @@ fn test_decode_invalid_str() {
     let invalid_utf8: Vec<u8> = vec![0xF0, 0x28, 0x8C, 0xBC];
     let mut decoder = Decoder::new(Bytes::from(invalid_utf8));
     let result = decoder.decode();
-    assert_eq!(result, Err(ParseError::InvalidByte(0)));
+    assert_eq!(result, Err(InvalidByte(0)));
 }
 
 #[test]
@@ -47,7 +48,7 @@ fn test_decode_negative_int() {
 fn test_decode_invalid_int() {
     let mut decoder = Decoder::new(Bytes::from_owner(b"iae"));
     let result = decoder.decode();
-    assert_eq!(result, Err(ParseError::InvalidByte(1)));
+    assert_eq!(result, Err(InvalidByte(1)));
 }
 
 #[test]

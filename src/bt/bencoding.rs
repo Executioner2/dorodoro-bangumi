@@ -7,45 +7,17 @@
 //!
 //! TODO - 这个鬼东西以后一定找时间重构下
 
+pub mod error;
 #[cfg(test)]
 mod tests;
 
 use crate::Integer;
+use crate::bt::bencoding::error::Error::{InvalidByte, InvalidUtf8, UnexpectedEndOfStream};
 use bytes::{BufMut, Bytes, BytesMut};
+use error::Result;
 use hashlink::LinkedHashMap;
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
-
-/// Possible errors that can occur during bencode parsing.
-#[derive(PartialEq, Eq, Debug)]
-pub enum ParseError {
-    /// Indicates an invalid byte was encountered at the given position.
-    InvalidByte(usize),
-    /// Indicates the end of the stream was reached unexpectedly.
-    UnexpectedEndOfStream,
-    /// Indicates the stream contained invalid UTF-8.
-    InvalidUtf8,
-    /// 类型转换错误
-    TransformError
-}
-
-impl Display for ParseError {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        match self {
-            ParseError::InvalidByte(pos) => write!(f, "Invalid byte at position {}", pos),
-            ParseError::UnexpectedEndOfStream => write!(f, "Unexpected end of stream"),
-            ParseError::InvalidUtf8 => write!(f, "Invalid UTF-8"),
-            ParseError::TransformError => write!(f, "Transform Error"),
-        }
-    }
-}
-
-impl Error for ParseError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
+use std::fmt::{Debug, Formatter};
 
 #[derive(Eq, PartialEq)]
 pub struct BEncode {
@@ -224,7 +196,6 @@ pub trait BEncodeHashMap {
 }
 
 impl BEncodeHashMap for HashMap<String, BEncode> {
-
     fn get_int(&self, key: &str) -> Option<i64> {
         self.get(key).map_or(None, |value| value.as_int())
     }
@@ -260,13 +231,13 @@ impl Decoder {
         Decoder { stream, pos: 0 }
     }
 
-    pub fn decode(&mut self) -> Result<BEncode, ParseError> {
+    pub fn decode(&mut self) -> Result<BEncode> {
         self.parse()
     }
 
-    fn parse(&mut self) -> Result<BEncode, ParseError> {
+    fn parse(&mut self) -> Result<BEncode> {
         if self.pos >= self.stream.len() {
-            return Err(ParseError::UnexpectedEndOfStream);
+            return Err(UnexpectedEndOfStream);
         }
 
         let curr_byte = self.stream[self.pos];
@@ -275,11 +246,11 @@ impl Decoder {
             b'l' => self.parse_list(),
             b'i' => self.parse_int(),
             b'0'..=b'9' => self.parse_str(),
-            _ => Err(ParseError::InvalidByte(self.pos)),
+            _ => Err(InvalidByte(self.pos)),
         }
     }
 
-    fn parse_list(&mut self) -> Result<BEncode, ParseError> {
+    fn parse_list(&mut self) -> Result<BEncode> {
         let mut list: Vec<BEncode> = Vec::new();
         let start_pos = self.pos;
         self.pos += 1; // Skip the 'l'
@@ -294,7 +265,7 @@ impl Decoder {
         ))
     }
 
-    fn parse_dict(&mut self) -> Result<BEncode, ParseError> {
+    fn parse_dict(&mut self) -> Result<BEncode> {
         let mut dict: HashMap<String, BEncode> = HashMap::new();
         let start_pos = self.pos;
         self.pos += 1; // Skip the 'd'
@@ -304,12 +275,12 @@ impl Decoder {
                     value: BencodeItem::Str(bytes),
                     ..
                 } => bytes,
-                _ => return Err(ParseError::InvalidByte(self.pos)),
+                _ => return Err(InvalidByte(self.pos)),
             };
             let value = self.parse()?;
             let key = match String::from_utf8(key.to_vec()) {
                 Ok(s) => s,
-                Err(_) => return Err(ParseError::InvalidUtf8),
+                Err(_) => return Err(InvalidUtf8),
             };
             dict.insert(key, value);
         }
@@ -320,20 +291,20 @@ impl Decoder {
         ))
     }
 
-    fn parse_str(&mut self) -> Result<BEncode, ParseError> {
+    fn parse_str(&mut self) -> Result<BEncode> {
         let mut str_size: usize = 0;
         let start_pos = self.pos;
         while self.stream[self.pos] != b':' {
             if self.stream[self.pos].is_ascii_digit() {
                 str_size = str_size * 10 + (self.stream[self.pos] - b'0') as usize;
             } else {
-                return Err(ParseError::InvalidByte(self.pos));
+                return Err(InvalidByte(self.pos));
             }
             self.pos += 1;
         }
         self.pos += 1;
         if self.pos + str_size > self.stream.len() {
-            return Err(ParseError::UnexpectedEndOfStream);
+            return Err(UnexpectedEndOfStream);
         }
 
         let string = Bytes::from(self.stream.slice(self.pos..self.pos + str_size));
@@ -344,7 +315,7 @@ impl Decoder {
         ))
     }
 
-    fn parse_int(&mut self) -> Result<BEncode, ParseError> {
+    fn parse_int(&mut self) -> Result<BEncode> {
         let start_pos = self.pos;
         self.pos += 1; // Skip the 'i'
         let mut is_negative = false;
@@ -358,7 +329,7 @@ impl Decoder {
             if self.stream[self.pos].is_ascii_digit() {
                 curr_int = curr_int * 10 + (self.stream[self.pos] - b'0') as i64;
             } else {
-                return Err(ParseError::InvalidByte(self.pos));
+                return Err(InvalidByte(self.pos));
             }
             self.pos += 1;
         }
@@ -377,7 +348,7 @@ impl Decoder {
 }
 
 /// 对一个字节流进行 BEncode 解码。输出 BEncode
-pub fn decode(stream: Bytes) -> Result<BEncode, ParseError> {
+pub fn decode(stream: Bytes) -> Result<BEncode> {
     Decoder::new(stream.into()).decode()
 }
 

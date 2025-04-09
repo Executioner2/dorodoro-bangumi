@@ -4,5 +4,5 @@ dorodoro-bangumi（暂定名）是一款 Rust 编写，独立部署的自动追�
 哦对了，doro 是一只有趣的粉色小狗😊。
 
 # 待办事项
-- [ ] 重构 Error 结构
+- [x] 重构 Error 结构
 - [ ] 重构 Bencoding 结构
