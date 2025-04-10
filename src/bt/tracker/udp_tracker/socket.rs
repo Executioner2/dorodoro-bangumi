@@ -1,4 +1,9 @@
-//! 主要对 udp socket 的封装，包括创建、发送、接收等操作。
+//! 主要对 udp socket 的封装，包括创建、发送、接收等操作。SocketBuilder
+//! 会创建一个共享的 udp socket。供多个线程使用同一个 socket。
+//!
+//! 这个模块其实已经过时不会再用到了。它在和 `一个 Tracker 一个 Socket` 的
+//! 比拼中败下阵来，在差不多的吞吐量下，它会比后者使用更多的 CPU 资源。
+
 use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE};
 use crate::tracker::udp_tracker::buffer::ByteBuffer;
 use crate::tracker::udp_tracker::error;
@@ -108,31 +113,11 @@ impl SocketArc {
     }
 
     /// 判断当前 socket 是否是 ipv4
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use dorodoro_bangumi::bt::tracker::udp_tracker::socket;
-    /// use dorodoro_bangumi::tracker::udp_tracker::socket::{SocketArc, SocketBuilder};
-    ///
-    /// let socket = SocketBuilder::new().build().unwrap();
-    /// socket.is_ipv4()
-    /// ```
     pub fn is_ipv4(&self) -> bool {
         self.socket.local_addr().unwrap().is_ipv4()
     }
 
     /// 判断当前 socket 是否是 ipv6
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use dorodoro_bangumi::bt::tracker::udp_tracker::socket;
-    /// use dorodoro_bangumi::tracker::udp_tracker::socket::{SocketArc, SocketBuilder};
-    ///
-    /// let socket = SocketBuilder::new().build().unwrap();
-    /// socket.is_ipv6()
-    /// ```
     pub fn is_ipv6(&self) -> bool {
         self.socket.local_addr().unwrap().is_ipv6()
     }

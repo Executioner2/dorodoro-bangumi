@@ -5,7 +5,6 @@ use crate::bytes::Bytes2Int;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker;
 use crate::tracker::Event;
-use crate::tracker::udp_tracker::socket::SocketBuilder;
 use crate::tracker::udp_tracker::UdpTracker;
 use byteorder::{BigEndian, WriteBytesExt};
 use sha1::{Digest, Sha1};
@@ -25,11 +24,9 @@ use tokio::time::timeout;
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_connect() {
-    let socket = SocketBuilder::new().build().unwrap();
     let info_hash = [0u8; 20];
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
-        socket.clone(),
         "tracker.torrent.eu.org:451",
         &info_hash,
         &peer_id,
@@ -49,10 +46,8 @@ fn test_connect() {
 fn test_announce() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
-    let socket = SocketBuilder::new().build().unwrap();
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
-        socket.clone(),
         "tracker.torrent.eu.org:451",
         &torrent.info_hash,
         &peer_id,

@@ -2,6 +2,7 @@
 
 pub mod buffer;
 pub mod error;
+#[deprecated(note = "一个tracker一个socket的方案会比此模块占用更少的cpu资源")]
 pub mod socket;
 #[cfg(test)]
 mod tests;
@@ -9,16 +10,17 @@ mod tests;
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
 use crate::tracker::udp_tracker::error::Error;
-use crate::tracker::udp_tracker::socket::SocketArc;
 use crate::tracker::{Event, Host};
 use crate::{datetime, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
 use std::io::Write;
+use std::net::UdpSocket;
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
+use crate::tracker::udp_tracker::buffer::ByteBuffer;
 
 type Buffer = Vec<u8>;
 
@@ -65,7 +67,7 @@ pub struct Announce {
 pub struct Scrape {}
 
 pub struct UdpTracker<'a> {
-    socket: SocketArc,
+    socket: UdpSocket,
     connect: Connect,
     retry_count: u8,
     announce: &'a str,
@@ -84,17 +86,13 @@ impl<'a> UdpTracker<'a> {
     ///
     /// ```
     /// use dorodoro_bangumi::tracker::{gen_peer_id, udp_tracker as udp_tracker};
-    /// use dorodoro_bangumi::tracker::udp_tracker::socket::SocketBuilder;
-    /// use udp_tracker::socket::SocketArc;
     /// use udp_tracker::UdpTracker;
     ///
-    /// let socket = SocketBuilder::new().build().unwrap();
     /// let info_hash = [0u8; 20];
     /// let peer_id = gen_peer_id();
-    /// let mut tracker = UdpTracker::new(socket.clone(), "tracker.torrent.eu.org:451", &info_hash, &peer_id, 0, 9999, 9987).unwrap();
+    /// let mut tracker = UdpTracker::new("tracker.torrent.eu.org:451", &info_hash, &peer_id, 0, 9999, 9987).unwrap();
     /// ```
     pub fn new(
-        socket: SocketArc,
         announce: &'a str,
         info_hash: &'a [u8; 20],
         peer_id: &'a [u8; 20],
@@ -102,6 +100,9 @@ impl<'a> UdpTracker<'a> {
         left: u64,
         port: u16,
     ) -> Result<Self> {
+        let socket = UdpSocket::bind(DEFAULT_ADDR)?;
+        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
+        socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
         Ok(Self {
             socket,
             connect: Connect::default(),
@@ -147,7 +148,7 @@ impl<'a> UdpTracker<'a> {
         let seedrs = u32::from_be_slice(&resp[16..20]);
 
         // 解析 peers 列表
-        let peers = if self.socket.is_ipv4() {
+        let peers = if self.socket.local_addr()?.is_ipv4() {
             tracker::parse_peers_v4(&resp[20..])?
         } else {
             tracker::parse_peers_v6(&resp[20..])?
@@ -167,6 +168,33 @@ impl<'a> UdpTracker<'a> {
     pub fn scraping(&mut self) -> Result<Scrape> {
         self.update_connect()?;
         todo!()
+    }
+
+    /// 发送数据到指定地址，并接收期望大小的数据。如果 expect_size 为负数，则接收默认大小（）的数据。
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - 要发送的数据
+    /// * `target` - 发送的目标地址
+    /// * `expect_size` - 期望接收的数据大小，如果为负数，则接收默认大小（[`MAX_PAYLOAD_SIZE`]）的数据
+    ///
+    /// # Returns
+    /// 正常的情况下，返回接收到的数据。
+    fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
+        self.socket.send_to(data, target)?;
+        let expect_size = if expect_size < 0 {
+            MAX_PAYLOAD_SIZE
+        } else {
+            expect_size as usize
+        };
+
+        let mut buffer = ByteBuffer::new(expect_size);
+        let (size, _socket_addr) = self.socket.recv_from(buffer.as_mut())?;
+
+        // 转换为已初始化的缓冲区
+        buffer.resize(size);
+
+        Ok(Bytes::from_owner(buffer))
     }
 
     /// 更新连接信息
@@ -253,7 +281,7 @@ impl<'a> UdpTracker<'a> {
             return Err(Error::Timeout);
         }
 
-        match self.socket.send_recv(data, self.announce, expect_size) {
+        match self.send_recv(data, self.announce, expect_size) {
             Ok(resp) => {
                 self.retry_count = 0;
                 Ok(resp)
