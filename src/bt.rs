@@ -1,4 +1,4 @@
-pub mod download;
+pub mod scheduler;
 pub mod torrent;
 pub mod tracker;
 pub mod peer;

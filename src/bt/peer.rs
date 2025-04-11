@@ -68,3 +68,8 @@ impl TryFrom<u8> for MsgType {
         }
     }
 }
+
+/// Peer 管理器
+pub struct PeerManager {
+
+}

@@ -3,6 +3,7 @@ extern crate core;
 
 pub mod bt;
 pub mod util;
+pub mod mapper;
 
 pub use bt::*;
 pub use util::*;

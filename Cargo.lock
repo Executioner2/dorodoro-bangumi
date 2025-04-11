@@ -337,6 +337,7 @@ dependencies = [
  "sha1",
  "time",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
