@@ -4,11 +4,10 @@ use crate::peer::PeerManager;
 use crate::torrent::Torrent;
 use dorodoro_bangumi::log;
 use dorodoro_bangumi::tracker::udp_tracker::buffer::ByteBuffer;
-use std::collections::{HashMap};
-use std::sync::{Arc};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -24,23 +23,24 @@ pub mod tracker {
 }
 
 pub mod peer {
-    use crate::Command;
+    use crate::{Command, PeerCommand};
     use dorodoro_bangumi::tracker::udp_tracker::buffer::ByteBuffer;
-    use std::collections::{HashMap};
-    use std::sync::{Arc};
-    
-    
+    use std::collections::HashMap;
+    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
+    use tokio::sync::mpsc::{Receiver, Sender, channel};
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
     use tracing::{error, info};
 
     /// Peer
     struct Peer {
+        id: u64,
         socket: TcpStream,
         cancel_token: CancellationToken,
-        send: Arc<tokio::sync::mpsc::Sender<Command>>,
+        send: Arc<Sender<PeerCommand>>,
+        recv: Receiver<PeerCommand>,
     }
 
     impl Peer {
@@ -53,6 +53,10 @@ pub mod peer {
                         info!("peer 取消了请求");
                         false
                     },
+                    _command = self.recv.recv() => {
+                        info!("接收到了peer manage的指令");
+                        true
+                    },
                     result = self.socket.read_u32() => {
                         match result {
                             Ok(len) => {
@@ -64,17 +68,19 @@ pub mod peer {
                                     },
                                     Err(e) => {
                                         error!("读取对端 peer 传来的数据失败，错误信息：{}", e);
+                                        self.send.send(PeerCommand::Exit(self.id)).await.unwrap(); // 告诉 PeerManage，自己要主动退出了
                                         false
                                     }
                                 }
                             },
                             Err(e) => {
                                 error!("读取对端 peer 传来的数据失败，错误信息：{}", e);
+                                self.send.send(PeerCommand::Exit(self.id)).await.unwrap(); // 告诉 PeerManage，自己要主动退出了
                                 false
                             }
                         }
                     }
-                };
+                }
             }
             info!("peer 退出处理请求");
         }
@@ -88,35 +94,91 @@ pub mod peer {
     }
 
     /// 记录一些 peer 的信息
-    pub struct PeerInfo {}
+    pub struct PeerInfo {
+        id: u64,
+        send: Sender<PeerCommand>,
+        join_handle: JoinHandle<()>,
+    }
 
     /// Peer 管理器
     pub struct PeerManager {
-        pub peers: HashMap<String, PeerInfo>, // 实际应该是个map，这里只做流程确定，细节忽略
-        pub send: Arc<tokio::sync::mpsc::Sender<Command>>,
-        pub join_handles: Vec<JoinHandle<()>>,
+        pub send: Arc<Sender<Command>>, // 发送给 scheduler 的
+        pub cancel_token: CancellationToken,
+        peers: HashMap<u64, PeerInfo>,
+        peer_id: u64,
+        channel: (Arc<Sender<PeerCommand>>, Receiver<PeerCommand>),
     }
 
     impl PeerManager {
-        pub fn process(&mut self, socket: TcpStream, cancel_token: CancellationToken) {
-            info!("有peer申请某个区块的资源，处理请求");
-            let peer = Peer {
-                socket,
+        pub fn new(
+            send: Arc<Sender<Command>>,
+            cancel_token: CancellationToken,
+        ) -> Self {
+            let (self_send, self_recv) = channel(100);
+            Self {
+                send,
                 cancel_token,
-                send: self.send.clone(),
-            };
-            let handle = tokio::spawn(peer.start());
-            self.join_handles.push(handle);
+                peers: HashMap::new(),
+                peer_id: 0,
+                channel: (Arc::new(self_send), self_recv),
+            }
+        }
+
+        pub fn get_sender(&self) -> Arc<Sender<PeerCommand>> {
+            self.channel.0.clone()
+        }
+
+        pub async fn process(mut self) {
+            let mut tsuziki_masuka = true;
+            while tsuziki_masuka {
+                tsuziki_masuka = tokio::select! {
+                    _ = self.cancel_token.cancelled() => {
+                        self.join_peers().await;
+                        false
+                    },
+                    command = self.channel.1.recv() => {
+                        match command {
+                            Some(PeerCommand::RequestConnection(socket)) => {
+                                info!("有peer申请某个区块的资源，处理请求");
+                                let (send, recv) = channel(100);
+                                let peer = Peer {
+                                    id: self.peer_id,
+                                    socket,
+                                    cancel_token: self.cancel_token.clone(),
+                                    send: self.channel.0.clone(),
+                                    recv
+                                };
+                                let join_handle = tokio::spawn(peer.start());
+
+                                let peer_info = PeerInfo {
+                                    id: self.peer_id,
+                                    send,
+                                    join_handle
+                                };
+
+                                self.peer_id += 1;
+                                self.peers.insert(peer_info.id, peer_info);
+                            },
+                            Some(PeerCommand::Exit(id)) => {
+                                info!("peer[{}]主动退出了", id);
+                                self.peers.remove(&id).map(async |peer_info| {
+                                    info!("删除peer[{}]", peer_info.id);
+                                    peer_info.join_handle.await.unwrap();
+                                });
+                            }
+                            _ => ()
+                        }
+                        true
+                    }
+                }
+            }
         }
 
         pub async fn join_peers(&mut self) {
-            info!(
-                "等待peer线程退出，当前handles数量: {}",
-                self.join_handles.len()
-            );
-            for handle in self.join_handles.iter_mut() {
-                handle.abort();
-                handle.await.unwrap();
+            info!("等待peer线程退出，当前handles数量: {}", self.peers.len());
+            for (_, handle) in self.peers.iter_mut() {
+                let handle = &mut handle.join_handle;
+                handle.await.unwrap()
             }
         }
     }
@@ -128,6 +190,7 @@ pub enum TorrentCommand {
 
 pub enum PeerCommand {
     RequestConnection(TcpStream),
+    Exit(u64), // peer 退出了
 }
 
 /// 控制命令
@@ -139,7 +202,7 @@ pub enum Command {
 
 /// 控制器，用于接收操作指令
 struct Controller {
-    send: Arc<tokio::sync::mpsc::Sender<Command>>,
+    send: Arc<Sender<Command>>,
     cancel_token: CancellationToken,
     socket: TcpStream,
 }
@@ -188,7 +251,7 @@ impl Controller {
 /// 网络服务端
 struct TcpServer {
     /// 向调度器发送命令
-    send: Arc<tokio::sync::mpsc::Sender<Command>>,
+    send: Arc<Sender<Command>>,
 
     /// 关机信号
     cancel_token: CancellationToken,
@@ -221,7 +284,7 @@ impl TcpServer {
         info!("TcpServer 退出")
     }
 
-    async fn process(mut socket: TcpStream, send: Arc<tokio::sync::mpsc::Sender<Command>>) {
+    async fn process(mut socket: TcpStream, send: Arc<Sender<Command>>) {
         info!("读取请求，区分是啥协议");
         let protocol_len = socket.read_u8().await.unwrap();
         if protocol_len == 0 {
@@ -240,7 +303,7 @@ impl TcpServer {
             }
             b"dorodoro-bangumi" => {
                 info!("收到 dorodoro-bangumi 请求，即客户端控制请求");
-                let mut controller = Controller {
+                let controller = Controller {
                     send: send.clone(),
                     cancel_token: CancellationToken::new(),
                     socket,
@@ -264,7 +327,7 @@ struct Scheduler {
     recv: Receiver<Command>,
     context: Context,
     cancel_token: CancellationToken,
-    peer_manager: PeerManager,
+    peer_manager_send: Arc<Sender<PeerCommand>>,
 }
 
 impl Scheduler {
@@ -272,13 +335,13 @@ impl Scheduler {
         recv: Receiver<Command>,
         context: Context,
         cancel_token: CancellationToken,
-        peer_manager: PeerManager,
+        peer_manager_send: Arc<Sender<PeerCommand>>,
     ) -> Self {
         Self {
             recv,
             context,
             cancel_token,
-            peer_manager,
+            peer_manager_send,
         }
     }
 
@@ -290,7 +353,7 @@ impl Scheduler {
                     self.torrent_command(command);
                 }
                 Command::Peer(command) => {
-                    self.peer_command(command);
+                    self.peer_command(command).await;
                 }
                 Command::Shutdown => {
                     info!("收到关机命令");
@@ -301,7 +364,6 @@ impl Scheduler {
 
         info!("退出程序");
         self.cancel_token.cancel(); // 发出关机
-        self.peer_manager.join_peers().await; // 等待 peer 线程退出
     }
 
     fn torrent_command(&mut self, command: TorrentCommand) {
@@ -314,13 +376,8 @@ impl Scheduler {
         }
     }
 
-    fn peer_command(&mut self, command: PeerCommand) {
-        match command {
-            PeerCommand::RequestConnection(socket) => {
-                info!("收到peer的连接请求");
-                self.peer_manager.process(socket, self.cancel_token.clone());
-            }
-        }
+    async fn peer_command(&mut self, command: PeerCommand) {
+        self.peer_manager_send.send(command).await.unwrap()
     }
 }
 
@@ -343,14 +400,18 @@ impl Bootstrap {
         let tcp_server_handle = tokio::spawn(tcp_server.start());
 
         let context = Context { torrent: vec![] };
-        let peer_manager = PeerManager {
-            peers: HashMap::new(),
-            send,
-            join_handles: Vec::new(),
-        };
-        let scheduler = Scheduler::new(recv, context, cancel_token, peer_manager);
+        let peer_manager = PeerManager::new(send, cancel_token.clone());
+        let scheduler = Scheduler::new(recv, context, cancel_token, peer_manager.get_sender());
+
+        let peer_manageer_handle = tokio::spawn(peer_manager.process());
+
         scheduler.start().await;
+
+        info!("等待资源关闭");
+
         tcp_server_handle.await.unwrap(); // 执行到这里，说明已经发出了停机指令，等待 TcpServer 线程退出
+        peer_manageer_handle.await.unwrap();
+
         info!("关闭程序")
     }
 }
