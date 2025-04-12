@@ -1,6 +1,5 @@
-pub mod scheduler;
+pub mod bencoding;
+mod constant;
+pub mod peer;
 pub mod torrent;
 pub mod tracker;
-pub mod peer;
-mod constant;
-pub mod bencoding;
