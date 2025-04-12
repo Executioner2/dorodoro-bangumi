@@ -5,6 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace, warn};
+use crate::core::runtime::Runnable;
 
 type SenderArc = Arc<Sender<command::scheduler::Command>>;
 
@@ -28,13 +29,20 @@ impl TcpServer {
         }
     }
 
-    pub async fn run(self) {
+    async fn accept(_socket: TcpStream, _send: SenderArc) {
+        todo!()
+    }
+}
+
+
+impl Runnable for TcpServer {
+    async fn run(self) {
         let listener = TcpListener::bind(&self.addr).await.unwrap();
         info!("tcp server 正在监听 {}", self.addr);
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
-                    info!("tcp server 接收到关机信号");
+                    trace!("tcp server 接收到关机信号");
                     break;
                 }
                 recv = listener.accept() => {
@@ -50,9 +58,6 @@ impl TcpServer {
                 }
             }
         }
-    }
-
-    async fn accept(_socket: TcpStream, _send: SenderArc) {
-        todo!()
+        info!("tcp server 已关闭");
     }
 }

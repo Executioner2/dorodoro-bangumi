@@ -1,13 +1,14 @@
 //! Peer Manager
 
+use crate::core::config::Config;
+use crate::core::runtime::Runnable;
+use crate::core::{command, runtime};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
-use crate::core::command;
-use crate::core::config::Config;
 
 /// 发送给 scheduler 的
 type SenderScheduler = Arc<Sender<command::scheduler::Command>>;
@@ -49,31 +50,40 @@ impl PeerManager {
         }
     }
 
-    pub async fn run(mut self) {
+    pub fn get_sender(&self) -> SenderPeer {
+        self.channel.0.clone()
+    }
+
+    async fn await_peers_exit(&mut self) {
+        for (_, peer_info) in self.peers.iter_mut() {
+            let join_handle = &mut peer_info.join_handle;
+            join_handle.await.unwrap();
+        }
+    }
+
+    fn handle_command(&mut self, cmd: command::peer::Command) {
+        match cmd {}
+    }
+}
+
+impl Runnable for PeerManager {
+    async fn run(mut self) {
         info!("peer manager 已启动");
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
-                    info!("peer manager 已停止");
+                    info!("等待 peer 退出");
+                    self.await_peers_exit().await;
                     break;
                 }
                 recv = self.channel.1.recv() => {
                     trace!("peer manager 收到了消息: {:?}", recv);
                     if let Some(recv) = recv {
-                        self.handle_command(recv);    
+                        self.handle_command(recv);
                     }
                 }
             }
         }
-    }
-
-    pub fn get_sender(&self) -> SenderPeer {
-        self.channel.0.clone()
-    }
-    
-    fn handle_command(&mut self, cmd: command::peer::Command) {
-        match cmd {
-
-        }
+        info!("peer manager 已关闭");
     }
 }
