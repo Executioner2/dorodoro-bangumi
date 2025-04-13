@@ -4,7 +4,6 @@ use crate::peer::PeerManager;
 use crate::torrent::Torrent;
 use dorodoro_bangumi::log;
 use dorodoro_bangumi::tracker::udp_tracker::buffer::ByteBuffer;
-use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -26,7 +25,7 @@ pub mod peer {
     use crate::{Command, PeerCommand};
     use dorodoro_bangumi::tracker::udp_tracker::buffer::ByteBuffer;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
     use tokio::sync::mpsc::{Receiver, Sender, channel};
@@ -39,7 +38,7 @@ pub mod peer {
         id: u64,
         socket: TcpStream,
         cancel_token: CancellationToken,
-        send: Arc<Sender<PeerCommand>>,
+        send: Sender<PeerCommand>,
         recv: Receiver<PeerCommand>,
     }
 
@@ -84,47 +83,36 @@ pub mod peer {
             }
             info!("peer 退出处理请求");
         }
-
-        /// 是否还要继续处理请求与响应？
-        ///
-        /// 根据当前下载速率等多方面因素判断是否还要继续和这个peer合作
-        fn tsuzuki_masuka(&self) -> bool {
-            !self.cancel_token.is_cancelled()
-        }
     }
 
     /// 记录一些 peer 的信息
     pub struct PeerInfo {
         id: u64,
-        send: Sender<PeerCommand>,
+        _send: Sender<PeerCommand>,
         join_handle: JoinHandle<()>,
     }
 
     /// Peer 管理器
     pub struct PeerManager {
-        pub send: Arc<Sender<Command>>, // 发送给 scheduler 的
+        pub send: Sender<Command>, // 发送给 scheduler 的
         pub cancel_token: CancellationToken,
         peers: HashMap<u64, PeerInfo>,
         peer_id: u64,
-        channel: (Arc<Sender<PeerCommand>>, Receiver<PeerCommand>),
+        channel: (Sender<PeerCommand>, Receiver<PeerCommand>),
     }
 
     impl PeerManager {
-        pub fn new(
-            send: Arc<Sender<Command>>,
-            cancel_token: CancellationToken,
-        ) -> Self {
-            let (self_send, self_recv) = channel(100);
+        pub fn new(send: Sender<Command>, cancel_token: CancellationToken) -> Self {
             Self {
                 send,
                 cancel_token,
                 peers: HashMap::new(),
                 peer_id: 0,
-                channel: (Arc::new(self_send), self_recv),
+                channel: channel(100),
             }
         }
 
-        pub fn get_sender(&self) -> Arc<Sender<PeerCommand>> {
+        pub fn get_sender(&self) -> Sender<PeerCommand> {
             self.channel.0.clone()
         }
 
@@ -152,7 +140,7 @@ pub mod peer {
 
                                 let peer_info = PeerInfo {
                                     id: self.peer_id,
-                                    send,
+                                    _send: send,
                                     join_handle
                                 };
 
@@ -202,7 +190,7 @@ pub enum Command {
 
 /// 控制器，用于接收操作指令
 struct Controller {
-    send: Arc<Sender<Command>>,
+    send: Sender<Command>,
     cancel_token: CancellationToken,
     socket: TcpStream,
 }
@@ -251,7 +239,7 @@ impl Controller {
 /// 网络服务端
 struct TcpServer {
     /// 向调度器发送命令
-    send: Arc<Sender<Command>>,
+    send: Sender<Command>,
 
     /// 关机信号
     cancel_token: CancellationToken,
@@ -284,7 +272,7 @@ impl TcpServer {
         info!("TcpServer 退出")
     }
 
-    async fn process(mut socket: TcpStream, send: Arc<Sender<Command>>) {
+    async fn process(mut socket: TcpStream, send: Sender<Command>) {
         info!("读取请求，区分是啥协议");
         let protocol_len = socket.read_u8().await.unwrap();
         if protocol_len == 0 {
@@ -327,7 +315,7 @@ struct Scheduler {
     recv: Receiver<Command>,
     context: Context,
     cancel_token: CancellationToken,
-    peer_manager_send: Arc<Sender<PeerCommand>>,
+    peer_manager_send: Sender<PeerCommand>,
 }
 
 impl Scheduler {
@@ -335,7 +323,7 @@ impl Scheduler {
         recv: Receiver<Command>,
         context: Context,
         cancel_token: CancellationToken,
-        peer_manager_send: Arc<Sender<PeerCommand>>,
+        peer_manager_send: Sender<PeerCommand>,
     ) -> Self {
         Self {
             recv,
@@ -389,7 +377,6 @@ impl Bootstrap {
 
         let (send, recv) = tokio::sync::mpsc::channel(100);
         let cancel_token = CancellationToken::new();
-        let send = Arc::new(send);
 
         // 启动 TcpServer
         let tcp_server = TcpServer {
@@ -425,8 +412,5 @@ fn global_init() -> Result<WorkerGuard, Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() {
     let _guard = global_init().unwrap();
-    // let scheduler = Scheduler::new();
-    // let handle = scheduler.start();
-    // handle.await.unwrap();
     Bootstrap::start().await;
 }

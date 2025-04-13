@@ -1,5 +1,2 @@
-
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub enum Command {
-
-}
+#[derive(Debug, Hash)]
+pub enum PeerCommand {}

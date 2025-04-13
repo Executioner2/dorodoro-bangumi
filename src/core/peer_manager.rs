@@ -1,29 +1,28 @@
 //! Peer Manager
 
+use crate::core::command::{CommandHandler, peer_manager, scheduler};
 use crate::core::config::Config;
 use crate::core::runtime::Runnable;
-use crate::core::{command, runtime};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
 
 /// 发送给 scheduler 的
-type SenderScheduler = Arc<Sender<command::scheduler::Command>>;
+type SenderScheduler = Sender<scheduler::Command>;
 
-/// 发送给 peer manager 的
-type SenderPeer = Arc<Sender<command::peer::Command>>;
+/// 其它组件向 peer manager 发送的
+type SenderPeerManager = Sender<peer_manager::Command>;
 
-/// 接收来自 peer 的
-type ReceiverPeer = Receiver<command::peer::Command>;
+/// 接收发送给 peer manager 的
+type ReceiverPeerManager = Receiver<peer_manager::Command>;
 
 type PeerId = u64;
 
 struct PeerInfo {
     id: PeerId,
-    send: SenderPeer,
+    send: SenderPeerManager,
     join_handle: JoinHandle<()>,
 }
 
@@ -32,25 +31,24 @@ pub struct PeerManager {
     cancel_token: CancellationToken,
     peers: HashMap<PeerId, PeerInfo>,
     peer_id: PeerId,
-    channel: (SenderPeer, ReceiverPeer),
+    channel: (SenderPeerManager, ReceiverPeerManager),
     config: Config,
 }
 
 impl PeerManager {
     pub fn new(send: SenderScheduler, cancel_token: CancellationToken, config: Config) -> Self {
-        let (sender_peer, receiver_peer) = tokio::sync::mpsc::channel(config.channel_buffer());
-        let send_peer = Arc::new(sender_peer);
+        let channel = tokio::sync::mpsc::channel(config.channel_buffer());
         Self {
             send,
             cancel_token,
             peers: HashMap::new(),
             peer_id: 0,
-            channel: (send_peer.clone(), receiver_peer),
+            channel,
             config,
         }
     }
 
-    pub fn get_sender(&self) -> SenderPeer {
+    pub fn get_sender(&self) -> Sender<peer_manager::Command> {
         self.channel.0.clone()
     }
 
@@ -61,8 +59,8 @@ impl PeerManager {
         }
     }
 
-    fn handle_command(&mut self, cmd: command::peer::Command) {
-        match cmd {}
+    async fn handle_command(&mut self, cmd: peer_manager::Command) {
+        cmd.handle(self).await;
     }
 }
 
@@ -79,7 +77,7 @@ impl Runnable for PeerManager {
                 recv = self.channel.1.recv() => {
                     trace!("peer manager 收到了消息: {:?}", recv);
                     if let Some(recv) = recv {
-                        self.handle_command(recv);
+                        self.handle_command(recv).await;
                     }
                 }
             }

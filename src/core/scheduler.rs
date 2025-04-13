@@ -1,25 +1,23 @@
 //! 调度器
-
+use crate::core::command::{CommandHandler, peer_manager, scheduler};
 use crate::core::config::Config;
 use crate::core::context::Context;
 use crate::core::runtime::Runnable;
-use crate::core::{command, runtime};
-use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
 
 /// 接收到 scheduler 的命令
-type ReceiverScheduler = Receiver<command::scheduler::Command>;
+type ReceiverScheduler = Receiver<scheduler::Command>;
 
 /// 发送命令给 peer manager
-type SenderPeer = Arc<Sender<command::peer::Command>>;
+type SenderPeerManager = Sender<peer_manager::Command>;
 
 pub struct Scheduler {
     recv: ReceiverScheduler,
     context: Context,
     cancel_token: CancellationToken,
-    peer_manager_send: SenderPeer,
+    spm: SenderPeerManager,
     config: Config,
 }
 
@@ -28,20 +26,24 @@ impl Scheduler {
         recv: ReceiverScheduler,
         context: Context,
         cancel_token: CancellationToken,
-        peer_manager_send: SenderPeer,
+        spm: SenderPeerManager,
         config: Config,
     ) -> Self {
         Self {
             recv,
             context,
             cancel_token,
-            peer_manager_send,
+            spm,
             config,
         }
     }
 
-    fn handle_command(&mut self, cmd: command::scheduler::Command) -> bool {
-        match cmd {}
+    pub async fn handle_command(&mut self, cmd: scheduler::Command) {
+        CommandHandler::handle(cmd, self).await;
+    }
+
+    pub fn shutdown(&mut self) {
+        self.cancel_token.cancel();
     }
 }
 
@@ -57,9 +59,7 @@ impl Runnable for Scheduler {
                 recv = self.recv.recv() => {
                     trace!("scheduler 收到命令: {:?}", recv);
                     if let Some(recv) = recv {
-                        if !self.handle_command(recv) {
-                            break;
-                        }
+                        self.handle_command(recv).await;
                     }
                 }
             }

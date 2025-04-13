@@ -1,17 +1,16 @@
-use crate::core::command;
+use crate::core::command::scheduler;
+use crate::core::runtime::Runnable;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace, warn};
-use crate::core::runtime::Runnable;
 
-type SenderArc = Arc<Sender<command::scheduler::Command>>;
+type SenderScheduler = Sender<scheduler::Command>;
 
 pub struct TcpServer {
     /// 向调度器发送命令
-    send: SenderArc,
+    send: SenderScheduler,
 
     /// 监听地址
     addr: SocketAddr,
@@ -21,7 +20,7 @@ pub struct TcpServer {
 }
 
 impl TcpServer {
-    pub fn new(addr: SocketAddr, cancel_token: CancellationToken, send: SenderArc) -> Self {
+    pub fn new(addr: SocketAddr, cancel_token: CancellationToken, send: SenderScheduler) -> Self {
         TcpServer {
             send,
             addr,
@@ -29,11 +28,10 @@ impl TcpServer {
         }
     }
 
-    async fn accept(_socket: TcpStream, _send: SenderArc) {
+    async fn accept(_socket: TcpStream, _send: SenderScheduler) {
         todo!()
     }
 }
-
 
 impl Runnable for TcpServer {
     async fn run(self) {

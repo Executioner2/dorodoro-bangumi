@@ -4,7 +4,6 @@ use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::fmt;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
