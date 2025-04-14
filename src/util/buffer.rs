@@ -19,7 +19,7 @@ impl ByteBuffer {
     ///
     /// # Examples
     /// ```
-    /// use dorodoro_bangumi::bt::tracker::udp_tracker::buffer::ByteBuffer;
+    /// use dorodoro_bangumi::util::buffer::ByteBuffer;
     /// let buffer = ByteBuffer::new(1024);
     /// ```
     pub fn new(capacity: usize) -> Self {
@@ -36,7 +36,7 @@ impl ByteBuffer {
     ///
     /// # Examples
     /// ```
-    /// use dorodoro_bangumi::bt::tracker::udp_tracker::buffer::ByteBuffer;
+    /// use dorodoro_bangumi::util::buffer::ByteBuffer;
     /// let mut buffer = ByteBuffer::new(1024);
     /// buffer.resize(512);
     /// ```
@@ -49,7 +49,7 @@ impl ByteBuffer {
     ///
     /// # Examples
     /// ```
-    /// use dorodoro_bangumi::bt::tracker::udp_tracker::buffer::ByteBuffer;
+    /// use dorodoro_bangumi::util::buffer::ByteBuffer;
     /// let mut buffer = ByteBuffer::new(1024);
     /// buffer.shrink(512);
     /// ```

@@ -3,7 +3,7 @@
 use crate::peer::PeerManager;
 use crate::torrent::Torrent;
 use dorodoro_bangumi::log;
-use dorodoro_bangumi::tracker::udp_tracker::buffer::ByteBuffer;
+use dorodoro_bangumi::util::buffer::ByteBuffer;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -23,7 +23,7 @@ pub mod tracker {
 
 pub mod peer {
     use crate::{Command, PeerCommand};
-    use dorodoro_bangumi::tracker::udp_tracker::buffer::ByteBuffer;
+    use dorodoro_bangumi::util::buffer::ByteBuffer;
     use std::collections::HashMap;
     
     use tokio::io::AsyncReadExt;

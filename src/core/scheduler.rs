@@ -1,17 +1,11 @@
 //! 调度器
-use crate::core::command::{CommandHandler, peer_manager, scheduler};
+use crate::core::alias::{ReceiverScheduler, SenderPeerManager};
+use crate::core::command::{CommandHandler, scheduler};
 use crate::core::config::Config;
 use crate::core::context::Context;
 use crate::core::runtime::Runnable;
-use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
-
-/// 接收到 scheduler 的命令
-type ReceiverScheduler = Receiver<scheduler::Command>;
-
-/// 发送命令给 peer manager
-type SenderPeerManager = Sender<peer_manager::Command>;
 
 pub struct Scheduler {
     recv: ReceiverScheduler,
@@ -38,10 +32,6 @@ impl Scheduler {
         }
     }
 
-    pub async fn handle_command(&mut self, cmd: scheduler::Command) {
-        CommandHandler::handle(cmd, self).await;
-    }
-
     pub fn shutdown(&mut self) {
         self.cancel_token.cancel();
     }
@@ -58,8 +48,8 @@ impl Runnable for Scheduler {
                 }
                 recv = self.recv.recv() => {
                     trace!("scheduler 收到命令: {:?}", recv);
-                    if let Some(recv) = recv {
-                        self.handle_command(recv).await;
+                    if let Some(cmd) = recv {
+                        CommandHandler::handle(cmd, &mut self).await;
                     }
                 }
             }

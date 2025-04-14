@@ -13,10 +13,10 @@ pub enum Command {
     PeerManager(PeerManager),
 }
 
-impl CommandHandler for Command {
-    type Target = Scheduler;
+impl<'a> CommandHandler<'a> for Command {
+    type Target = &'a mut Scheduler;
 
-    async fn handle(self, context: &mut Self::Target) {
+    async fn handle(self, context: Self::Target) {
         match self {
             Command::Shutdown(v) => v.handle(context).await,
             Command::PeerManager(v) => v.handle(context).await,
@@ -32,10 +32,10 @@ impl Into<Command> for Shutdown {
         Command::Shutdown(self)
     }
 }
-impl CommandHandler for Shutdown {
-    type Target = Scheduler;
+impl<'a> CommandHandler<'a> for Shutdown {
+    type Target = &'a mut Scheduler;
 
-    async fn handle(self, context: &mut Self::Target) {
+    async fn handle(self, context: Self::Target) {
         context.shutdown();
     }
 }
@@ -50,10 +50,10 @@ impl Into<Command> for PeerManager {
         Command::PeerManager(self)
     }
 }
-impl CommandHandler for PeerManager {
-    type Target = Scheduler;
+impl<'a> CommandHandler<'a> for PeerManager {
+    type Target = &'a mut Scheduler;
 
-    async fn handle(self, context: &mut Self::Target) {
+    async fn handle(self, _context: Self::Target) {
         info!("PeerManager command received");
     }
 }

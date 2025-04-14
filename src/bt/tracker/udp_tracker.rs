@@ -1,6 +1,5 @@
 //! UDP Tracker 实现
 
-pub mod buffer;
 pub mod error;
 #[deprecated(note = "一个tracker一个socket的方案会比此模块占用更少的cpu资源")]
 pub mod socket;
@@ -20,7 +19,7 @@ use std::net::UdpSocket;
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
-use crate::tracker::udp_tracker::buffer::ByteBuffer;
+use crate::util::buffer::ByteBuffer;
 
 type Buffer = Vec<u8>;
 

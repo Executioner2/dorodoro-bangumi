@@ -24,7 +24,7 @@ impl Bootstrap {
 
         trace!("启动 tcp server");
         let tcp_server =
-            TcpServer::new(config.tcp_server_addr(), cancel_token.clone(), send.clone());
+            TcpServer::new(config.clone(), cancel_token.clone(), send.clone());
         let tcp_server_handle = tokio::spawn(tcp_server.run());
 
         trace!("启动 peer 管理器");

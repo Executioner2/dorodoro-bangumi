@@ -8,26 +8,30 @@ pub enum Command {
     TorrentAdd(TorrentAdd),
 }
 
-impl CommandHandler for Command {
-    type Target = PeerManager;
+impl<'a> CommandHandler<'a> for Command {
+    type Target = &'a mut PeerManager;
 
-    async fn handle(self, context: &mut Self::Target) {
+    async fn handle(self, context: Self::Target) {
         match self {
             Command::TorrentAdd(cmd) => cmd.handle(context).await,
         }
     }
 }
 
+/// 添加种子命令处理
 #[derive(Debug, Hash)]
 pub struct TorrentAdd {
     torrent: Torrent,
 }
+impl From<TorrentAdd> for Command {
+    fn from(value: TorrentAdd) -> Self {
+        Command::TorrentAdd(value)
+    }
+}
+impl<'a> CommandHandler<'a> for TorrentAdd {
+    type Target = &'a mut PeerManager;
 
-/// 添加种子命令处理
-impl CommandHandler for TorrentAdd {
-    type Target = PeerManager;
-
-    async fn handle(self, context: &mut Self::Target) {
+    async fn handle(self, _context: Self::Target) {
         info!("TorrentAdd command received")
     }
 }
