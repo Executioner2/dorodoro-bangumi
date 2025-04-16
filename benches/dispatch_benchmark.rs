@@ -36,15 +36,15 @@
 //! 结论：
 //!
 //! 第三方库 enum_dispatch 的分发性能和原生 enum match 基本相同，因此直接用第三方库即可。
-//! 
+//!
 //! 补充：第三方库 enum_dispatch 有致命缺陷，如下：
 //!  1. 无法区分命名空间：被连接的枚举或 trait，必须是唯一的，这就意味着，无法在不同 mod 中命名相同的枚举或 trait。
 //!  2. trait 泛型无法指定具体类型实现：如果被 dispatch 的 trait 上定义了泛型，连接的枚举无法指定具体的类型。详见 `test/enum_dispatch.rs`
-//! 
+//!
 //! 因此还是用原生的静态分发，后续有时间再抽象 match 的手动匹配。
 
 use crate::dispatch1::Torrent;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
 pub trait Dispatchable {
@@ -211,9 +211,13 @@ fn generate_test_data2(size: usize) -> Vec<dispatch2::Torrent> {
         let value = format!("value_{}", i);
         match i % 4 {
             0 => data.push(dispatch2::Torrent::Add(dispatch2::Add { data: value })),
-            1 => data.push(dispatch2::Torrent::Delete(dispatch2::Delete { data: value })),
+            1 => data.push(dispatch2::Torrent::Delete(dispatch2::Delete {
+                data: value,
+            })),
             2 => data.push(dispatch2::Torrent::Get(dispatch2::Get { data: value })),
-            3 => data.push(dispatch2::Torrent::Update(dispatch2::Update { data: value })),
+            3 => data.push(dispatch2::Torrent::Update(dispatch2::Update {
+                data: value,
+            })),
             _ => unreachable!(),
         }
     }

@@ -12,7 +12,7 @@ fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
     let tracker = HttpTracker::new(
         announce,
         &torrent.info_hash,
-        peer_id,
+        &peer_id,
         0,
         torrent.info.length,
         0,

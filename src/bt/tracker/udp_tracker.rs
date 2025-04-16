@@ -10,16 +10,14 @@ use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
 use crate::tracker::udp_tracker::error::Error;
 use crate::tracker::{Event, Host};
+use crate::util::buffer::ByteBuffer;
 use crate::{datetime, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
 use std::io::Write;
 use std::net::UdpSocket;
-use std::thread;
-use std::time::Duration;
 use tracing::warn;
-use crate::util::buffer::ByteBuffer;
 
 type Buffer = Vec<u8>;
 
@@ -51,16 +49,16 @@ struct Connect {
 #[derive(Debug)]
 pub struct Announce {
     /// 下次 announce 间隔（秒）
-    interval: u32,
+    pub interval: u32,
 
     /// 当前未完成下载的 peer 数
-    leechers: u32,
+    pub leechers: u32,
 
     /// 已完成下载的 peer 数
-    seedrs: u32,
+    pub seedrs: u32,
 
     /// peer 主机列表
-    peers: Vec<Host>,
+    pub peers: Vec<Host>,
 }
 
 pub struct Scrape {}
@@ -288,12 +286,13 @@ impl<'a> UdpTracker<'a> {
             Err(e) => {
                 // todo - 可能需要针对不同任务做处理，以及需要做基准测试
                 warn!("电波无法传达！\n{}", e);
-                self.retry_count += 1;
-                let lazy = Duration::from_millis(
-                    SOCKET_READ_TIMEOUT.as_millis() as u64 * self.retry_count as u64,
-                );
-                thread::sleep(lazy);
-                self.send(data, expect_size)
+                Err(e)
+                // self.retry_count += 1;
+                // let lazy = Duration::from_millis(
+                //     SOCKET_READ_TIMEOUT.as_millis() as u64 * self.retry_count as u64,
+                // );
+                // thread::sleep(lazy);
+                // self.send(data, expect_size)
             }
         }
     }

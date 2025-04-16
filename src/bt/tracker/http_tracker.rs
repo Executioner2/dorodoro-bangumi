@@ -24,31 +24,31 @@ pub struct Peer {
 #[derive(Debug)]
 pub struct Announce {
     /// 下次 announce 间隔（秒）
-    interval: u64,
+    pub interval: u64,
 
     /// 当前未完成下载的 peer 数（UDP tracker 的 leechers）
-    incomplete: u64,
+    pub incomplete: u64,
 
     /// 已完成下载的 peer 数（UDP tracker 的 seeders）
-    complete: u64,
+    pub complete: u64,
 
     /// 已下载的数据量（字节）
-    downloaded: u64,
+    pub downloaded: u64,
 
     /// peer 主机列表
-    peers: Vec<Host>,
+    pub peers: Vec<Host>,
 
     /// 最小 announce 间隔（秒）
-    min_interval: Option<u64>,
+    pub min_interval: Option<u64>,
 
     /// peer 主机列表（IPv6）
-    peers6: Vec<Host>,
+    pub peers6: Vec<Host>,
 }
 
-struct HttpTracker<'a> {
+pub struct HttpTracker<'a> {
     announce: &'a str,
     info_hash: &'a [u8; 20],
-    peer_id: [u8; 20],
+    peer_id: &'a [u8; 20],
     download: u64,
     left: u64,
     uploaded: u64,
@@ -59,7 +59,7 @@ impl<'a> HttpTracker<'a> {
     pub fn new(
         announce: &'a str,
         info_hash: &'a [u8; 20],
-        peer_id: [u8; 20],
+        peer_id: &'a [u8; 20],
         download: u64,
         left: u64,
         uploaded: u64,
@@ -84,7 +84,7 @@ impl<'a> HttpTracker<'a> {
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
             self.announce,
             percent_encode(self.info_hash, NON_ALPHANUMERIC).to_string(),
-            percent_encode(&self.peer_id, NON_ALPHANUMERIC).to_string(),
+            percent_encode(self.peer_id, NON_ALPHANUMERIC).to_string(),
             self.port,
             self.uploaded,
             self.download,

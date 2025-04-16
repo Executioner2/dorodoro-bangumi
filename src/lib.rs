@@ -1,9 +1,9 @@
 extern crate alloc;
 
 pub mod bt;
-pub mod util;
-pub mod mapper;
 pub mod core;
+pub mod mapper;
+pub mod util;
 
 pub use bt::*;
 pub use util::*;

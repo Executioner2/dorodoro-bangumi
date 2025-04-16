@@ -25,7 +25,7 @@ pub mod peer {
     use crate::{Command, PeerCommand};
     use dorodoro_bangumi::util::buffer::ByteBuffer;
     use std::collections::HashMap;
-    
+
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
     use tokio::sync::mpsc::{Receiver, Sender, channel};

@@ -3,14 +3,17 @@ pub mod http_tracker;
 pub mod udp_tracker;
 
 use crate::bytes::Bytes2Int;
+use crate::torrent::Torrent;
 use crate::tracker::error::Error::{InvalidHost, PeerBytesInvalid};
+use crate::tracker::http_tracker::HttpTracker;
 use core::fmt::Display;
 use core::str::FromStr;
 use error::Result;
 use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::RngCore;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use tracing::info;
 
 lazy_static! {
     /// 进程 id，发送给 Tracker 的，用于区分多开情况
@@ -128,6 +131,15 @@ pub enum Host {
     V6(HostV6),
 }
 
+impl Into<SocketAddr> for Host {
+    fn into(self) -> SocketAddr {
+        match self {
+            Host::V4(host) => SocketAddr::new(IpAddr::from(host.ip()), host.port()),
+            Host::V6(host) => SocketAddr::new(IpAddr::from(host.ip()), host.port()),
+        }
+    }
+}
+
 impl From<([u8; 4], u16)> for Host {
     fn from((ip, port): ([u8; 4], u16)) -> Self {
         Self::V4(HostV4 { ip, port })
@@ -169,6 +181,7 @@ pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<Host>> {
 }
 
 /// announce event
+#[derive(Clone, Eq, PartialEq)]
 pub enum Event {
     /// 未发生特定事件，正常广播
     None = 0,
@@ -192,5 +205,85 @@ impl Display for Event {
             Event::Stopped => "stopped".to_string(),
         };
         write!(f, "{}", str)
+    }
+}
+
+enum TrackerType {
+    HTTP,
+    UDP,
+}
+
+/// 发现peer
+pub fn discover_peer(
+    torrent: &Torrent,
+    download: u64,
+    upload: u64,
+    port: u16,
+    event: Event,
+) -> Vec<Host> {
+    let mut announces = torrent
+        .announce_list
+        .iter()
+        .flatten()
+        .collect::<Vec<&String>>();
+    announces.push(&torrent.announce);
+
+    let mut peers = vec![];
+    let resource_length = torrent.info.length;
+
+    // 依次查询 peer
+    for announce in announces {
+        if let Some((tracker_type, host)) = parse_tracker_host(announce) {
+            let peer_id = gen_peer_id();
+            match tracker_type {
+                TrackerType::HTTP => {
+                    let tracker = HttpTracker::new(
+                        host,
+                        &torrent.info_hash,
+                        &peer_id,
+                        download,
+                        resource_length - download,
+                        upload,
+                        port,
+                    );
+                    if let Ok(announce) = tracker.announcing(event.clone()) {
+                        info!("成功一个http的");
+                        peers.extend(announce.peers)
+                    }
+                }
+                TrackerType::UDP => {
+                    if let Ok(mut tracker) = udp_tracker::UdpTracker::new(
+                        host,
+                        &torrent.info_hash,
+                        &peer_id,
+                        download,
+                        resource_length - download,
+                        port,
+                    ) {
+                        if let Ok(announce) = tracker.announcing(event.clone()) {
+                            info!("成功一个udp的");
+                            peers.extend(announce.peers)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    peers
+}
+
+/// 解析 tracker 地址
+fn parse_tracker_host(announce: &str) -> Option<(TrackerType, &str)> {
+    if announce.starts_with("http") {
+        Some((TrackerType::HTTP, announce))
+    } else if announce.starts_with("udp://") {
+        if let Some(end) = announce[6..].find("/announce") {
+            Some((TrackerType::UDP, &announce[6..end]))
+        } else {
+            Some((TrackerType::UDP, &announce[6..]))
+        }
+    } else {
+        None
     }
 }

@@ -1,8 +1,8 @@
+use crate::log::{SizeBasedWriter, register_logger};
 use std::io::Error;
-use crate::log::{register_logger, SizeBasedWriter};
 use std::path::Path;
 use std::thread::spawn;
-use tracing::{error, Level};
+use tracing::{Level, error};
 
 const PATH_STR: &str = "logs";
 const LOG_FILE_NAME: &str = "dorodoro-bangumi.log";
@@ -16,7 +16,13 @@ const LOG_FILE_LEVEL: Level = Level::INFO;
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_cleanup_old_files() {
-    let writer = SizeBasedWriter::new(Path::new(PATH_STR), LOG_FILE_NAME, LOG_FILE_SIZE, LOG_FILE_CHUNKS).unwrap();
+    let writer = SizeBasedWriter::new(
+        Path::new(PATH_STR),
+        LOG_FILE_NAME,
+        LOG_FILE_SIZE,
+        LOG_FILE_CHUNKS,
+    )
+    .unwrap();
     assert!(writer.cleanup_old_files().is_ok());
 }
 
@@ -30,7 +36,14 @@ fn test_cleanup_old_files() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_thread_write() {
-    let _guard = register_logger(PATH_STR, LOG_FILE_NAME, LOG_FILE_SIZE, LOG_FILE_CHUNKS, LOG_FILE_LEVEL).unwrap();
+    let _guard = register_logger(
+        PATH_STR,
+        LOG_FILE_NAME,
+        LOG_FILE_SIZE,
+        LOG_FILE_CHUNKS,
+        LOG_FILE_LEVEL,
+    )
+    .unwrap();
     let mut list = vec![];
     (0..2).for_each(|_| {
         let handle = spawn(|| {
@@ -50,7 +63,14 @@ fn test_thread_write() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_log_err_print() {
-    let _guard = register_logger(PATH_STR, LOG_FILE_NAME, LOG_FILE_SIZE, LOG_FILE_CHUNKS, LOG_FILE_LEVEL).unwrap();
+    let _guard = register_logger(
+        PATH_STR,
+        LOG_FILE_NAME,
+        LOG_FILE_SIZE,
+        LOG_FILE_CHUNKS,
+        LOG_FILE_LEVEL,
+    )
+    .unwrap();
     let err = Error::new(std::io::ErrorKind::Other, "测试一下错误打印");
     error!("test error log {}", err)
 }

@@ -33,10 +33,7 @@ fn recv_from(bytes: &mut [u8], len: usize) -> usize {
 fn buffer_realloc() -> Bytes {
     let mut buffer = ByteBuffer::new(EXPECT_SIZE);
 
-    let size = recv_from(
-        buffer.as_mut(),
-        RECV_SIZE,
-    );
+    let size = recv_from(buffer.as_mut(), RECV_SIZE);
 
     buffer.shrink(size);
     Bytes::from_owner(buffer)
@@ -46,10 +43,7 @@ fn buffer_realloc() -> Bytes {
 fn buffer_alloc() -> Bytes {
     let mut buffer = ByteBuffer::new(EXPECT_SIZE);
 
-    let size = recv_from(
-        buffer.as_mut(),
-        RECV_SIZE,
-    );
+    let size = recv_from(buffer.as_mut(), RECV_SIZE);
 
     buffer.resize(size);
     Bytes::from_owner(buffer)
@@ -59,10 +53,7 @@ fn buffer_alloc() -> Bytes {
 fn buffer_default() -> Bytes {
     let mut buffer = vec![0u8; EXPECT_SIZE];
 
-    let _size = recv_from(
-        &mut buffer,
-        RECV_SIZE,
-    );
+    let _size = recv_from(&mut buffer, RECV_SIZE);
 
     Bytes::from_owner(buffer)
 }
@@ -72,10 +63,7 @@ fn buffer_default() -> Bytes {
 fn buffer_default_return_vec() -> Vec<u8> {
     let mut buffer = vec![0u8; EXPECT_SIZE];
 
-    let _size = recv_from(
-        &mut buffer,
-        RECV_SIZE,
-    );
+    let _size = recv_from(&mut buffer, RECV_SIZE);
 
     buffer
 }
@@ -86,7 +74,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("buffer_default", |b| b.iter(|| buffer_default()));
 
     // time: [619.14 ns 625.56 ns 631.76 ns]
-    c.bench_function("buffer_default_return_vec", |b| b.iter(|| buffer_default_return_vec()));
+    c.bench_function("buffer_default_return_vec", |b| {
+        b.iter(|| buffer_default_return_vec())
+    });
 
     // time: [127.10 ns 129.61 ns 132.27 ns]
     c.bench_function("buffer_alloc", |b| b.iter(|| buffer_alloc()));

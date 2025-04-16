@@ -10,7 +10,7 @@ pub mod udp_tracker {
 
     /// UDP socket 读取超时时间 - 15秒
     pub const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(15);
-    
+
     /// UDP socket 写入超时时间 - 15秒
     pub const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 

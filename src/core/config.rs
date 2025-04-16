@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub struct Config {
-    inner: Arc<ConfigInner>
+    inner: Arc<ConfigInner>,
 }
 
 struct ConfigInner {
@@ -13,7 +13,7 @@ struct ConfigInner {
 impl Clone for Config {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone()
+            inner: self.inner.clone(),
         }
     }
 }
@@ -24,7 +24,7 @@ impl Config {
             inner: Arc::new(ConfigInner {
                 channel_buffer: 100,
                 tcp_server_addr: "127.0.0.1:3300".parse().unwrap(),
-            })
+            }),
         }
     }
 

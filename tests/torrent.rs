@@ -5,11 +5,11 @@ use bytes::Bytes;
 use dorodoro_bangumi::bt::bencoding;
 use dorodoro_bangumi::bt::torrent::Torrent;
 use dorodoro_bangumi::torrent::Parse;
+use dorodoro_bangumi::util::bytes::Bytes2Int;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
 use std::fs;
 use std::net::UdpSocket;
-use dorodoro_bangumi::util::bytes::Bytes2Int;
 
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
@@ -60,7 +60,9 @@ fn test_udp_tracker_handshake() {
     println!("tracker: {}", torrent.announce);
 
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-    socket.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+        .unwrap();
     // socket.connect("tracker.torrent.eu.org:451").unwrap();
 
     let mut request = Vec::new();
@@ -70,7 +72,9 @@ fn test_udp_tracker_handshake() {
     request.write_u32::<BigEndian>(transaction_id).unwrap(); // transaction_id
     println!("send_transaction_id: {}", transaction_id);
 
-    socket.send_to(&request, "tracker.torrent.eu.org:451").unwrap();
+    socket
+        .send_to(&request, "tracker.torrent.eu.org:451")
+        .unwrap();
     let mut response = [0u8; 16];
     let (size, _) = socket.recv_from(&mut response).unwrap();
     println!("收到的响应大小: {}\n收到的数据: {:?}", size, response);
@@ -79,7 +83,10 @@ fn test_udp_tracker_handshake() {
     let transaction_id = u32::from_be_slice(&response[4..8]);
     let connection_id = u64::from_be_slice(&response[8..16]);
 
-    println!("action: {}, transaction_id: {}, connection_id: {}", action, transaction_id, connection_id)
+    println!(
+        "action: {}, transaction_id: {}, connection_id: {}",
+        action, transaction_id, connection_id
+    )
 }
 
 /// HTTP tracker 握手测试

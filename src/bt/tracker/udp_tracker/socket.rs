@@ -5,8 +5,8 @@
 //! 比拼中败下阵来，在差不多的吞吐量下，它会比后者使用更多的 CPU 资源。
 
 use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE};
-use crate::util::buffer::ByteBuffer;
 use crate::tracker::udp_tracker::error;
+use crate::util::buffer::ByteBuffer;
 use bytes::Bytes;
 use error::Result;
 use std::net::UdpSocket;

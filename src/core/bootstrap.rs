@@ -23,8 +23,7 @@ impl Bootstrap {
         let context = Context {};
 
         trace!("启动 tcp server");
-        let tcp_server =
-            TcpServer::new(config.clone(), cancel_token.clone(), send.clone());
+        let tcp_server = TcpServer::new(config.clone(), cancel_token.clone(), send.clone());
         let tcp_server_handle = tokio::spawn(tcp_server.run());
 
         trace!("启动 peer 管理器");
@@ -33,7 +32,13 @@ impl Bootstrap {
         let peer_manager_handle = tokio::spawn(peer_manager.run());
 
         trace!("启动调度器");
-        let scheduler = Scheduler::new(recv, context, cancel_token, peer_manager_sender, config);
+        let scheduler = Scheduler::new(
+            (send, recv),
+            context,
+            cancel_token,
+            peer_manager_sender,
+            config,
+        );
         scheduler.run().await;
 
         info!("等待资源关闭中...");

@@ -14,7 +14,6 @@ unsafe impl Send for ByteBuffer {}
 unsafe impl Sync for ByteBuffer {}
 
 impl ByteBuffer {
-
     /// 创建一个新的 ByteBuffer，分配 `capacity` 字节的内存
     ///
     /// # Examples
@@ -24,11 +23,19 @@ impl ByteBuffer {
     /// ```
     pub fn new(capacity: usize) -> Self {
         if capacity == 0 {
-            Self { bytes: NonNull::dangling(), size: 0, capacity: 0 }
+            Self {
+                bytes: NonNull::dangling(),
+                size: 0,
+                capacity: 0,
+            }
         } else {
             let layout = Layout::array::<u8>(capacity).unwrap();
             let ptr = unsafe { std::alloc::alloc(layout) };
-            Self { bytes: NonNull::new(ptr).unwrap(), size: capacity, capacity }
+            Self {
+                bytes: NonNull::new(ptr).unwrap(),
+                size: capacity,
+                capacity,
+            }
         }
     }
 
@@ -54,10 +61,13 @@ impl ByteBuffer {
     /// buffer.shrink(512);
     /// ```
     pub fn shrink(&mut self, capacity: usize) {
-        if self.size < capacity { return; }
+        if self.size < capacity {
+            return;
+        }
         let old_layout = Layout::array::<u8>(self.capacity).unwrap();
         let new_layout = Layout::array::<u8>(capacity).unwrap();
-        let ptr = unsafe { std::alloc::realloc(self.bytes.as_ptr(), old_layout, new_layout.size()) };
+        let ptr =
+            unsafe { std::alloc::realloc(self.bytes.as_ptr(), old_layout, new_layout.size()) };
         self.bytes = NonNull::new(ptr).unwrap();
         self.capacity = capacity;
         self.resize(capacity);
@@ -84,7 +94,9 @@ impl AsMut<[u8]> for ByteBuffer {
 
 impl Drop for ByteBuffer {
     fn drop(&mut self) {
-        if self.capacity == 0 { return; }
+        if self.capacity == 0 {
+            return;
+        }
         unsafe {
             let layout = Layout::array::<u8>(self.capacity).unwrap();
             std::alloc::dealloc(self.bytes.as_ptr(), layout);

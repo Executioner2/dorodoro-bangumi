@@ -1,3 +1,4 @@
+pub mod gasket;
 pub mod peer;
 pub mod peer_manager;
 pub mod scheduler;

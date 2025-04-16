@@ -3,9 +3,9 @@ use crate::core::alias::{ReceiverTcpServer, SenderScheduler, SenderTcpServer};
 use crate::core::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::controller::Controller;
+use crate::core::protocol;
 use crate::core::protocol::{Identifier, Protocol};
 use crate::core::runtime::Runnable;
-use crate::core::{command, protocol};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -42,6 +42,7 @@ pub struct TcpServerContext {
     cancel_token: CancellationToken,
     conn_id: Arc<AtomicU64>,
     conns: Arc<Mutex<HashMap<ConnId, ConnInfo>>>,
+    config: Config,
 }
 
 impl TcpServerContext {
@@ -69,6 +70,9 @@ pub struct TcpServer {
 
     /// 与 tcp server 通信的 channel
     channel: (SenderTcpServer, ReceiverTcpServer),
+
+    /// 配置项
+    config: Config,
 }
 
 impl TcpServer {
@@ -80,6 +84,7 @@ impl TcpServer {
             conn_id: Arc::new(AtomicU64::new(0)),
             conns: Arc::new(Mutex::new(HashMap::new())),
             channel: channel(config.channel_buffer()),
+            config,
         }
     }
 
@@ -90,6 +95,7 @@ impl TcpServer {
             cancel_token: self.cancel_token.clone(),
             conn_id: self.conn_id.clone(),
             conns: self.conns.clone(),
+            config: self.config.clone(),
         }
     }
 
@@ -103,12 +109,11 @@ impl TcpServer {
     }
 
     async fn accept(mut socket: TcpStream, context: TcpServerContext) {
-        let mut accept = Accept::new(&mut socket);
         select! {
             _ = context.cancel_token.cancelled() => {
                 trace!("accpet socket 接收到关机信号");
             },
-            result = &mut accept => {
+            result = Accept::new(&mut socket)  => {
                 match result {
                     Some(protocol) => {
                         Self::protocol_dispatch(context, socket, protocol).await;
@@ -133,8 +138,14 @@ impl TcpServer {
                 let id = context
                     .conn_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let controller =
-                    Controller::new(id, socket, context.cancel_token, context.ss, context.sts);
+                let controller = Controller::new(
+                    id,
+                    socket,
+                    context.cancel_token,
+                    context.ss,
+                    context.sts,
+                    context.config,
+                );
                 controller.run().await;
             }
         }

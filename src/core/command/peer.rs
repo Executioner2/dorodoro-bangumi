@@ -1,2 +1,4 @@
-#[derive(Debug, Hash)]
-pub enum PeerCommand {}
+#[derive(Debug)]
+pub enum Command {
+    // Exit(Exit)
+}

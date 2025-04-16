@@ -1,14 +1,23 @@
 //! 调度器
-use crate::core::alias::{ReceiverScheduler, SenderPeerManager};
-use crate::core::command::{CommandHandler, scheduler};
+
+use crate::core::alias::{ReceiverScheduler, SenderPeerManager, SenderScheduler};
+use crate::core::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::context::Context;
 use crate::core::runtime::Runnable;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
 
+/// 多线程下的共享数据
+pub struct SchedulerContext {
+    pub config: Config,
+    pub spm: SenderPeerManager,
+    pub ss: SenderScheduler,
+    pub cancel_token: CancellationToken,
+}
+
 pub struct Scheduler {
-    recv: ReceiverScheduler,
+    channel: (SenderScheduler, ReceiverScheduler),
     context: Context,
     cancel_token: CancellationToken,
     spm: SenderPeerManager,
@@ -17,18 +26,27 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new(
-        recv: ReceiverScheduler,
+        channel: (SenderScheduler, ReceiverScheduler),
         context: Context,
         cancel_token: CancellationToken,
         spm: SenderPeerManager,
         config: Config,
     ) -> Self {
         Self {
-            recv,
+            channel,
             context,
             cancel_token,
             spm,
             config,
+        }
+    }
+
+    pub fn get_context(&self) -> SchedulerContext {
+        SchedulerContext {
+            config: self.config.clone(),
+            spm: self.spm.clone(),
+            ss: self.channel.0.clone(),
+            cancel_token: self.cancel_token.clone(),
         }
     }
 
@@ -46,10 +64,10 @@ impl Runnable for Scheduler {
                     trace!("scheduler 收到关闭信号");
                     break;
                 }
-                recv = self.recv.recv() => {
+                recv = self.channel.1.recv() => {
                     trace!("scheduler 收到命令: {:?}", recv);
                     if let Some(cmd) = recv {
-                        CommandHandler::handle(cmd, &mut self).await;
+                        CommandHandler::handle(cmd, self.get_context()).await;
                     }
                 }
             }

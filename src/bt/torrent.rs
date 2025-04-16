@@ -11,6 +11,30 @@ use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fs;
+use std::ops::Deref;
+use std::sync::Arc;
+
+/// 种子，多线程共享
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct TorrentArc {
+    inner: Arc<Torrent>,
+}
+
+impl Clone for TorrentArc {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl Deref for TorrentArc {
+    type Target = Torrent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 /// 种子结构体
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -238,9 +262,9 @@ fn parse_info_files(info: &HashMap<String, BEncode>) -> Result<Vec<File>> {
     }
 }
 
-pub trait Parse<T> {
+pub trait Parse<T, U = Self> {
     /// 解析种子文件
-    fn parse_torrent(data: T) -> Result<Torrent>;
+    fn parse_torrent(data: T) -> Result<U>;
 }
 
 /// 直接传入字节数组
@@ -265,5 +289,23 @@ impl Parse<&str> for Torrent {
     fn parse_torrent(data: &str) -> Result<Torrent> {
         let data = fs::read(data)?;
         Torrent::parse_torrent(data)
+    }
+}
+
+/// 传入文件路径
+impl Parse<&str> for TorrentArc {
+    fn parse_torrent(data: &str) -> Result<TorrentArc> {
+        Ok(TorrentArc {
+            inner: Arc::new(Torrent::parse_torrent(data)?),
+        })
+    }
+}
+
+/// 传入字节数组
+impl Parse<Vec<u8>> for TorrentArc {
+    fn parse_torrent(data: Vec<u8>) -> Result<TorrentArc> {
+        Ok(TorrentArc {
+            inner: Arc::new(Torrent::parse_torrent(data)?),
+        })
     }
 }

@@ -13,10 +13,6 @@
 #[macro_export]
 macro_rules! if_else {
     ($cond:expr, $if_true:expr, $if_false:expr) => {
-        if $cond {
-            $if_true
-        } else {
-            $if_false
-        }
+        if $cond { $if_true } else { $if_false }
     };
 }

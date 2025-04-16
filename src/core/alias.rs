@@ -1,5 +1,6 @@
+use crate::core::command::{gasket, peer, peer_manager, scheduler, tcp_server};
+use crate::core::controller::RespClient;
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::core::command::{peer_manager, scheduler, tcp_server};
 
 /// 发送命令给 scheduler
 pub type SenderScheduler = Sender<scheduler::Command>;
@@ -18,3 +19,21 @@ pub type SenderTcpServer = Sender<tcp_server::Command>;
 
 /// 接收 tcp server 的命令
 pub type ReceiverTcpServer = Receiver<tcp_server::Command>;
+
+/// 发送命令给 controller
+pub type SenderController = Sender<RespClient>;
+
+/// 接收 controller 的命令
+pub type ReceiverController = Receiver<RespClient>;
+
+/// 发送命令给 peer
+pub type SenderPeer = Sender<peer::Command>;
+
+/// 接收 peer 的命令
+pub type ReceiverPeer = Receiver<peer::Command>;
+
+/// 发送命令给 peer gasket
+pub type SenderGasket = Sender<gasket::Command>;
+
+/// 接收 peer gasket 的命令
+pub type ReceiverGasket = Receiver<gasket::Command>;

@@ -1,6 +1,6 @@
 //! bencoding 的单元测试
-use crate::bt::bencoding::{BEncode, BEncoder, BencodeItem, Decoder, decode};
 use crate::bt::bencoding::error::Error::InvalidByte;
+use crate::bt::bencoding::{BEncode, BEncoder, BencodeItem, Decoder, decode};
 use bytes::Bytes;
 use hashlink::LinkedHashMap;
 use std::collections::HashMap;
