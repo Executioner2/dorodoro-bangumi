@@ -23,4 +23,8 @@ impl<T> FixedQueue<T> {
     pub fn iter(&self) -> std::collections::vec_deque::Iter<T> {
         self.queue.iter()
     }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
 }

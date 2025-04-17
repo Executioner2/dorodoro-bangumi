@@ -18,27 +18,27 @@ use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
 };
 use crate::core::runtime::Runnable;
-use crate::peer::error::Error::{
-    HandshakeError, ResponseDataIncomplete, TryFromError,
-};
+use crate::datetime;
+use crate::peer::error::Error::{HandshakeError, ResponseDataIncomplete, TryFromError};
 use crate::tracker::Host;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
 use error::Result;
 use std::cmp::min;
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom};
+use std::mem;
 use std::net::SocketAddr;
-use std::pin::{pin, Pin};
-use std::sync::Arc;
+use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::channel;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Peer 通信的消息类型
+#[derive(Debug)]
 pub enum MsgType {
     /// 我现在还不想接收你的请求
     ///
@@ -103,7 +103,7 @@ impl TryFrom<u8> for MsgType {
 struct PeerStatistics {
     total_bytes_recv: u64,        // 总共接收的字节数
     last_bytes_recv: u64,         // 上次接收的字节数
-    last_update_time: u64,        // 上次更新时间
+    last_request_time: u128,      // 上次请求时间
     download_speed: u64,          // 下载速度
     rate_window: FixedQueue<u64>, // 最近 n 次的下载速率
 }
@@ -113,10 +113,15 @@ impl PeerStatistics {
         Self {
             total_bytes_recv: 0,
             last_bytes_recv: 0,
-            last_update_time: 0,
+            last_request_time: datetime::now_millis(), // 初始化为当前时间，方便处理一直没有下载的情况
             download_speed: 0,
             rate_window: FixedQueue::new(10),
         }
+    }
+
+    /// 计算出平均速率，多少字节/秒
+    fn avg_rate(&self) -> u64 {
+        self.rate_window.iter().sum::<u64>() / self.rate_window.len() as u64
     }
 }
 
@@ -124,8 +129,6 @@ impl PeerStatistics {
 enum Status {
     Choke,
     UnChoke,
-    Interested,
-    NotInterested,
     Wait, // 等待新的分块下载
 }
 
@@ -136,11 +139,15 @@ pub struct Peer {
     context: GasketContext,
     statistics: PeerStatistics,
     reader: OwnedReadHalf,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    writer: OwnedWriteHalf,
     status: Status,
     peer_status: Status,
     peer_bitfield: Option<BytesMut>,
     channel: (SenderPeer, ReceiverPeer),
+    sharding_size: u64,   // 分块大小
+    sharding_offset: u64, // 分块偏移量
+    addr: SocketAddr,
+    downloading_piece: Option<u32>, // 当前正在下载的分块
 }
 
 impl Peer {
@@ -154,8 +161,8 @@ impl Peer {
         let addr: SocketAddr = host.into();
         let stream = match TcpStream::connect(addr).await {
             Ok(stream) => stream,
-            Err(e) => {
-                debug!("addr: {:?}\tconnect error: {}", addr, e);
+            Err(_e) => {
+                // debug!("addr: {:?}\tconnect error: {}", addr, e);
                 return None;
             }
         };
@@ -167,17 +174,22 @@ impl Peer {
             context,
             statistics: PeerStatistics::new(),
             reader,
-            writer: Arc::new(Mutex::new(writer)),
+            writer,
             status: Status::Choke,
             peer_status: Status::Choke,
             peer_bitfield: None,
             channel: channel(buff_size),
+            sharding_size: 1 << 14,
+            sharding_offset: 0,
+            addr,
+            downloading_piece: None,
         })
     }
 
     /// 握手，然后询问对方有哪些分块是可以下载的
-    pub async fn start(mut self) -> Result<(JoinHandle<()>, SenderPeer)> {
+    pub async fn start(&mut self) -> Result<SenderPeer> {
         // 握手信息
+        trace!("发送握手信息 peer_id:{}", self.id);
         let mut bytes =
             Vec::with_capacity(1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN);
         let info_hash = &self.context.torrent.info_hash;
@@ -188,14 +200,16 @@ impl Peer {
         std::io::Write::write(&mut bytes, &self.peer_id)?;
 
         // 发送握手信息
-        self.writer.lock().await.write_all(&bytes).await?;
+        self.writer.write_all(&bytes).await?;
 
         // 等待握手信息
         self.reader.readable().await?;
 
-        let mut handshake_resp = Vec::with_capacity(bytes.len());
+        let mut handshake_resp = vec![0u8; bytes.len()];
         let size = self.reader.read(&mut handshake_resp).await?;
+        // info!("peer_id {} 握手响应长度: {}", self.id, size);
         if size != bytes.len() {
+            // error!("握手失败，响应数据长度和发送的不一致，实际响应长度: {}\t具体内容: {:?}", size, handshake_resp);
             return Err(HandshakeError);
         }
 
@@ -215,20 +229,24 @@ impl Peer {
         let mut bytes = Vec::with_capacity(5 + bitfield.len());
         WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1 + bitfield.len() as u32)?;
         WriteBytesExt::write_u8(&mut bytes, MsgType::Bitfield as u8)?;
-        std::io::Write::write(&mut bytes, &bitfield)?;
-        self.writer.lock().await.write_all(&bytes).await?;
+        std::io::Write::write(&mut bytes, &bitfield[..])?;
+        self.writer.write_all(&bytes).await?;
+
+        // 告诉对方，允许发起请求
+        let mut req = Vec::with_capacity(5);
+        WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
+        WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8)?;
+        self.writer.write_all(&bytes).await?;
 
         // 告诉对方，对他拥有的资源很感兴趣
         let mut bytes = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1)?;
         WriteBytesExt::write_u8(&mut bytes, MsgType::Interested as u8)?;
-        self.writer.lock().await.write_all(&bytes).await?;
+        self.writer.write_all(&bytes).await?;
 
         // 开启运行时监听
         let send = self.channel.0.clone();
-        let join_handle = tokio::spawn(self.run());
-
-        Ok((join_handle, send))
+        Ok(send)
     }
 
     async fn handle(&mut self, msg_type: MsgType, bytes: Bytes) -> Result<()> {
@@ -246,33 +264,63 @@ impl Peer {
         Ok(res)
     }
 
-    /// 下载分块
-    async fn download_pices(&mut self, piece_index: u32) {
-        async fn do_download_pices(writer: Arc<Mutex<OwnedWriteHalf>>, piece_index: u32, sharding_size: u64, piece_length: u64) {
-            let mut sharding_offset = 0u64;
-            while sharding_offset < piece_length {
-                let mut req = Vec::with_capacity(13);
-                WriteBytesExt::write_u32::<BigEndian>(&mut req, 13).unwrap();
-                WriteBytesExt::write_u8(&mut req, MsgType::Request as u8).unwrap();
-                WriteBytesExt::write_u32::<BigEndian>(&mut req, piece_index).unwrap();
-                WriteBytesExt::write_u32::<BigEndian>(&mut req, sharding_offset as u32).unwrap();
-                WriteBytesExt::write_u32::<BigEndian>(
-                    &mut req,
-                    min(piece_length - sharding_offset, sharding_size) as u32,
-                ).unwrap();
-
-                writer.lock().await.write_all(&req).await.unwrap();
-                sharding_offset += sharding_size;
-            }
-        }
-        let sharding_size = 1 << 14; // 分块大小
+    /// 请求下载分块
+    async fn request_block(&mut self, piece_index: u32) -> Result<bool> {
         let piece_length = self.context.torrent.info.piece_length;
         let resource_length = self.context.torrent.info.length;
-        let piece_length = piece_length.min(
-            resource_length.saturating_sub(piece_index as u64 * piece_length)
-        );
-        let writer = self.writer.clone();
-        tokio::spawn(do_download_pices(writer, piece_index, sharding_size, piece_length));
+        let piece_length =
+            piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length));
+        self.statistics.last_request_time = datetime::now_millis();
+        let over = self.sharding_offset >= piece_length;
+        if !over {
+            trace!(
+                "peer_id [{}] 请求下载分块 {} - {}",
+                self.id, piece_index, self.sharding_offset
+            );
+            let mut req = Vec::with_capacity(13);
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, 13)?;
+            WriteBytesExt::write_u8(&mut req, MsgType::Request as u8)?;
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, piece_index)?;
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, self.sharding_offset as u32)?;
+            WriteBytesExt::write_u32::<BigEndian>(
+                &mut req,
+                min(piece_length - self.sharding_offset, self.sharding_size) as u32,
+            )?;
+
+            self.writer.write_all(&req).await?;
+            self.sharding_offset += self.sharding_size;
+        } else {
+            self.sharding_offset = 0;
+        }
+        Ok(over)
+    }
+
+    /// 尝试寻找可以下载的分块进行下载
+    async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
+        let bit_len = self.context.torrent.info.pieces.len() / 20;
+        for i in 0..bit_len {
+            let idx = i / 8;
+            let offset = 1 << (i % 8);
+
+            if let Some(true) = self
+                .peer_bitfield
+                .as_ref()
+                .map(|bytes| bytes[idx] & offset != 0)
+            {
+                let mut ub = self.context.underway_bytefield.lock().await;
+                let new = ub[idx] & offset == 0;
+                ub.as_mut().get_mut(idx).map(|x| *x |= offset);
+                drop(ub);
+
+                if new {
+                    trace!("peer_id [{}] 发现新的可下载分块：{}", self.id, i);
+                    self.downloading_piece = Some(i as u32);
+                    self.request_block(i as u32).await?;
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// 不让我们请求数据了
@@ -294,7 +342,7 @@ impl Peer {
         let mut req = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
         WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8)?;
-        self.writer.lock().await.write_all(&req).await?;
+        self.writer.write_all(&req).await?;
         Ok(())
     }
 
@@ -305,7 +353,7 @@ impl Peer {
         let mut req = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
         WriteBytesExt::write_u8(&mut req, MsgType::Choke as u8)?;
-        self.writer.lock().await.write_all(&req).await?;
+        self.writer.write_all(&req).await?;
         Ok(())
     }
 
@@ -327,11 +375,13 @@ impl Peer {
         ub.as_mut().get_mut(idx).map(|x| *x |= offset);
         drop(ub); // 释放锁
 
-        self.peer_bitfield.as_mut().map(|bytes| bytes[idx] |= offset);
+        self.peer_bitfield
+            .as_mut()
+            .map(|bytes| bytes[idx] |= offset);
         if new && self.status == Status::Wait {
             // 正在等新的分块可用，刚好这里来了个新的，那么就直接下载，不用告诉 gasket，有下得更快的想来抢，
             // 就让他告诉 gasket，让 gasket 来决定是否分配给其它 peer
-            self.download_pices(bit).await;
+            self.request_block(bit).await?;
         }
 
         Ok(())
@@ -339,25 +389,22 @@ impl Peer {
 
     /// 对端告诉我们他有哪些分块可以下载
     async fn handle_bitfield(&mut self, bytes: Bytes) -> Result<()> {
+        trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
         let torrent = self.context.torrent.clone();
         let bit_len = torrent.info.pieces.len() / 20;
-        if bytes.len() != bit_len + 7 / 8 {
-            warn!("远端给到的 bitfield 长度和实际的不一致");
+        if bytes.len() != (bit_len + 7) / 8 {
+            warn!(
+                "远端给到的 bitfield 长度和期望的不一致，期望的: {}\t实际的bytes: {:?}",
+                (bit_len + 7) / 8,
+                &bytes[..]
+            );
             return Ok(());
         }
 
         self.peer_bitfield = Some(BytesMut::from(bytes));
-        for i in 0..=bit_len {
-            let idx = i / 8;
-            let offset = 1 << (i % 8);
-            let mut ub = self.context.underway_bytefield.lock().await;
-            let new = ub[idx] & offset == 0;
-            ub.as_mut().get_mut(idx).map(|x| *x |= offset);
-            drop(ub);
-
-            if new {
-                self.download_pices(i as u32).await;
-            }
+        if !self.try_find_downloadable_pices().await? {
+            // 没有分块可以下载了，告诉 gasket
+            self.context.report_no_downloadable_piece(self.id).await;
         }
 
         Ok(())
@@ -373,8 +420,58 @@ impl Peer {
     }
 
     /// 对端给我们发来了数据
-    async fn handle_piece(&mut self, _bytes: Bytes) -> Result<()> {
-        trace!("对端给我们发来了数据");
+    async fn handle_piece(&mut self, bytes: Bytes) -> Result<()> {
+        trace!("peer_id [{}] 收到了对端发来的数据", self.id);
+        // 下载到本地
+        if bytes.len() < 8 {
+            return Err(ResponseDataIncomplete);
+        }
+        let now_time = datetime::now_millis();
+        let piece_index = u32::from_be_slice(&bytes[0..4]);
+        let block_offset = u32::from_be_slice(&bytes[4..8]);
+        let block_data = &bytes[8..];
+        let piece_length = self.context.torrent.info.piece_length;
+        let file_path = format!(
+            "{}{}",
+            self.context.download_path, self.context.torrent.info.name
+        );
+        Self::write_file(
+            piece_index,
+            block_offset,
+            block_data,
+            file_path,
+            piece_length,
+        )?;
+
+        // 判断这个分块是否下载完了
+        let over = self.request_block(piece_index).await?;
+
+        // 上报给 gasket
+        let take_time = 1.max(now_time - self.statistics.last_request_time); // 耗时
+        let rate = ((block_data.len() as u128) * 1000 / take_time) as u64; // 速率（乘以 1000 毫秒，方便计算出字节/秒）
+        self.statistics.last_bytes_recv = block_data.len() as u64;
+        self.statistics.total_bytes_recv += block_data.len() as u64;
+        self.statistics.download_speed = rate;
+        self.statistics.rate_window.push(rate);
+        self.context
+            .report_statistics(
+                self.id,
+                piece_index,
+                block_offset,
+                block_data.len() as u64,
+                self.statistics.avg_rate(),
+                rate,
+                over,
+            )
+            .await;
+
+        if over && !self.try_find_downloadable_pices().await? {
+            // 这个分块下载完了，寻找新的分块下载
+            // 没有分块可以下载了，告诉 gasket
+            self.downloading_piece = None;
+            self.context.report_no_downloadable_piece(self.id).await;
+        }
+
         Ok(())
     }
 
@@ -383,17 +480,36 @@ impl Peer {
         trace!("对端撤回了刚刚请求的那个分块");
         Ok(())
     }
+
+    /// 写入文件
+    fn write_file(
+        piece_index: u32,
+        block_offset: u32,
+        block_data: &[u8],
+        file: String,
+        piece_length: u64,
+    ) -> Result<()> {
+        let mut file = OpenOptions::new().write(true).create(true).open(file)?;
+        trace!("写入文件\t{} - {} - {}偏移量: {}", piece_index, piece_length, block_offset, piece_index as u64 * piece_length + block_offset as u64);
+        file.seek(SeekFrom::Start(
+            piece_index as u64 * piece_length + block_offset as u64,
+        ))?;
+        std::io::prelude::Write::write_all(&mut file, block_data)?;
+        std::io::prelude::Write::flush(&mut file)?;
+        Ok(())
+    }
 }
 
 impl Runnable for Peer {
     async fn run(mut self) {
+        trace!("开始监听数据 peer_id:{}\taddr: {}", self.id, self.addr);
         loop {
             tokio::select! {
                 _ = self.context.cancel_token() => {
                     debug!("peer {} cancelled", self.id);
                     break;
                 }
-                result = BtResp::new(&mut self.reader) => {
+                result = BtResp::new(&mut self.reader, self.addr) => {
                     match result {
                         Some((msg_type, buf)) => {
                             match self.handle(msg_type, buf).await {
@@ -404,7 +520,9 @@ impl Runnable for Peer {
                             }
                         },
                         None => {
-                            trace!("peer 接收无法正确处理的响应");
+                            // trace!("peer 接收无法正确处理的响应");
+                            error!("断开了链接，终止 {} - {} 的数据监听", self.id, self.addr);
+                            break;
                         }
                     }
                 },
@@ -420,13 +538,23 @@ impl Runnable for Peer {
                 }
             }
         }
+
+        // 归还未下完的分块
+        if let Some(bit) = self.downloading_piece {
+            trace!("peer_id {} 归还未下载的分块: {}", self.id, bit);
+            let idx = (bit / 8) as usize;
+            let offset = 1 << (bit % 8);
+            let mut ub = self.context.underway_bytefield.lock().await;
+            ub.as_mut().get_mut(idx).map(|x| *x &= !offset);
+        }
+        self.context.peer_exit(self.id).await;
     }
 }
 
 enum State {
     Length,   // 等待长度数据
-    MsgType, // 等待消息类型
-    Context,  // 等待内容数据
+    MsgType,  // 等待消息类型
+    Content,  // 等待内容数据
     Finished, // Future 已完成
 }
 
@@ -434,40 +562,54 @@ enum State {
 struct BtResp<'a> {
     read: &'a mut OwnedReadHalf,
     state: State,
-    size: usize,
     msg_type: Option<MsgType>,
-    length: Option<u32>
+    length: Option<u32>,
+    addr: SocketAddr,
+    buf: ByteBuffer,
+    read_count: usize,
 }
 
 impl<'a> BtResp<'a> {
-    fn new(read: &'a mut OwnedReadHalf) -> Self {
+    fn new(read: &'a mut OwnedReadHalf, addr: SocketAddr) -> Self {
         Self {
             read,
             state: State::Length,
-            size: 4,
             msg_type: None,
             length: None,
+            addr,
+            buf: ByteBuffer::new(4),
+            read_count: 0,
         }
     }
 
-    fn read(&mut self, size: usize, cx: &mut Context<'_>) -> Option<Poll<Bytes>> {
-        if size == 0 {
+    fn read(&mut self, cx: &mut Context<'_>, addr: SocketAddr) -> Option<Poll<Bytes>> {
+        if self.buf.len() == 0 {
             return Some(Poll::Ready(Bytes::new()));
         }
-        let mut buf = ByteBuffer::new(size);
-        let mut binding = buf.as_mut();
-        let future = self.read.read_exact(&mut binding);
-        match pin!(future).poll(cx) {
-            Poll::Ready(Ok(0)) => {
-                trace!("客户端主动说bye-bye");
-                None
+
+        loop {
+            let mut read_buf = ReadBuf::new(&mut self.buf[self.read_count..]);
+            match Pin::new(&mut self.read).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => {
+                    let filled = read_buf.filled().len();
+                    if filled == 0 {
+                        trace!("客户端主动说bye-bye");
+                        return None;
+                    }
+                    self.read_count += filled;
+                    if self.read_count >= self.buf.capacity() {
+                        let mut buf = ByteBuffer::new(0);
+                        mem::swap(&mut self.buf, &mut buf);
+                        self.read_count = 0;
+                        return Some(Poll::Ready(Bytes::from_owner(buf)));
+                    }
+                }
+                Poll::Ready(Err(e)) => {
+                    error!("因神秘力量，和客户端失去了联系\t{}，addr: {}", e, addr);
+                    return None;
+                }
+                Poll::Pending => return Some(Poll::Pending),
             }
-            Poll::Ready(Ok(_len)) => Some(Poll::Ready(Bytes::from_owner(buf))),
-            Poll::Ready(Err(e)) => {
-                warn!("因神秘力量，和客户端失去了联系\t{}", e);
-                None
-            }
-            Poll::Pending => Some(Poll::Pending),
         }
     }
 }
@@ -477,7 +619,7 @@ impl Future for BtResp<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let bt_resp = unsafe { self.get_unchecked_mut() };
-        let buf = match bt_resp.read(bt_resp.size, cx) {
+        let buf = match bt_resp.read(cx, bt_resp.addr) {
             Some(Poll::Ready(buf)) => buf,
             Some(Poll::Pending) => {
                 trace!("protocol 的数据还没准备好");
@@ -488,28 +630,31 @@ impl Future for BtResp<'_> {
 
         match bt_resp.state {
             State::Length => {
-                bt_resp.size = 1;
-                let length = u32::from_be_slice(&buf[..bt_resp.size]);
+                let length = u32::from_be_slice(&buf[..4]);
                 if length > 1 {
-                    bt_resp.length = Some(length - 1);    
+                    bt_resp.length = Some(length - 1);
                 }
-                bt_resp.state = State::Context;
+                bt_resp.buf = ByteBuffer::new(1);
+                bt_resp.state = State::MsgType;
             }
             State::MsgType => {
                 if let Ok(msg_type) = MsgType::try_from(buf[0]) {
+                    trace!("取得消息类型: {:?}", msg_type);
                     if let Some(length) = bt_resp.length {
-                        bt_resp.size = length as usize;
-                        bt_resp.msg_type = Some(msg_type)
+                        bt_resp.buf = ByteBuffer::new(length as usize);
+                        bt_resp.msg_type = Some(msg_type);
+                        bt_resp.state = State::Content;
                     } else {
-                        return Poll::Ready(Some((msg_type, Bytes::new())))
+                        return Poll::Ready(Some((msg_type, Bytes::new())));
                     }
                 } else {
-                    error ! ("未知的消息类型\tmsg_type value: {}", buf[0]);
-                    return Poll::Ready(None)
+                    error!("未知的消息类型\tmsg_type value: {}", buf[0]);
+                    return Poll::Ready(None);
                 }
             }
-            State::Context => {
-                return Poll::Ready(Some((bt_resp.msg_type.take().unwrap(), buf)))
+            State::Content => {
+                bt_resp.state = State::Finished;
+                return Poll::Ready(Some((bt_resp.msg_type.take().unwrap(), buf)));
             }
             State::Finished => {
                 return Poll::Ready(None);

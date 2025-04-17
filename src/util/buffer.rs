@@ -2,6 +2,7 @@
 //! 可提升五倍的性能。见 `benches/socket_buffer_benchmark.rs`
 
 use std::alloc::Layout;
+use std::ops::{Index, IndexMut, Range, RangeFrom};
 use std::ptr::NonNull;
 
 pub struct ByteBuffer {
@@ -72,6 +73,14 @@ impl ByteBuffer {
         self.capacity = capacity;
         self.resize(capacity);
     }
+    
+    pub fn len(&self) -> usize {
+        self.size
+    }
+    
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 impl AsRef<[u8]> for ByteBuffer {
@@ -89,6 +98,34 @@ impl AsMut<[u8]> for ByteBuffer {
             let layout = Layout::array::<u8>(self.size).unwrap();
             std::slice::from_raw_parts_mut(self.bytes.as_ptr(), layout.size())
         }
+    }
+}
+
+impl Index<Range<usize>> for ByteBuffer {
+    type Output = [u8];
+
+    fn index(&self, range: Range<usize>) -> &Self::Output {
+        &self.as_ref()[range]
+    }
+}
+
+impl IndexMut<Range<usize>> for ByteBuffer {
+    fn index_mut(&mut self, range: Range<usize>) -> &mut Self::Output {
+        &mut self.as_mut()[range]
+    }
+}
+
+impl Index<RangeFrom<usize>> for ByteBuffer {
+    type Output = [u8];
+
+    fn index(&self, range: RangeFrom<usize>) -> &Self::Output {
+        &self.as_ref()[range]
+    }
+}
+
+impl IndexMut<RangeFrom<usize>> for ByteBuffer {
+    fn index_mut(&mut self, range: RangeFrom<usize>) -> &mut Self::Output {
+        &mut self.as_mut()[range]
     }
 }
 

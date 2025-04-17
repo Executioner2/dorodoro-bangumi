@@ -29,6 +29,7 @@ impl<T: Display> MyTrait<T> for A {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_enum_dispatch() {
     let a: Enum<_> = A::default().into();
     a.my_method(123).await;

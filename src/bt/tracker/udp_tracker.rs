@@ -17,7 +17,7 @@ use bytes::Bytes;
 use error::Result;
 use std::io::Write;
 use std::net::UdpSocket;
-use tracing::warn;
+use tracing::{error, warn};
 
 type Buffer = Vec<u8>;
 
@@ -100,6 +100,7 @@ impl<'a> UdpTracker<'a> {
         let socket = UdpSocket::bind(DEFAULT_ADDR)?;
         socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
         socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
+        error!("实际的地址: {}", announce);
         Ok(Self {
             socket,
             connect: Connect::default(),

@@ -13,6 +13,7 @@ pub enum Error {
     FieldValueError(String),
     TrackerError(tracker::error::Error),
     SerdeQsError(serde_qs::Error),
+    TimeoutError
 }
 
 impl Display for Error {
@@ -29,6 +30,7 @@ impl Display for Error {
             }
             TrackerError(e) => write!(f, "tracker error: {}", e),
             SerdeQsError(e) => write!(f, "serde qs error: {}", e),
+            TimeoutError => write!(f, "timeout error"),
         }
     }
 }

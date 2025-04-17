@@ -5,6 +5,7 @@ pub mod error;
 #[cfg(test)]
 mod tests;
 
+use std::time::Duration;
 use crate::bt::bencoding;
 use crate::bt::bencoding::BEncodeHashMap;
 use crate::tracker;
@@ -14,6 +15,7 @@ use crate::tracker::http_tracker::error::Error::{
 use crate::tracker::{Event, Host};
 use error::Result;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
+use tracing::trace;
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct Peer {
@@ -79,7 +81,7 @@ impl<'a> HttpTracker<'a> {
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub fn announcing(&self, event: Event) -> Result<Announce> {
+    pub async fn announcing(&self, event: Event) -> Result<Announce> {
         let query_url = format!(
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
             self.announce,
@@ -91,13 +93,18 @@ impl<'a> HttpTracker<'a> {
             self.left,
             event.to_string(),
         );
-        let response = reqwest::blocking::get(&query_url)?;
+        let response = if let Ok(Ok(response)) = tokio::time::timeout(Duration::from_secs(15), reqwest::get(&query_url)).await {
+            response
+        } else {
+            return Err(error::Error::TimeoutError);
+        };
+        // let response = reqwest::get(&query_url).await?;
 
         if !response.status().is_success() {
-            return Err(ResponseStatusNotOk(response.status(), response.text()?));
+            return Err(ResponseStatusNotOk(response.status(), response.text().await?));
         }
 
-        let encode = bencoding::decode(response.bytes()?)?;
+        let encode = bencoding::decode(response.bytes().await?)?;
         let encode = encode
             .as_dict()
             .ok_or(bencoding::error::Error::TransformError)?;

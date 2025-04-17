@@ -67,8 +67,9 @@ impl Runnable for Controller {
                         Ok(1) => {
                             trace!("接收到了添加种子文件的指令");
                             let data = fs::read("tests/resources/test3.torrent").unwrap();
+                            let download_path = String::from("./");
                             let torrent = TorrentArc::parse_torrent(data).unwrap();
-                            let cmd = scheduler::TorrentAdd(self.channel.0.clone(), torrent).into();
+                            let cmd = scheduler::TorrentAdd(self.channel.0.clone(), torrent, download_path).into();
                             self.ss.send(cmd).await.unwrap();
                             break;
                         },

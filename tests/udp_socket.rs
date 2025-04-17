@@ -158,11 +158,13 @@ fn scheme2() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_scheme1() {
     scheme1();
 }
 
 #[test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_scheme2() {
     scheme2();
 }

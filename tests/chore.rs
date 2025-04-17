@@ -58,6 +58,7 @@ async fn test_tokio_select() {
 ///
 /// 结论：不行
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_oneshot_channel() {
     let (tx, mut rx) = tokio::sync::oneshot::channel::<&'static str>();
 

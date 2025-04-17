@@ -3,9 +3,9 @@ use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::{Event, gen_peer_id};
 
 /// HTTP tracker 握手测试
-#[test]
+#[tokio::test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
-fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
     let peer_id = gen_peer_id();
     let announce = "http://nyaa.tracker.wf:7777/announce";
@@ -19,7 +19,7 @@ fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
         3315,
     );
 
-    let response = tracker.announcing(Event::Started).unwrap();
+    let response = tracker.announcing(Event::Started).await?;
     println!("response: {:?}", response);
     Ok(())
 }

@@ -65,6 +65,7 @@ async fn test_connect_controller() {
 
 /// 测试延迟链接会不会导致读取数据时阻塞
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_lazy_send() {
     let mut socket0 = TcpStream::connect("127.0.0.1:3300").await.unwrap();
     let mut bytes = vec![];
@@ -110,6 +111,7 @@ async fn test_lazy_send() {
 
 /// 发送添加种子的命令
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_add_torrent() {
     let mut socket = TcpStream::connect("127.0.0.1:3300").await.unwrap();
     let mut bytes = vec![];

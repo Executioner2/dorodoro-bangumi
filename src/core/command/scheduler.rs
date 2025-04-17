@@ -78,7 +78,7 @@ impl CommandHandler<'_> for PeerManager {
 }
 
 /// 添加种子
-pub struct TorrentAdd(pub SenderController, pub TorrentArc);
+pub struct TorrentAdd(pub SenderController, pub TorrentArc, pub String);
 impl Debug for TorrentAdd {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "Torrent Add")
@@ -93,18 +93,19 @@ impl CommandHandler<'_> for TorrentAdd {
     type Target = SchedulerContext;
 
     async fn handle(self, context: Self::Target) {
-        async fn task(_resp: SenderController, torrent: TorrentArc, context: SchedulerContext) {
+        async fn task(_resp: SenderController, torrent: TorrentArc, download_path: String, context: SchedulerContext) {
             // 添加到下载列表
             info!("开始解析tracker");
             let download = 0; // 查询数据库
             let upload = 0; // 查询数据库
             let port = context.config.tcp_server_addr().port();
-            let peers = tracker::discover_peer(&torrent, download, upload, port, Event::Started);
+            let peers = tracker::discover_peer(torrent.clone(), download, upload, port, Event::None).await;
+            // let peers = vec![];
             let spm = context.spm;
-            spm.send(peer_manager::NewDownloadTask::new(torrent.clone(), peers).into())
+            spm.send(peer_manager::NewDownloadTask::new(torrent.clone(), peers, download_path, port).into())
                 .await
                 .unwrap();
         }
-        tokio::spawn(task(self.0, self.1, context));
+        tokio::spawn(task(self.0, self.1, self.2, context));
     }
 }

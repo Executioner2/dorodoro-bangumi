@@ -240,7 +240,7 @@ impl<'a> Accept<'a> {
             }
             Poll::Ready(Ok(_len)) => Some(Poll::Ready(Bytes::from_owner(buf))),
             Poll::Ready(Err(e)) => {
-                warn!("因神秘力量，和客户端失去了联系\t{}", e);
+                // warn!("因神秘力量，和客户端失去了联系\t{}", e);
                 None
             }
             Poll::Pending => Some(Poll::Pending),
