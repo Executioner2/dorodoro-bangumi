@@ -1,62 +1,65 @@
 //! 调度器
 
-use crate::core::alias::{ReceiverScheduler, SenderPeerManager, SenderScheduler};
+use command::Command;
 use crate::core::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::context::Context;
+use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::{SCHEDULER, TCP_SERVER};
 use crate::core::runtime::Runnable;
+use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
+
+pub mod command;
 
 /// 多线程下的共享数据
 pub struct SchedulerContext {
     pub config: Config,
-    pub spm: SenderPeerManager,
-    pub ss: SenderScheduler,
     pub cancel_token: CancellationToken,
+    pub emitter: Emitter,
 }
 
 pub struct Scheduler {
-    channel: (SenderScheduler, ReceiverScheduler),
     context: Context,
     cancel_token: CancellationToken,
-    spm: SenderPeerManager,
     config: Config,
+    emitter: Emitter,
 }
 
 impl Scheduler {
     pub fn new(
-        channel: (SenderScheduler, ReceiverScheduler),
         context: Context,
         cancel_token: CancellationToken,
-        spm: SenderPeerManager,
         config: Config,
+        emitter: Emitter,
     ) -> Self {
         Self {
-            channel,
             context,
             cancel_token,
-            spm,
             config,
+            emitter,
         }
     }
 
     pub fn get_context(&self) -> SchedulerContext {
         SchedulerContext {
             config: self.config.clone(),
-            spm: self.spm.clone(),
-            ss: self.channel.0.clone(),
             cancel_token: self.cancel_token.clone(),
+            emitter: self.emitter.clone(),
         }
     }
 
-    pub fn shutdown(&mut self) {
-        self.cancel_token.cancel();
+    async fn shutdown(self) {
+        self.emitter.remove(SCHEDULER).await.unwrap();
     }
 }
 
 impl Runnable for Scheduler {
     async fn run(mut self) {
+        let (send, mut recv) = channel(self.config.channel_buffer());
+        self.emitter.register(SCHEDULER, send).await.unwrap();
+
         info!("scheduler 已启动");
         loop {
             tokio::select! {
@@ -64,14 +67,17 @@ impl Runnable for Scheduler {
                     trace!("scheduler 收到关闭信号");
                     break;
                 }
-                recv = self.channel.1.recv() => {
-                    trace!("scheduler 收到命令: {:?}", recv);
+                recv = recv.recv() => {
                     if let Some(cmd) = recv {
+                        let cmd = cmd.instance::<Command>();
+                        trace!("scheduler 收到命令: {:?}", cmd);
                         CommandHandler::handle(cmd, self.get_context()).await;
                     }
                 }
             }
         }
+
+        self.shutdown().await;
         info!("scheduler 已关闭")
     }
 }

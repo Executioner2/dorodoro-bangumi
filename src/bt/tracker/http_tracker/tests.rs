@@ -1,6 +1,6 @@
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::http_tracker::HttpTracker;
-use crate::tracker::{Event, gen_peer_id};
+use crate::tracker::{Event, gen_peer_id, AnnounceInfo};
 
 /// HTTP tracker 握手测试
 #[tokio::test]
@@ -13,13 +13,16 @@ async fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
         announce,
         &torrent.info_hash,
         &peer_id,
-        0,
-        torrent.info.length,
-        0,
-        3315,
     );
 
-    let response = tracker.announcing(Event::Started).await?;
+    let info = AnnounceInfo {
+        download: 0,
+        left: torrent.info.length,
+        uploaded: 0,
+        port: 9987,
+    };
+
+    let response = tracker.announcing(Event::Started, info).await?;
     println!("response: {:?}", response);
     Ok(())
 }

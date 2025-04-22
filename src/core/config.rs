@@ -8,6 +8,7 @@ pub struct Config {
 struct ConfigInner {
     channel_buffer: usize,
     tcp_server_addr: SocketAddr,
+    sharding_size: u64
 }
 
 impl Clone for Config {
@@ -24,6 +25,7 @@ impl Config {
             inner: Arc::new(ConfigInner {
                 channel_buffer: 100,
                 tcp_server_addr: "127.0.0.1:3300".parse().unwrap(),
+                sharding_size: 1 << 14,
             }),
         }
     }
@@ -42,6 +44,13 @@ impl Config {
         }
         self
     }
+    
+    pub fn set_sharding_size(mut self, sharding_size: u64) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.sharding_size = sharding_size;
+        }
+        self
+    }
 
     pub fn channel_buffer(&self) -> usize {
         self.inner.channel_buffer
@@ -49,5 +58,9 @@ impl Config {
 
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
+    }
+    
+    pub fn sharding_size(&self) -> u64 {
+        self.inner.sharding_size
     }
 }

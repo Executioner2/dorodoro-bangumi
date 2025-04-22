@@ -1,7 +1,6 @@
-pub mod alias;
 pub mod bootstrap;
-mod command;
-mod config;
+pub mod command;
+pub mod config;
 mod context;
 mod controller;
 pub mod peer_manager;
@@ -9,3 +8,4 @@ pub mod protocol;
 pub mod runtime;
 mod scheduler;
 mod tcp_server;
+pub mod emitter;

@@ -7,7 +7,7 @@ pub enum Command {
     Exit(Exit),
 }
 
-impl CommandHandler<'_> for Command {
+impl CommandHandler for Command {
     type Target = TcpServerContext;
 
     async fn handle(self, context: Self::Target) {
@@ -19,12 +19,7 @@ impl CommandHandler<'_> for Command {
 
 #[derive(Debug, Hash)]
 pub struct Exit(pub u64);
-impl From<Exit> for Command {
-    fn from(value: Exit) -> Self {
-        Command::Exit(value)
-    }
-}
-impl CommandHandler<'_> for Exit {
+impl CommandHandler for Exit {
     type Target = TcpServerContext;
 
     async fn handle(self, context: Self::Target) {

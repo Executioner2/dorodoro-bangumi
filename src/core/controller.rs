@@ -1,10 +1,11 @@
 //! 接收客户端发来的控制信号
 
-use crate::core::alias::{ReceiverController, SenderController, SenderScheduler, SenderTcpServer};
-use crate::core::command::scheduler;
-use crate::core::command::scheduler::Shutdown;
-use crate::core::command::tcp_server::Exit;
+use crate::core::scheduler::command;
+use crate::core::scheduler::command::Shutdown;
+use crate::core::tcp_server::command::Exit;
 use crate::core::config::Config;
+use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::{CONTROLLER_PREFIX, PEER_MANAGER, SCHEDULER, TCP_SERVER};
 use crate::core::runtime::Runnable;
 use crate::torrent::{Parse, TorrentArc};
 use std::fs;
@@ -22,10 +23,8 @@ pub struct Controller {
     id: u64,
     socket: TcpStream,
     cancel_token: CancellationToken,
-    ss: SenderScheduler,
-    sts: SenderTcpServer,
-    channel: (SenderController, ReceiverController),
     config: Config,
+    emitter: Emitter,
 }
 
 impl Controller {
@@ -33,24 +32,36 @@ impl Controller {
         id: u64,
         socket: TcpStream,
         cancel_token: CancellationToken,
-        ss: SenderScheduler,
-        sts: SenderTcpServer,
         config: Config,
+        emitter: Emitter,
     ) -> Self {
         Self {
             id,
             socket,
             cancel_token,
-            ss,
-            sts,
-            channel: channel(config.channel_buffer()),
             config,
+            emitter,
         }
+    }
+    
+    fn get_transfer_id(&self) -> String {
+        format!("{}{}", CONTROLLER_PREFIX, self.id)
+    }
+    
+    async fn shutdown(self) {
+        let transfer_id = self.get_transfer_id();
+        self.emitter.remove(&transfer_id).await.unwrap();
+        info!("控制器[{}]已退出", transfer_id);
     }
 }
 
 impl Runnable for Controller {
     async fn run(mut self) {
+        let (send, mut recv) = channel(self.config.channel_buffer());
+        let transfer_id = self.get_transfer_id();
+        self.emitter.register(transfer_id, send).await.unwrap();
+
+        info!("控制器启动");
         loop {
             select! {
                 _ = self.cancel_token.cancelled() => {
@@ -61,16 +72,16 @@ impl Runnable for Controller {
                     match result {
                         Ok(0) => {
                             trace!("接收到了关机指令");
-                            self.ss.send(Shutdown.into()).await.unwrap();
+                            self.emitter.send(SCHEDULER, Shutdown.into()).await.unwrap();
                             break;
                         },
                         Ok(1) => {
                             trace!("接收到了添加种子文件的指令");
-                            let data = fs::read("tests/resources/test3.torrent").unwrap();
+                            let data = fs::read("tests/resources/test4.torrent").unwrap();
                             let download_path = String::from("./");
                             let torrent = TorrentArc::parse_torrent(data).unwrap();
-                            let cmd = scheduler::TorrentAdd(self.channel.0.clone(), torrent, download_path).into();
-                            self.ss.send(cmd).await.unwrap();
+                            let cmd = command::TorrentAdd(torrent, download_path);
+                            self.emitter.send(SCHEDULER, cmd.into()).await.unwrap();
                             break;
                         },
                         Ok(_) => {
@@ -78,13 +89,17 @@ impl Runnable for Controller {
                         }
                         Err(_) => {
                             trace!("Controller socket closed");
-                            self.sts.send(Exit(self.id).into()).await.unwrap();
+                            self.emitter.send(TCP_SERVER, Exit(self.id).into()).await.unwrap();
                             break;
                         }
                     }
+                },
+                _result = recv.recv() => {
+                    todo!("")
                 }
             }
         }
-        info!("控制器退出");
+        
+        self.shutdown().await;
     }
 }

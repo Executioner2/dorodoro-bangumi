@@ -1,8 +1,9 @@
 use crate::buffer::ByteBuffer;
-use crate::core::alias::{ReceiverTcpServer, SenderScheduler, SenderTcpServer};
 use crate::core::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::controller::Controller;
+use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::{SCHEDULER, TCP_SERVER};
 use crate::core::protocol;
 use crate::core::protocol::{Identifier, Protocol};
 use crate::core::runtime::Runnable;
@@ -10,7 +11,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::option::Option;
-use std::pin::{Pin, pin};
+use std::pin::{pin, Pin};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::task::{Context, Poll};
@@ -23,6 +24,8 @@ use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
+
+pub mod command;
 
 /// 读超时时间 60 秒
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -37,12 +40,11 @@ struct ConnInfo {
 
 /// 多线程下的共享数据
 pub struct TcpServerContext {
-    ss: SenderScheduler,
-    sts: SenderTcpServer,
     cancel_token: CancellationToken,
     conn_id: Arc<AtomicU64>,
     conns: Arc<Mutex<HashMap<ConnId, ConnInfo>>>,
     config: Config,
+    emitter: Emitter,
 }
 
 impl TcpServerContext {
@@ -53,9 +55,6 @@ impl TcpServerContext {
 }
 
 pub struct TcpServer {
-    /// 向调度器发送命令
-    send: SenderScheduler,
-
     /// 监听地址
     addr: SocketAddr,
 
@@ -68,38 +67,37 @@ pub struct TcpServer {
     /// 链接
     conns: Arc<Mutex<HashMap<ConnId, ConnInfo>>>,
 
-    /// 与 tcp server 通信的 channel
-    channel: (SenderTcpServer, ReceiverTcpServer),
-
     /// 配置项
     config: Config,
+
+    /// 命令发射器
+    emitter: Emitter,
 }
 
 impl TcpServer {
-    pub fn new(config: Config, cancel_token: CancellationToken, send: SenderScheduler) -> Self {
+    pub fn new(config: Config, cancel_token: CancellationToken, emitter: Emitter) -> Self {
         TcpServer {
-            send,
             addr: config.tcp_server_addr(),
             cancel_token,
             conn_id: Arc::new(AtomicU64::new(0)),
             conns: Arc::new(Mutex::new(HashMap::new())),
-            channel: channel(config.channel_buffer()),
             config,
+            emitter,
         }
     }
 
     fn get_context(&self) -> TcpServerContext {
         TcpServerContext {
-            ss: self.send.clone(),
-            sts: self.channel.0.clone(),
             cancel_token: self.cancel_token.clone(),
             conn_id: self.conn_id.clone(),
             conns: self.conns.clone(),
             config: self.config.clone(),
+            emitter: self.emitter.clone(),
         }
     }
 
     async fn shutdown(self) {
+        self.emitter.remove(TCP_SERVER).await.unwrap();
         let mut conns = self.conns.lock().await;
         trace!("等待关闭的子线程数量: {}", conns.len());
         for (_, conn) in conns.iter_mut() {
@@ -142,9 +140,8 @@ impl TcpServer {
                     id,
                     socket,
                     context.cancel_token,
-                    context.ss,
-                    context.sts,
                     context.config,
+                    context.emitter,
                 );
                 controller.run().await;
             }
@@ -167,6 +164,10 @@ impl Runnable for TcpServer {
             }
         }
 
+        // 注册接收器
+        let (send, mut recv) = channel(self.config.channel_buffer());
+        self.emitter.register(TCP_SERVER, send).await.unwrap();
+
         loop {
             select! {
                 _ = self.cancel_token.cancelled() => {
@@ -184,8 +185,9 @@ impl Runnable for TcpServer {
                         }
                     }
                 }
-                res = self.channel.1.recv() => {
+                res = recv.recv() => {
                     if let Some(cmd) = res {
+                        let cmd = cmd.instance::<command::Command>();
                         trace!("tcp server 收到了消息: {:?}", cmd);
                         tokio::spawn(cmd.handle(self.get_context()));
                     }
@@ -240,7 +242,7 @@ impl<'a> Accept<'a> {
             }
             Poll::Ready(Ok(_len)) => Some(Poll::Ready(Bytes::from_owner(buf))),
             Poll::Ready(Err(e)) => {
-                // warn!("因神秘力量，和客户端失去了联系\t{}", e);
+                trace!("因神秘力量，和客户端失去了联系\t{}", e);
                 None
             }
             Poll::Pending => Some(Poll::Pending),

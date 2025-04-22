@@ -7,26 +7,28 @@
 //!
 //! 区块与分片的关系：区块是制作种子文件的单位，而分片是对种子文件进行下载的单位。分片可以有下载器动态控制，分片大小 <= 区块大小。
 
+pub mod command;
 mod error;
 
 use crate::buffer::ByteBuffer;
 use crate::bytes::Bytes2Int;
 use crate::collection::FixedQueue;
-use crate::core::alias::{ReceiverPeer, SenderPeer};
-use crate::core::peer_manager::GasketContext;
+use crate::command::CommandHandler;
 use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
 };
 use crate::core::runtime::Runnable;
 use crate::datetime;
+use crate::emitter::Emitter;
+use crate::emitter::constant::PEER_PREFIX;
 use crate::peer::error::Error::{HandshakeError, ResponseDataIncomplete, TryFromError};
-use crate::tracker::Host;
+use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
 use error::Result;
 use std::cmp::min;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::mem;
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
@@ -35,7 +37,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::channel;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 /// Peer 通信的消息类型
 #[derive(Debug)]
@@ -93,7 +95,7 @@ impl TryFrom<u8> for MsgType {
 
     fn try_from(value: u8) -> Result<Self> {
         if value <= 8 {
-            Ok(unsafe { std::mem::transmute(value) })
+            Ok(unsafe { mem::transmute(value) })
         } else {
             Err(TryFromError)
         }
@@ -133,71 +135,87 @@ enum Status {
 }
 
 pub struct Peer {
-    id: u64,
-    peer_id: [u8; 20],
-    opposite_peer_id: Option<[u8; 20]>,
+    /// 编号
+    no: u64,
+
+    /// gasket 共享上下文
     context: GasketContext,
+
+    /// peer 统计信息
     statistics: PeerStatistics,
+
+    /// reader
     reader: OwnedReadHalf,
+
+    /// wrtier
     writer: OwnedWriteHalf,
+
+    /// 当前 peer 的状态
     status: Status,
-    peer_status: Status,
-    peer_bitfield: Option<BytesMut>,
-    channel: (SenderPeer, ReceiverPeer),
-    sharding_size: u64,   // 分块大小
-    sharding_offset: u64, // 分块偏移量
+
+    /// 对端地址
     addr: SocketAddr,
-    downloading_piece: Option<u32>, // 当前正在下载的分块
+
+    /// 对端的 peer id
+    opposite_peer_id: Option<[u8; 20]>,
+
+    /// 对端的状态
+    opposite_peer_status: Status,
+
+    /// 对端拥有的分块
+    opposite_peer_bitfield: Option<BytesMut>,
+
+    /// 当前下载分块的偏移量
+    sharding_offset: u64, // 分块偏移量
+
+    /// 当前正在下载的分块
+    downloading_piece: Option<u32>,
+
+    /// 指令发射器
+    emitter: Emitter,
 }
 
 impl Peer {
     pub async fn new(
-        id: u64,
-        peer_id: [u8; 20],
-        host: Host,
+        no: u64,
+        addr: SocketAddr,
         context: GasketContext,
-        buff_size: usize,
+        emitter: Emitter,
     ) -> Option<Self> {
-        let addr: SocketAddr = host.into();
         let stream = match TcpStream::connect(addr).await {
             Ok(stream) => stream,
-            Err(_e) => {
-                // debug!("addr: {:?}\tconnect error: {}", addr, e);
-                return None;
-            }
+            Err(_) => return None,
         };
         let (reader, writer) = stream.into_split();
         Some(Peer {
-            id,
-            peer_id,
-            opposite_peer_id: None,
+            no,
             context,
             statistics: PeerStatistics::new(),
             reader,
             writer,
             status: Status::Choke,
-            peer_status: Status::Choke,
-            peer_bitfield: None,
-            channel: channel(buff_size),
-            sharding_size: 1 << 14,
-            sharding_offset: 0,
             addr,
+            opposite_peer_id: None,
+            opposite_peer_status: Status::Choke,
+            opposite_peer_bitfield: None,
+            sharding_offset: 0,
             downloading_piece: None,
+            emitter,
         })
     }
 
     /// 握手，然后询问对方有哪些分块是可以下载的
-    pub async fn start(&mut self) -> Result<SenderPeer> {
+    pub async fn start(&mut self) -> Result<()> {
         // 握手信息
-        trace!("发送握手信息 peer_id:{}", self.id);
+        trace!("发送握手信息 peer_id:{}", self.no);
         let mut bytes =
             Vec::with_capacity(1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN);
-        let info_hash = &self.context.torrent.info_hash;
+        let info_hash = &self.context.torrent().info_hash;
         WriteBytesExt::write_u8(&mut bytes, BIT_TORRENT_PROTOCOL_LEN)?;
         std::io::Write::write(&mut bytes, BIT_TORRENT_PROTOCOL)?;
         WriteBytesExt::write_u64::<BigEndian>(&mut bytes, 0u64)?;
         std::io::Write::write(&mut bytes, info_hash)?;
-        std::io::Write::write(&mut bytes, &self.peer_id)?;
+        std::io::Write::write(&mut bytes, self.context.peer_id())?;
 
         // 发送握手信息
         self.writer.write_all(&bytes).await?;
@@ -244,9 +262,7 @@ impl Peer {
         WriteBytesExt::write_u8(&mut bytes, MsgType::Interested as u8)?;
         self.writer.write_all(&bytes).await?;
 
-        // 开启运行时监听
-        let send = self.channel.0.clone();
-        Ok(send)
+        Ok(())
     }
 
     async fn handle(&mut self, msg_type: MsgType, bytes: Bytes) -> Result<()> {
@@ -266,8 +282,10 @@ impl Peer {
 
     /// 请求下载分块
     async fn request_block(&mut self, piece_index: u32) -> Result<bool> {
-        let piece_length = self.context.torrent.info.piece_length;
-        let resource_length = self.context.torrent.info.length;
+        let sharding_size = self.context.config().sharding_size();
+        let torrent = self.context.torrent();
+        let piece_length = torrent.info.piece_length;
+        let resource_length = torrent.info.length;
         let piece_length =
             piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length));
         self.statistics.last_request_time = datetime::now_millis();
@@ -275,7 +293,7 @@ impl Peer {
         if !over {
             trace!(
                 "peer_id [{}] 请求下载分块 {} - {}",
-                self.id, piece_index, self.sharding_offset
+                self.no, piece_index, self.sharding_offset
             );
             let mut req = Vec::with_capacity(13);
             WriteBytesExt::write_u32::<BigEndian>(&mut req, 13)?;
@@ -284,11 +302,11 @@ impl Peer {
             WriteBytesExt::write_u32::<BigEndian>(&mut req, self.sharding_offset as u32)?;
             WriteBytesExt::write_u32::<BigEndian>(
                 &mut req,
-                min(piece_length - self.sharding_offset, self.sharding_size) as u32,
+                min(piece_length - self.sharding_offset, sharding_size) as u32,
             )?;
 
             self.writer.write_all(&req).await?;
-            self.sharding_offset += self.sharding_size;
+            self.sharding_offset += sharding_size;
         } else {
             self.sharding_offset = 0;
         }
@@ -296,30 +314,35 @@ impl Peer {
     }
 
     /// 尝试寻找可以下载的分块进行下载
-    async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
-        let bit_len = self.context.torrent.info.pieces.len() / 20;
+    pub async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
+        let torrent = self.context.torrent();
+        let bit_len = torrent.info.pieces.len() / 20;
+
         for i in 0..bit_len {
             let idx = i / 8;
             let offset = 1 << (i % 8);
 
             if let Some(true) = self
-                .peer_bitfield
+                .opposite_peer_bitfield
                 .as_ref()
                 .map(|bytes| bytes[idx] & offset != 0)
             {
-                let mut ub = self.context.underway_bytefield.lock().await;
-                let new = ub[idx] & offset == 0;
-                ub.as_mut().get_mut(idx).map(|x| *x |= offset);
-                drop(ub);
-
-                if new {
-                    trace!("peer_id [{}] 发现新的可下载分块：{}", self.id, i);
+                if self
+                    .context
+                    .apply_download_piece(self.no, idx, offset)
+                    .await
+                {
+                    trace!("peer_id [{}] 发现新的可下载分块：{}", self.no, i);
                     self.downloading_piece = Some(i as u32);
                     self.request_block(i as u32).await?;
                     return Ok(true);
                 }
             }
         }
+
+        // 没有分块可以下载了，告诉 gasket
+        self.context.report_no_downloadable_piece(self.no).await;
+        self.downloading_piece = None;
         Ok(false)
     }
 
@@ -338,7 +361,7 @@ impl Peer {
     /// 对我们的数据感兴趣
     async fn handle_interested(&mut self) -> Result<()> {
         trace!("对端对我们的数据感兴趣，那我们就允许他下载");
-        self.peer_status = Status::UnChoke;
+        self.opposite_peer_status = Status::UnChoke;
         let mut req = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
         WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8)?;
@@ -349,7 +372,7 @@ impl Peer {
     /// 对我们的数据不再感兴趣了
     async fn handle_not_interested(&mut self) -> Result<()> {
         trace!("对端对我们的数据不再感兴趣了，那就告诉他你别下载了！");
-        self.peer_status = Status::Choke;
+        self.opposite_peer_status = Status::Choke;
         let mut req = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
         WriteBytesExt::write_u8(&mut req, MsgType::Choke as u8)?;
@@ -366,22 +389,20 @@ impl Peer {
         let bit = u32::from_be_slice(&bytes[..4]);
         let idx = (bit / 8) as usize;
         let offset = 1 << (bit % 8);
-        let mut ub = self.context.underway_bytefield.lock().await;
-        if idx >= ub.len() {
-            trace!("传入的数据有问题，忽略先");
-            return Ok(());
-        }
-        let new = ub[idx] & offset == 0; // 判断是否是新增的
-        ub.as_mut().get_mut(idx).map(|x| *x |= offset);
-        drop(ub); // 释放锁
 
-        self.peer_bitfield
-            .as_mut()
-            .map(|bytes| bytes[idx] |= offset);
-        if new && self.status == Status::Wait {
-            // 正在等新的分块可用，刚好这里来了个新的，那么就直接下载，不用告诉 gasket，有下得更快的想来抢，
-            // 就让他告诉 gasket，让 gasket 来决定是否分配给其它 peer
-            self.request_block(bit).await?;
+        if self
+            .context
+            .apply_download_piece(self.no, idx, offset)
+            .await
+        {
+            self.opposite_peer_bitfield
+                .as_mut()
+                .map(|bytes| bytes[idx] |= offset);
+            if self.status == Status::Wait {
+                // 正在等新的分块可用，刚好这里来了个新的，那么就直接下载，不用告诉 gasket，有下得更快的想来抢，
+                // 就让他告诉 gasket，让 gasket 来决定是否分配给其它 peer
+                self.request_block(bit).await?;
+            }
         }
 
         Ok(())
@@ -390,7 +411,7 @@ impl Peer {
     /// 对端告诉我们他有哪些分块可以下载
     async fn handle_bitfield(&mut self, bytes: Bytes) -> Result<()> {
         trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
-        let torrent = self.context.torrent.clone();
+        let torrent = self.context.torrent();
         let bit_len = torrent.info.pieces.len() / 20;
         if bytes.len() != (bit_len + 7) / 8 {
             warn!(
@@ -401,11 +422,8 @@ impl Peer {
             return Ok(());
         }
 
-        self.peer_bitfield = Some(BytesMut::from(bytes));
-        if !self.try_find_downloadable_pices().await? {
-            // 没有分块可以下载了，告诉 gasket
-            self.context.report_no_downloadable_piece(self.id).await;
-        }
+        self.opposite_peer_bitfield = Some(BytesMut::from(bytes));
+        self.try_find_downloadable_pices().await?;
 
         Ok(())
     }
@@ -413,7 +431,7 @@ impl Peer {
     /// 向我们请求数据
     async fn handle_request(&mut self, _bytes: Bytes) -> Result<()> {
         trace!("对端向我们请求数据");
-        if self.peer_status != Status::UnChoke {
+        if self.opposite_peer_status != Status::UnChoke {
             return Ok(());
         }
         Ok(())
@@ -421,7 +439,7 @@ impl Peer {
 
     /// 对端给我们发来了数据
     async fn handle_piece(&mut self, bytes: Bytes) -> Result<()> {
-        trace!("peer_id [{}] 收到了对端发来的数据", self.id);
+        trace!("peer_id [{}] 收到了对端发来的数据", self.no);
         // 下载到本地
         if bytes.len() < 8 {
             return Err(ResponseDataIncomplete);
@@ -430,11 +448,9 @@ impl Peer {
         let piece_index = u32::from_be_slice(&bytes[0..4]);
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = &bytes[8..];
-        let piece_length = self.context.torrent.info.piece_length;
-        let file_path = format!(
-            "{}{}",
-            self.context.download_path, self.context.torrent.info.name
-        );
+        let torrent = self.context.torrent();
+        let piece_length = torrent.info.piece_length;
+        let file_path = format!("{}{}", self.context.download_path(), torrent.info.name);
         Self::write_file(
             piece_index,
             block_offset,
@@ -447,7 +463,7 @@ impl Peer {
         let over = self.request_block(piece_index).await?;
 
         // 上报给 gasket
-        let take_time = 1.max(now_time - self.statistics.last_request_time); // 耗时
+        let take_time = 1.max(now_time.saturating_sub(self.statistics.last_request_time)); // 耗时
         let rate = ((block_data.len() as u128) * 1000 / take_time) as u64; // 速率（乘以 1000 毫秒，方便计算出字节/秒）
         self.statistics.last_bytes_recv = block_data.len() as u64;
         self.statistics.total_bytes_recv += block_data.len() as u64;
@@ -455,7 +471,7 @@ impl Peer {
         self.statistics.rate_window.push(rate);
         self.context
             .report_statistics(
-                self.id,
+                self.no,
                 piece_index,
                 block_offset,
                 block_data.len() as u64,
@@ -465,11 +481,9 @@ impl Peer {
             )
             .await;
 
-        if over && !self.try_find_downloadable_pices().await? {
+        if over {
             // 这个分块下载完了，寻找新的分块下载
-            // 没有分块可以下载了，告诉 gasket
-            self.downloading_piece = None;
-            self.context.report_no_downloadable_piece(self.id).await;
+            self.try_find_downloadable_pices().await?;
         }
 
         Ok(())
@@ -490,7 +504,13 @@ impl Peer {
         piece_length: u64,
     ) -> Result<()> {
         let mut file = OpenOptions::new().write(true).create(true).open(file)?;
-        trace!("写入文件\t{} - {} - {}偏移量: {}", piece_index, piece_length, block_offset, piece_index as u64 * piece_length + block_offset as u64);
+        trace!(
+            "写入文件\t{} - {} - {}偏移量: {}",
+            piece_index,
+            piece_length,
+            block_offset,
+            piece_index as u64 * piece_length + block_offset as u64
+        );
         file.seek(SeekFrom::Start(
             piece_index as u64 * piece_length + block_offset as u64,
         ))?;
@@ -498,15 +518,23 @@ impl Peer {
         std::io::prelude::Write::flush(&mut file)?;
         Ok(())
     }
+
+    fn get_transfer_id(&self) -> String {
+        format!("{}{}", PEER_PREFIX, self.no)
+    }
 }
 
 impl Runnable for Peer {
     async fn run(mut self) {
-        trace!("开始监听数据 peer_id:{}\taddr: {}", self.id, self.addr);
+        let (send, mut recv) = channel(self.context.config().channel_buffer());
+        let transfer_id = self.get_transfer_id();
+        self.emitter.register(transfer_id, send).await.unwrap();
+
+        trace!("开始监听数据 peer_id:{}\taddr: {}", self.no, self.addr);
         loop {
             tokio::select! {
                 _ = self.context.cancel_token() => {
-                    debug!("peer {} cancelled", self.id);
+                    debug!("peer {} cancelled", self.no);
                     break;
                 }
                 result = BtResp::new(&mut self.reader, self.addr) => {
@@ -521,15 +549,16 @@ impl Runnable for Peer {
                         },
                         None => {
                             // trace!("peer 接收无法正确处理的响应");
-                            error!("断开了链接，终止 {} - {} 的数据监听", self.id, self.addr);
+                            error!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
                             break;
                         }
                     }
                 },
-                result = self.channel.1.recv() => {
+                result = recv.recv() => {
                     match result {
-                        Some(_cmd) => {
-                            unimplemented!()
+                        Some(cmd) => {
+                            let cmd: command::Command = cmd.instance();
+                            cmd.handle(()).await; // todo - context
                         }
                         None => {
                             unimplemented!()
@@ -541,13 +570,9 @@ impl Runnable for Peer {
 
         // 归还未下完的分块
         if let Some(bit) = self.downloading_piece {
-            trace!("peer_id {} 归还未下载的分块: {}", self.id, bit);
-            let idx = (bit / 8) as usize;
-            let offset = 1 << (bit % 8);
-            let mut ub = self.context.underway_bytefield.lock().await;
-            ub.as_mut().get_mut(idx).map(|x| *x &= !offset);
+            self.context.give_back_download_piece(self.no, bit).await;
         }
-        self.context.peer_exit(self.id).await;
+        self.context.peer_exit(self.no, ExitReason::Normal).await;
     }
 }
 

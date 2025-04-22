@@ -1,10 +1,10 @@
 use crate::core::config::Config;
 use crate::core::context::Context;
+use crate::core::emitter::Emitter;
 use crate::core::peer_manager::PeerManager;
 use crate::core::runtime::Runnable;
 use crate::core::scheduler::Scheduler;
 use crate::core::tcp_server::TcpServer;
-use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
 
@@ -18,27 +18,22 @@ impl Bootstrap {
         let config = Config::new();
 
         // 初始化通用资源
-        let (send, recv) = channel(config.channel_buffer());
         let cancel_token = CancellationToken::new();
         let context = Context {};
 
+        // 发送器
+        let emitter = Emitter::new();
+
         trace!("启动 tcp server");
-        let tcp_server = TcpServer::new(config.clone(), cancel_token.clone(), send.clone());
+        let tcp_server = TcpServer::new(config.clone(), cancel_token.clone(), emitter.clone());
         let tcp_server_handle = tokio::spawn(tcp_server.run());
 
         trace!("启动 peer 管理器");
-        let peer_manager = PeerManager::new(send.clone(), cancel_token.clone(), config.clone());
-        let peer_manager_sender = peer_manager.get_sender();
+        let peer_manager = PeerManager::new(config.clone(), cancel_token.clone(), emitter.clone());
         let peer_manager_handle = tokio::spawn(peer_manager.run());
 
         trace!("启动调度器");
-        let scheduler = Scheduler::new(
-            (send, recv),
-            context,
-            cancel_token,
-            peer_manager_sender,
-            config,
-        );
+        let scheduler = Scheduler::new(context, cancel_token, config, emitter);
         scheduler.run().await;
 
         info!("等待资源关闭中...");

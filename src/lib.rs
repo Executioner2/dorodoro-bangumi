@@ -6,6 +6,7 @@ pub mod mapper;
 pub mod util;
 
 pub use bt::*;
+pub use core::*;
 pub use util::*;
 
 pub trait Integer: Copy + Sized {}
@@ -21,3 +22,13 @@ impl Integer for i128 {}
 impl Integer for u128 {}
 impl Integer for isize {}
 impl Integer for usize {}
+
+pub trait BoxWrapper {
+    fn to_box(self) -> Box<Self>;
+}
+
+impl<T> BoxWrapper for T {
+    fn to_box(self) -> Box<Self> {
+        Box::new(self)
+    }
+}

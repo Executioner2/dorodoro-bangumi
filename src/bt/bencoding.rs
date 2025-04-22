@@ -42,11 +42,11 @@ impl BEncode {
 }
 
 pub trait BEncoder {
-    fn encode(self) -> Bytes;
+    fn encode(&self) -> Bytes;
 }
 
 impl BEncoder for &[u8] {
-    fn encode(self) -> Bytes {
+    fn encode(&self) -> Bytes {
         let binding = self.len().to_string();
         let mut bytes = BytesMut::with_capacity(binding.as_bytes().len() + 1 + self.len()); // 1个字节的 ':'
         bytes.put_slice(binding.as_bytes());
@@ -56,8 +56,26 @@ impl BEncoder for &[u8] {
     }
 }
 
+impl<const N: usize> BEncoder for &[u8; N] {
+    fn encode(&self) -> Bytes {
+        self.as_slice().encode()
+    }
+}
+
+impl BEncoder for Vec<u8> {
+    fn encode(&self) -> Bytes {
+        self.as_slice().encode()
+    }
+}
+
 impl BEncoder for &str {
-    fn encode(self) -> Bytes {
+    fn encode(&self) -> Bytes {
+        self.as_bytes().encode()
+    }
+}
+
+impl BEncoder for String {
+    fn encode(&self) -> Bytes {
         self.as_bytes().encode()
     }
 }
@@ -66,7 +84,7 @@ impl<T> BEncoder for T
 where
     T: Integer + ToString,
 {
-    fn encode(self) -> Bytes {
+    fn encode(&self) -> Bytes {
         let binding = self.to_string();
         let data = binding.as_bytes();
         let mut bytes = BytesMut::with_capacity(data.len() + 2); // 1个字节的 'i' 和 1个字节的 'e'
@@ -77,11 +95,8 @@ where
     }
 }
 
-impl<T> BEncoder for Vec<T>
-where
-    T: BEncoder,
-{
-    fn encode(self) -> Bytes {
+impl BEncoder for Vec<Box<dyn BEncoder>> {
+    fn encode(&self) -> Bytes {
         let mut bytes = BytesMut::new();
         bytes.put_u8(b'l' as u8);
         for item in self {
@@ -92,21 +107,27 @@ where
     }
 }
 
-impl<T> BEncoder for LinkedHashMap<String, T>
-where
-    T: BEncoder,
-{
-    fn encode(self) -> Bytes {
-        let mut bytes = BytesMut::new();
-        bytes.put_u8(b'd' as u8);
-        for (key, value) in self.into_iter() {
-            bytes.put_slice(&key.as_bytes().encode());
-            bytes.put_slice(&value.encode())
-        }
-        bytes.put_u8(b'e' as u8);
-        bytes.freeze()
-    }
+macro_rules! impl_for_map {
+    ($($t:ty),+) => {
+        $(impl<K> BEncoder for $t where K: BEncoder {
+            fn encode(&self) -> Bytes {
+                let mut bytes = BytesMut::new();
+                bytes.put_u8(b'd' as u8);
+                for (key, value) in self.into_iter() {
+                    bytes.put_slice(&key.encode());
+                    bytes.put_slice(&value.encode())
+                }
+                bytes.put_u8(b'e' as u8);
+                bytes.freeze()
+            }
+        })+
+    };
 }
+
+impl_for_map!(
+    HashMap<K, Box<dyn BEncoder>>, 
+    LinkedHashMap<K, Box<dyn BEncoder>>
+);
 
 /// Represents a bencode value.
 #[derive(PartialEq, Eq, Debug)]
@@ -189,7 +210,7 @@ impl BEncode {
 pub trait BEncodeHashMap {
     fn get_int(&self, key: &str) -> Option<i64>;
     fn get_str(&self, key: &str) -> Option<&str>;
-    fn as_bytes_conetnt(&self, key: &str) -> Option<&[u8]>;
+    fn get_bytes_conetnt(&self, key: &str) -> Option<&[u8]>;
     fn get_list(&self, key: &str) -> Option<&Vec<BEncode>>;
     fn get_dict(&self, key: &str) -> Option<&HashMap<String, BEncode>>;
     fn get_bytes(&self, key: &str) -> Option<&[u8]>;
@@ -204,7 +225,7 @@ impl BEncodeHashMap for HashMap<String, BEncode> {
         self.get(key).map_or(None, |value| value.as_str())
     }
 
-    fn as_bytes_conetnt(&self, key: &str) -> Option<&[u8]> {
+    fn get_bytes_conetnt(&self, key: &str) -> Option<&[u8]> {
         self.get(key).map_or(None, |value| value.as_bytes_conetnt())
     }
 

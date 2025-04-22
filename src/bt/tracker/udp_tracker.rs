@@ -9,7 +9,7 @@ mod tests;
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
 use crate::tracker::udp_tracker::error::Error;
-use crate::tracker::{Event, Host};
+use crate::tracker::{AnnounceInfo, Event, Host};
 use crate::util::buffer::ByteBuffer;
 use crate::{datetime, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
@@ -64,16 +64,11 @@ pub struct Announce {
 pub struct Scrape {}
 
 pub struct UdpTracker<'a> {
-    socket: UdpSocket,
     connect: Connect,
     retry_count: u8,
     announce: &'a str,
     info_hash: &'a [u8; 20],
     peer_id: &'a [u8; 20],
-    download: u64,
-    left: u64,
-    uploaded: u64,
-    port: u16,
 }
 
 impl<'a> UdpTracker<'a> {
@@ -87,52 +82,37 @@ impl<'a> UdpTracker<'a> {
     ///
     /// let info_hash = [0u8; 20];
     /// let peer_id = gen_peer_id();
-    /// let mut tracker = UdpTracker::new("tracker.torrent.eu.org:451", &info_hash, &peer_id, 0, 9999, 9987).unwrap();
+    /// let mut tracker = UdpTracker::new("tracker.torrent.eu.org:451", &info_hash, &peer_id);
     /// ```
-    pub fn new(
-        announce: &'a str,
-        info_hash: &'a [u8; 20],
-        peer_id: &'a [u8; 20],
-        download: u64,
-        left: u64,
-        port: u16,
-    ) -> Result<Self> {
-        let socket = UdpSocket::bind(DEFAULT_ADDR)?;
-        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
-        socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
+    pub fn new(announce: &'a str, info_hash: &'a [u8; 20], peer_id: &'a [u8; 20]) -> Self {
         error!("实际的地址: {}", announce);
-        Ok(Self {
-            socket,
+        Self {
             connect: Connect::default(),
             retry_count: 0,
             announce,
             info_hash,
             peer_id,
-            download,
-            left,
-            uploaded: 0,
-            port,
-        })
+        }
     }
 
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub fn announcing(&mut self, event: Event) -> Result<Announce> {
+    pub fn announcing(&mut self, event: Event, info: AnnounceInfo) -> Result<Announce> {
         self.update_connect()?;
         let (req_tran_id, mut req) =
             Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
 
         req.write(self.info_hash)?;
         req.write(self.peer_id)?;
-        req.write_u64::<BigEndian>(self.download)?;
-        req.write_u64::<BigEndian>(self.left)?;
-        req.write_u64::<BigEndian>(self.uploaded)?;
+        req.write_u64::<BigEndian>(info.download)?;
+        req.write_u64::<BigEndian>(info.left)?;
+        req.write_u64::<BigEndian>(info.uploaded)?;
         req.write_u32::<BigEndian>(event as u32)?;
         req.write_u32::<BigEndian>(0)?; // ip
         req.write_u32::<BigEndian>(tracker::gen_process_key())?;
         req.write_i32::<BigEndian>(-1)?; // 期望的 peer 数量
-        req.write_u16::<BigEndian>(self.port)?;
+        req.write_u16::<BigEndian>(info.port)?;
 
         let resp = self.send(&req, -1)?;
 
@@ -146,11 +126,12 @@ impl<'a> UdpTracker<'a> {
         let seedrs = u32::from_be_slice(&resp[16..20]);
 
         // 解析 peers 列表
-        let peers = if self.socket.local_addr()?.is_ipv4() {
-            tracker::parse_peers_v4(&resp[20..])?
-        } else {
-            tracker::parse_peers_v6(&resp[20..])?
-        };
+        let peers = tracker::parse_peers_v4(&resp[20..])?;
+        // let peers = if self.socket.local_addr()?.is_ipv4() {
+        //     tracker::parse_peers_v4(&resp[20..])?
+        // } else {
+        //     tracker::parse_peers_v6(&resp[20..])?
+        // };
 
         Ok(Announce {
             interval,
@@ -179,7 +160,10 @@ impl<'a> UdpTracker<'a> {
     /// # Returns
     /// 正常的情况下，返回接收到的数据。
     fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
-        self.socket.send_to(data, target)?;
+        let socket = UdpSocket::bind(DEFAULT_ADDR)?;
+        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
+        socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
+        socket.send_to(data, target)?;
         let expect_size = if expect_size < 0 {
             MAX_PAYLOAD_SIZE
         } else {
@@ -187,7 +171,7 @@ impl<'a> UdpTracker<'a> {
         };
 
         let mut buffer = ByteBuffer::new(expect_size);
-        let (size, _socket_addr) = self.socket.recv_from(buffer.as_mut())?;
+        let (size, _socket_addr) = socket.recv_from(buffer.as_mut())?;
 
         // 转换为已初始化的缓冲区
         buffer.resize(size);

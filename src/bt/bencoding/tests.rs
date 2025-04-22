@@ -5,6 +5,7 @@ use bytes::Bytes;
 use hashlink::LinkedHashMap;
 use std::collections::HashMap;
 use std::io::Read;
+use crate::BoxWrapper;
 
 /// Helper function to read a file into a byte vector.
 fn read_file(path: &str) -> Vec<u8> {
@@ -142,15 +143,16 @@ fn test_encode_int() {
 
 #[test]
 fn test_encode_list() {
-    let list = vec!["spam", "eggs", "123"].encode();
+    let list: Vec<Box<dyn BEncoder>> = vec!["spam".to_box(), "eggs".to_box(), "123".to_box()];
+    let list = list.encode();
     assert_eq!(list, Bytes::from_owner(b"l4:spam4:eggs3:123e"))
 }
 
 #[test]
 fn test_encode_dict() {
-    let mut dict = LinkedHashMap::new();
-    dict.insert("cow".to_string(), "moo");
-    dict.insert("spam".to_string(), "eggs");
+    let mut dict: LinkedHashMap<String, Box<dyn BEncoder>> = LinkedHashMap::new();
+    dict.insert("cow".to_string(), "moo".to_box());
+    dict.insert("spam".to_string(), "eggs".to_box());
     let dict = dict.encode();
     assert_eq!(dict, Bytes::from_owner(b"d3:cow3:moo4:spam4:eggse"))
 }

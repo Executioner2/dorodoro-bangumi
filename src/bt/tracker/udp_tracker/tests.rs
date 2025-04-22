@@ -4,7 +4,7 @@ use crate::bt::peer::MsgType;
 use crate::bytes::Bytes2Int;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker;
-use crate::tracker::Event;
+use crate::tracker::{AnnounceInfo, Event};
 use crate::tracker::udp_tracker::UdpTracker;
 use byteorder::{BigEndian, WriteBytesExt};
 use sha1::{Digest, Sha1};
@@ -30,11 +30,7 @@ fn test_connect() {
         "tracker.torrent.eu.org:451",
         &info_hash,
         &peer_id,
-        0,
-        9999,
-        9987,
-    )
-    .unwrap();
+    );
     println!("connect before: {:?}", tracker.connect);
     tracker.update_connect().unwrap();
     println!("connect after: {:?}", tracker.connect);
@@ -51,12 +47,14 @@ fn test_announce() {
         "tracker.torrent.eu.org:451",
         &torrent.info_hash,
         &peer_id,
-        0,
-        torrent.info.length,
-        9987,
-    )
-    .unwrap();
-    let announce = tracker.announcing(Event::None).unwrap();
+    );
+    let info = AnnounceInfo {
+        download: 0,
+        left: torrent.info.length,
+        uploaded: 0,
+        port: 9987,
+    };
+    let announce = tracker.announcing(Event::None, info).unwrap();
     println!("announce result: {:?}", announce);
     println!("peers length: {}", announce.peers.len());
 }

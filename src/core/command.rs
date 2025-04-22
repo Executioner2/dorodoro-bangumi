@@ -1,12 +1,6 @@
-pub mod gasket;
-pub mod peer;
-pub mod peer_manager;
-pub mod scheduler;
-pub mod tcp_server;
-
 /// 命令处理器
-pub trait CommandHandler<'a> {
+pub trait CommandHandler {
     type Target;
 
-    async fn handle(self, context: Self::Target);
+    fn handle(self, context: Self::Target) -> impl Future<Output = ()> + Send;
 }
