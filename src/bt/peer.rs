@@ -9,8 +9,8 @@
 
 pub mod command;
 mod error;
+mod future;
 
-use crate::buffer::ByteBuffer;
 use crate::bytes::Bytes2Int;
 use crate::collection::FixedQueue;
 use crate::command::CommandHandler;
@@ -22,6 +22,7 @@ use crate::datetime;
 use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
 use crate::peer::error::Error::{HandshakeError, ResponseDataIncomplete, TryFromError};
+use crate::peer::future::BtResp;
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
@@ -31,9 +32,7 @@ use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom};
 use std::mem;
 use std::net::SocketAddr;
-use std::pin::{Pin, pin};
-use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::channel;
@@ -166,7 +165,7 @@ pub struct Peer {
     opposite_peer_bitfield: Option<BytesMut>,
 
     /// 当前下载分块的偏移量
-    sharding_offset: u64, // 分块偏移量
+    sharding_offset: u64,
 
     /// 当前正在下载的分块
     downloading_piece: Option<u32>,
@@ -553,7 +552,7 @@ impl Runnable for Peer {
                             break;
                         }
                     }
-                },
+                }
                 result = recv.recv() => {
                     match result {
                         Some(cmd) => {
@@ -573,118 +572,5 @@ impl Runnable for Peer {
             self.context.give_back_download_piece(self.no, bit).await;
         }
         self.context.peer_exit(self.no, ExitReason::Normal).await;
-    }
-}
-
-enum State {
-    Length,   // 等待长度数据
-    MsgType,  // 等待消息类型
-    Content,  // 等待内容数据
-    Finished, // Future 已完成
-}
-
-/// bt 响应处理
-struct BtResp<'a> {
-    read: &'a mut OwnedReadHalf,
-    state: State,
-    msg_type: Option<MsgType>,
-    length: Option<u32>,
-    addr: SocketAddr,
-    buf: ByteBuffer,
-    read_count: usize,
-}
-
-impl<'a> BtResp<'a> {
-    fn new(read: &'a mut OwnedReadHalf, addr: SocketAddr) -> Self {
-        Self {
-            read,
-            state: State::Length,
-            msg_type: None,
-            length: None,
-            addr,
-            buf: ByteBuffer::new(4),
-            read_count: 0,
-        }
-    }
-
-    fn read(&mut self, cx: &mut Context<'_>, addr: SocketAddr) -> Option<Poll<Bytes>> {
-        if self.buf.len() == 0 {
-            return Some(Poll::Ready(Bytes::new()));
-        }
-
-        loop {
-            let mut read_buf = ReadBuf::new(&mut self.buf[self.read_count..]);
-            match Pin::new(&mut self.read).poll_read(cx, &mut read_buf) {
-                Poll::Ready(Ok(())) => {
-                    let filled = read_buf.filled().len();
-                    if filled == 0 {
-                        trace!("客户端主动说bye-bye");
-                        return None;
-                    }
-                    self.read_count += filled;
-                    if self.read_count >= self.buf.capacity() {
-                        let mut buf = ByteBuffer::new(0);
-                        mem::swap(&mut self.buf, &mut buf);
-                        self.read_count = 0;
-                        return Some(Poll::Ready(Bytes::from_owner(buf)));
-                    }
-                }
-                Poll::Ready(Err(e)) => {
-                    error!("因神秘力量，和客户端失去了联系\t{}，addr: {}", e, addr);
-                    return None;
-                }
-                Poll::Pending => return Some(Poll::Pending),
-            }
-        }
-    }
-}
-
-impl Future for BtResp<'_> {
-    type Output = Option<(MsgType, Bytes)>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let bt_resp = unsafe { self.get_unchecked_mut() };
-        let buf = match bt_resp.read(cx, bt_resp.addr) {
-            Some(Poll::Ready(buf)) => buf,
-            Some(Poll::Pending) => {
-                trace!("protocol 的数据还没准备好");
-                return Poll::Pending;
-            }
-            None => return Poll::Ready(None),
-        };
-
-        match bt_resp.state {
-            State::Length => {
-                let length = u32::from_be_slice(&buf[..4]);
-                if length > 1 {
-                    bt_resp.length = Some(length - 1);
-                }
-                bt_resp.buf = ByteBuffer::new(1);
-                bt_resp.state = State::MsgType;
-            }
-            State::MsgType => {
-                if let Ok(msg_type) = MsgType::try_from(buf[0]) {
-                    trace!("取得消息类型: {:?}", msg_type);
-                    if let Some(length) = bt_resp.length {
-                        bt_resp.buf = ByteBuffer::new(length as usize);
-                        bt_resp.msg_type = Some(msg_type);
-                        bt_resp.state = State::Content;
-                    } else {
-                        return Poll::Ready(Some((msg_type, Bytes::new())));
-                    }
-                } else {
-                    error!("未知的消息类型\tmsg_type value: {}", buf[0]);
-                    return Poll::Ready(None);
-                }
-            }
-            State::Content => {
-                bt_resp.state = State::Finished;
-                return Poll::Ready(Some((bt_resp.msg_type.take().unwrap(), buf)));
-            }
-            State::Finished => {
-                return Poll::Ready(None);
-            }
-        }
-        pin!(bt_resp).poll(cx)
     }
 }

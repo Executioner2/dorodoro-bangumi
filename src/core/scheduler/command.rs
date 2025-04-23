@@ -5,7 +5,6 @@ use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::peer_manager::command;
 use crate::core::scheduler::SchedulerContext;
 use crate::torrent::TorrentArc;
-use crate::tracker;
 use core::fmt::{Debug, Formatter};
 use tracing::info;
 

@@ -41,13 +41,9 @@ impl CommandHandler for NewDownloadTask {
         let download = 0;
         let uploaded = 0;
         let mut emitter = Emitter::new();
-        emitter
-            .register(
-                PEER_MANAGER,
-                context.emitter.get(PEER_MANAGER).await.unwrap(),
-            )
-            .await
-            .unwrap();
+        context.emitter.get(PEER_MANAGER).await.map(async |send| {
+            emitter.register(PEER_MANAGER, send).await.unwrap();
+        });
 
         let gasket_id = context.gasket_id.fetch_add(1, Ordering::Relaxed);
         let peer_id = Arc::new(context.get_peer_id().await);

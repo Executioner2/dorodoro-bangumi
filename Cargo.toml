@@ -21,11 +21,11 @@ lazy_static = "1.5.0"
 nanoid = "0.4.0"
 hex = "0.4.3"
 serde_qs = "0.14.0"
-enum_dispatch = "0.3.13"
 ahash = "0.8.11"
 
 [dev-dependencies]
 criterion = "0.5.1"
+enum_dispatch = "0.3.13"
 
 [[bench]]
 name = "socket_buffer_benchmark"

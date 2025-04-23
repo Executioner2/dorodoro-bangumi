@@ -1,12 +1,12 @@
 //! 调度器
 
-use command::Command;
 use crate::core::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::context::Context;
 use crate::core::emitter::Emitter;
-use crate::core::emitter::constant::{SCHEDULER, TCP_SERVER};
+use crate::core::emitter::constant::SCHEDULER;
 use crate::core::runtime::Runnable;
+use command::Command;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};

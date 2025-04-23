@@ -99,16 +99,6 @@ impl GasketContext {
                 self.wait_queue.lock().await.push_back(peer);
             }
         }
-        // let mut peers = self.peers.lock().await;
-        // if let Some(sender) = self.wait_queue.lock().await.pop_front() {
-        //     sender.send(peer::Download.into()).await.unwrap();
-        // }
-        // peers.remove(&peer_id);
-        // if peers.is_empty() {
-        //     trace!("没有 peer 了，强制刷新一波");
-        //     drop(peers);
-        //     self.force_flush_announce().await;
-        // }
     }
 
     /// 申请下载分块
@@ -170,53 +160,6 @@ impl GasketContext {
         );
         self.download.fetch_add(block_size, Ordering::Relaxed);
     }
-
-    // async fn force_flush_announce(&self) {
-    //     let peers = tracker::discover_peer(
-    //         self.torrent.clone(),
-    //         self.download.load(Ordering::Relaxed),
-    //         self.upload.load(Ordering::Relaxed),
-    //         self.listener_port,
-    //         Event::None,
-    //     )
-    //     .await;
-    //     let uh = self.unable_host.lock().await;
-    //     let mut host = self.hosts.lock().await;
-    //     let peers_map = self.peers.lock().await;
-    //     let set = peers_map
-    //         .values()
-    //         .map(|p| p.host.clone())
-    //         .collect::<HashSet<Host>>();
-    //     peers
-    //         .into_iter()
-    //         .filter(|p| !uh.contains(p) && !set.contains(p))
-    //         .for_each(|p| {
-    //             host.push(p);
-    //         });
-    //     if self
-    //         .spm
-    //         .send(FlushAnnounce(self.torrent.info_hash.clone()).into())
-    //         .await
-    //         .is_err()
-    //     {
-    //         error!("通知刷新 annouce 失败");
-    //     }
-    // }
-    //
-    // /// 刷新 tracker 的 announce 信息
-    // async fn run(self) {
-    //     loop {
-    //         tokio::select! {
-    //             _ = self.cancel_token.cancelled() => {
-    //                 break;
-    //             }
-    //             _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 15)) => {
-    //                 trace!("到时间刷新annoucne");
-    //                 self.force_flush_announce().await;
-    //             }
-    //         }
-    //     }
-    // }
 }
 
 /// 同一个任务的peer交给一个垫片来管理，垫片对peer进行分块下载任务的分配
@@ -248,7 +191,6 @@ pub struct Gasket<'a> {
     /// 已上传的量
     uploaded: Arc<AtomicU64>,
 
-    // hosts: Arc<Mutex<Vec<Host>>>,
     /// 这个是正儿八经下下来了的分块
     bytefield: Arc<Mutex<BytesMut>>,
 
@@ -337,9 +279,9 @@ impl<'a> Gasket<'a> {
         let context = self.get_context();
         let mut emmiter = Emitter::new();
         let transfer_id = self.get_transfer_id();
-        if let Some(send) = self.emitter.get(&transfer_id).await {
-            emmiter.register(transfer_id, send.clone()).await.unwrap();
-        }
+        self.emitter.get(&transfer_id).await.map(async |send| {
+            emmiter.register(transfer_id, send).await.unwrap();
+        });
 
         if let Some(mut peer) = Peer::new(peer_no, addr, context, emmiter).await {
             match peer.start().await {
@@ -354,13 +296,11 @@ impl<'a> Gasket<'a> {
                         },
                     );
                 }
-                Err(_e) => {
-                    // error!("启动 peer 失败，peer_id: {}\thost: {:?}\terror: {}", peer_id, host, e)
+                Err(_) => {
                     self.unable_host.lock().await.insert(addr);
                 }
             }
         } else {
-            // warn!("peer_id: {}\t连不上这个host: {:?}", peer_id, host);
             self.unable_host.lock().await.insert(addr);
         }
     }

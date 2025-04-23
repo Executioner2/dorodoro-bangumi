@@ -1,22 +1,15 @@
-use crate::buffer::ByteBuffer;
 use crate::core::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::controller::Controller;
 use crate::core::emitter::Emitter;
-use crate::core::emitter::constant::{SCHEDULER, TCP_SERVER};
-use crate::core::protocol;
+use crate::core::emitter::constant::TCP_SERVER;
 use crate::core::protocol::{Identifier, Protocol};
 use crate::core::runtime::Runnable;
-use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::option::Option;
-use std::pin::{pin, Pin};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::Mutex;
@@ -24,8 +17,10 @@ use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
+use crate::core::tcp_server::future::Accept;
 
 pub mod command;
+mod future;
 
 /// 读超时时间 60 秒
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -198,112 +193,5 @@ impl Runnable for TcpServer {
         info!("tcp server 等待资源释放");
         self.shutdown().await;
         info!("tcp server 已关闭");
-    }
-}
-
-struct Accept<'a> {
-    socket: &'a mut TcpStream,
-    size: usize,
-    protocol: Option<Bytes>,
-    protocol_id: Option<Identifier>,
-    state: State,
-}
-
-#[derive(Eq, PartialEq)]
-enum State {
-    ProtocolLen,
-    Protocol,
-    ParseProtocol,
-    Finished,
-}
-
-impl<'a> Accept<'a> {
-    fn new(socket: &'a mut TcpStream) -> Self {
-        Self {
-            socket,
-            size: 1, // 协议长度占用 1 个字节
-            protocol: None,
-            protocol_id: None,
-            state: State::ProtocolLen,
-        }
-    }
-
-    fn read(&mut self, size: usize, cx: &mut Context<'_>) -> Option<Poll<Bytes>> {
-        if size == 0 {
-            return Some(Poll::Ready(Bytes::new()));
-        }
-        let mut buf = ByteBuffer::new(size);
-        let mut binding = buf.as_mut();
-        let future = self.socket.read_exact(&mut binding);
-        match pin!(future).poll(cx) {
-            Poll::Ready(Ok(0)) => {
-                trace!("客户端主动说bye-bye");
-                None
-            }
-            Poll::Ready(Ok(_len)) => Some(Poll::Ready(Bytes::from_owner(buf))),
-            Poll::Ready(Err(e)) => {
-                trace!("因神秘力量，和客户端失去了联系\t{}", e);
-                None
-            }
-            Poll::Pending => Some(Poll::Pending),
-        }
-    }
-
-    /// 解析出协议和协议载荷长度
-    fn parse_protocol(&self, protocol: &[u8]) -> Option<(Identifier, usize)> {
-        match protocol {
-            protocol::BIT_TORRENT_PROTOCOL => {
-                Some((Identifier::BitTorrent, protocol::BIT_TORRENT_PAYLOAD_LEN))
-            }
-            protocol::REMOTE_CONTROL_PROTOCOL => Some((
-                Identifier::RemoteControl,
-                protocol::REMOTE_CONTROL_PAYLOAD_LEN,
-            )),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> Future for Accept<'_> {
-    type Output = Option<Protocol>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let accept = unsafe { self.get_unchecked_mut() };
-        let buf = match accept.read(accept.size, cx) {
-            Some(Poll::Ready(buf)) => buf,
-            Some(Poll::Pending) => {
-                trace!("protocol 的数据还没准备好");
-                return Poll::Pending;
-            }
-            None => return Poll::Ready(None),
-        };
-
-        match accept.state {
-            State::ProtocolLen => {
-                accept.size = buf[0] as usize;
-                accept.state = State::Protocol;
-            }
-            State::Protocol => {
-                accept.protocol = Some(buf);
-                let protocol = accept.protocol.as_ref().unwrap();
-                accept.state = State::ParseProtocol;
-                if let Some((id, size)) = accept.parse_protocol(protocol) {
-                    accept.size = size;
-                    accept.protocol_id = Some(id);
-                } else {
-                    warn!("未知协议: {}", String::from_utf8_lossy(protocol));
-                    return Poll::Ready(None);
-                }
-            }
-            State::ParseProtocol => {
-                let id = accept.protocol_id.take().unwrap();
-                let protocol = Protocol { id, payload: buf };
-                return Poll::Ready(Some(protocol));
-            }
-            State::Finished => {
-                return Poll::Ready(None);
-            }
-        }
-        pin!(accept).poll(cx)
     }
 }

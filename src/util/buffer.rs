@@ -4,9 +4,10 @@
 use std::alloc::Layout;
 use std::ops::{Index, IndexMut, Range, RangeFrom};
 use std::ptr::NonNull;
+use bytes::Bytes;
 
 pub struct ByteBuffer {
-    bytes: NonNull<u8>,
+    ptr: NonNull<u8>,
     size: usize,
     capacity: usize,
 }
@@ -25,7 +26,7 @@ impl ByteBuffer {
     pub fn new(capacity: usize) -> Self {
         if capacity == 0 {
             Self {
-                bytes: NonNull::dangling(),
+                ptr: NonNull::dangling(),
                 size: 0,
                 capacity: 0,
             }
@@ -33,7 +34,7 @@ impl ByteBuffer {
             let layout = Layout::array::<u8>(capacity).unwrap();
             let ptr = unsafe { std::alloc::alloc(layout) };
             Self {
-                bytes: NonNull::new(ptr).unwrap(),
+                ptr: NonNull::new(ptr).unwrap(),
                 size: capacity,
                 capacity,
             }
@@ -68,8 +69,8 @@ impl ByteBuffer {
         let old_layout = Layout::array::<u8>(self.capacity).unwrap();
         let new_layout = Layout::array::<u8>(capacity).unwrap();
         let ptr =
-            unsafe { std::alloc::realloc(self.bytes.as_ptr(), old_layout, new_layout.size()) };
-        self.bytes = NonNull::new(ptr).unwrap();
+            unsafe { std::alloc::realloc(self.ptr.as_ptr(), old_layout, new_layout.size()) };
+        self.ptr = NonNull::new(ptr).unwrap();
         self.capacity = capacity;
         self.resize(capacity);
     }
@@ -81,22 +82,35 @@ impl ByteBuffer {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+    
+    pub fn reset(&mut self) {
+        self.ptr = NonNull::dangling();
+        self.size = 0;
+        self.capacity = 0;
+    }
+    
+    pub fn take(&mut self) -> Bytes {
+        let layout = Layout::array::<u8>(self.size).unwrap();
+        let list = unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), layout.size()) };
+        self.reset();
+        Bytes::from_owner(list)
+    } 
 }
 
 impl AsRef<[u8]> for ByteBuffer {
     fn as_ref(&self) -> &[u8] {
+        let layout = Layout::array::<u8>(self.size).unwrap();
         unsafe {
-            let layout = Layout::array::<u8>(self.size).unwrap();
-            std::slice::from_raw_parts(self.bytes.as_ptr(), layout.size())
+            std::slice::from_raw_parts(self.ptr.as_ptr(), layout.size())
         }
     }
 }
 
 impl AsMut<[u8]> for ByteBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
+        let layout = Layout::array::<u8>(self.size).unwrap();
         unsafe {
-            let layout = Layout::array::<u8>(self.size).unwrap();
-            std::slice::from_raw_parts_mut(self.bytes.as_ptr(), layout.size())
+            std::slice::from_raw_parts_mut(self.ptr.as_ptr(), layout.size())
         }
     }
 }
@@ -136,7 +150,7 @@ impl Drop for ByteBuffer {
         }
         unsafe {
             let layout = Layout::array::<u8>(self.capacity).unwrap();
-            std::alloc::dealloc(self.bytes.as_ptr(), layout);
+            std::alloc::dealloc(self.ptr.as_ptr(), layout);
         }
     }
 }

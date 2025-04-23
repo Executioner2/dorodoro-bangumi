@@ -1,12 +1,12 @@
 //! 接收客户端发来的控制信号
 
+use crate::core::config::Config;
+use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::{CONTROLLER_PREFIX, SCHEDULER, TCP_SERVER};
+use crate::core::runtime::Runnable;
 use crate::core::scheduler::command;
 use crate::core::scheduler::command::Shutdown;
 use crate::core::tcp_server::command::Exit;
-use crate::core::config::Config;
-use crate::core::emitter::Emitter;
-use crate::core::emitter::constant::{CONTROLLER_PREFIX, PEER_MANAGER, SCHEDULER, TCP_SERVER};
-use crate::core::runtime::Runnable;
 use crate::torrent::{Parse, TorrentArc};
 use std::fs;
 use tokio::io::AsyncReadExt;
@@ -43,11 +43,11 @@ impl Controller {
             emitter,
         }
     }
-    
+
     fn get_transfer_id(&self) -> String {
         format!("{}{}", CONTROLLER_PREFIX, self.id)
     }
-    
+
     async fn shutdown(self) {
         let transfer_id = self.get_transfer_id();
         self.emitter.remove(&transfer_id).await.unwrap();
@@ -99,7 +99,7 @@ impl Runnable for Controller {
                 }
             }
         }
-        
+
         self.shutdown().await;
     }
 }
