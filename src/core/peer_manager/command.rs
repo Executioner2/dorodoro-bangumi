@@ -1,9 +1,8 @@
 use crate::core::command::CommandHandler;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::PEER_MANAGER;
-use crate::core::peer_manager::PeerManagerContext;
-use crate::peer_manager::GasketInfo;
 use crate::peer_manager::gasket::Gasket;
+use crate::peer_manager::{GasketInfo, PeerManager};
 use crate::runtime::Runnable;
 use crate::torrent::TorrentArc;
 use std::sync::Arc;
@@ -16,8 +15,8 @@ pub enum Command {
     GasketExit(GasketExit),
 }
 
-impl CommandHandler for Command {
-    type Target = PeerManagerContext;
+impl<'a> CommandHandler<'a> for Command {
+    type Target = &'a PeerManager;
 
     async fn handle(self, context: Self::Target) {
         match self {
@@ -33,11 +32,13 @@ pub struct NewDownloadTask {
     pub torrent: TorrentArc,
     pub download_path: String,
 }
-impl CommandHandler for NewDownloadTask {
-    type Target = PeerManagerContext;
+impl<'a> CommandHandler<'a> for NewDownloadTask {
+    type Target = &'a PeerManager;
 
     async fn handle(self, context: Self::Target) {
         trace!("收到新的下载任务");
+        let context = context.get_context();
+
         let download = 0;
         let uploaded = 0;
         let mut emitter = Emitter::new();
@@ -62,7 +63,6 @@ impl CommandHandler for NewDownloadTask {
         let join_handle = tokio::spawn(gasket.run());
         let gasket_info = GasketInfo {
             id: gasket_id,
-            torrent: self.torrent,
             peer_id,
             join_handle,
         };
@@ -73,10 +73,11 @@ impl CommandHandler for NewDownloadTask {
 
 #[derive(Debug)]
 pub struct GasketExit(pub u64);
-impl CommandHandler for GasketExit {
-    type Target = PeerManagerContext;
+impl<'a> CommandHandler<'a> for GasketExit {
+    type Target = &'a PeerManager;
 
     async fn handle(self, context: Self::Target) {
+        let context = context.get_context();
         context.remove_gasket(self.0).await;
     }
 }

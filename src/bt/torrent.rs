@@ -20,6 +20,12 @@ pub struct TorrentArc {
     inner: Arc<Torrent>,
 }
 
+impl TorrentArc {
+    pub fn as_ptr(&self) -> *const Torrent {
+        self.inner.as_ref() as *const Torrent
+    }
+}
+
 impl Clone for TorrentArc {
     fn clone(&self) -> Self {
         Self {

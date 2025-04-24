@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-static BOOTSTRAP: [&str; 4] = [
+static _BOOTSTRAP: [&str; 4] = [
     "router.bittorrent.com",
     "router.utorrent.com",
     "router.bitcomet.com",

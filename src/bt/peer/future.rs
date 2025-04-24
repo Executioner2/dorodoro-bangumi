@@ -38,30 +38,30 @@ impl Future for BtResp<'_> {
     type Output = Option<(MsgType, Bytes)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let bt_resp = unsafe { self.get_unchecked_mut() };
+        let this = unsafe { self.get_unchecked_mut() };
 
-        let buf = match pin!(&mut bt_resp.reader_handle).poll(cx) {
+        let buf = match pin!(&mut this.reader_handle).poll(cx) {
             Poll::Ready(Ok(buf)) => buf,
             Poll::Ready(Err(_e)) => return Poll::Ready(None),
             Poll::Pending => return Poll::Pending,
         };
 
-        match bt_resp.state {
+        match this.state {
             State::Length => {
                 let length = u32::from_be_slice(&buf[..4]);
                 if length > 1 {
-                    bt_resp.length = Some(length - 1);
+                    this.length = Some(length - 1);
                 }
-                bt_resp.reader_handle.reset(1);
-                bt_resp.state = State::MsgType;
+                this.reader_handle.reset(1);
+                this.state = State::MsgType;
             }
             State::MsgType => {
                 if let Ok(msg_type) = MsgType::try_from(buf[0]) {
                     trace!("取得消息类型: {:?}", msg_type);
-                    if let Some(length) = bt_resp.length {
-                        bt_resp.reader_handle.reset(length as usize);
-                        bt_resp.msg_type = Some(msg_type);
-                        bt_resp.state = State::Content;
+                    if let Some(length) = this.length {
+                        this.reader_handle.reset(length as usize);
+                        this.msg_type = Some(msg_type);
+                        this.state = State::Content;
                     } else {
                         return Poll::Ready(Some((msg_type, Bytes::new())));
                     }
@@ -71,13 +71,13 @@ impl Future for BtResp<'_> {
                 }
             }
             State::Content => {
-                bt_resp.state = State::Finished;
-                return Poll::Ready(Some((bt_resp.msg_type.take().unwrap(), buf)));
+                this.state = State::Finished;
+                return Poll::Ready(Some((this.msg_type.take().unwrap(), buf)));
             }
             State::Finished => {
                 return Poll::Ready(None);
             }
         }
-        pin!(bt_resp).poll(cx)
+        pin!(this).poll(cx)
     }
 }

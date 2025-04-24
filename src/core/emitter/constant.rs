@@ -15,3 +15,6 @@ pub static CONTROLLER_PREFIX: &str = "controller_";
 
 /// gasket 的前缀
 pub static GASKET_PREFIX: &str = "gasket_";
+
+/// tracker
+pub static TRACKER: &str = "tracker";

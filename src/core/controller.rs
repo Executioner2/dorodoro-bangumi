@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, trace, warn};
 
 /// 响应给客户端的内容
-pub struct RespClient {}
+pub struct _RespClient {}
 
 pub struct Controller {
     id: u64,
@@ -78,7 +78,7 @@ impl Runnable for Controller {
                         Ok(1) => {
                             trace!("接收到了添加种子文件的指令");
                             let data = fs::read("tests/resources/test4.torrent").unwrap();
-                            let download_path = String::from("./");
+                            let download_path = String::from("./download/");
                             let torrent = TorrentArc::parse_torrent(data).unwrap();
                             let cmd = command::TorrentAdd(torrent, download_path);
                             self.emitter.send(SCHEDULER, cmd.into()).await.unwrap();

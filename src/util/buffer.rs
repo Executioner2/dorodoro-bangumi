@@ -1,6 +1,7 @@
 //! 字节流缓冲区，应该配合 [`bytes::Bytes`] 使用。相较于直接使用 `Vec<u8>`，`ByteBuffer` 减少了数据初始化，最多
 //! 可提升五倍的性能。见 `benches/socket_buffer_benchmark.rs`
 
+#[cfg(test)]
 mod tests;
 
 use bytes::Bytes;

@@ -9,14 +9,16 @@ mod tests;
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
 use crate::tracker::udp_tracker::error::Error;
-use crate::tracker::{AnnounceInfo, Event, Host};
+use crate::tracker::{AnnounceInfo, Event};
 use crate::util::buffer::ByteBuffer;
 use crate::{datetime, tracker, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use error::Result;
 use std::io::Write;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tracing::{error, warn};
 
 type Buffer = Vec<u8>;
@@ -30,7 +32,7 @@ enum Action {
     Announce = 1,
 
     /// 抓取动作
-    Scrape = 2,
+    _Scrape = 2,
 
     /// 出现错误
     Error = 3,
@@ -58,56 +60,64 @@ pub struct Announce {
     pub seedrs: u32,
 
     /// peer 主机列表
-    pub peers: Vec<Host>,
+    pub peers: Vec<SocketAddr>,
 }
 
 pub struct Scrape {}
 
-pub struct UdpTracker<'a> {
+pub struct UdpTracker {
     connect: Connect,
     retry_count: u8,
-    announce: &'a str,
-    info_hash: &'a [u8; 20],
-    peer_id: &'a [u8; 20],
+    announce: String,
+    info_hash: Arc<[u8; 20]>,
+    peer_id: Arc<[u8; 20]>,
+    next_request_time: u64,
 }
 
-impl<'a> UdpTracker<'a> {
+impl UdpTracker {
     /// 创建一个 UDP Tracker 实例（默认读超时时间为 15 秒）
     ///
     /// # Example
     ///
     /// ```
+    /// use std::sync::Arc;
     /// use dorodoro_bangumi::tracker::{gen_peer_id, udp_tracker as udp_tracker};
     /// use udp_tracker::UdpTracker;
     ///
-    /// let info_hash = [0u8; 20];
-    /// let peer_id = gen_peer_id();
-    /// let mut tracker = UdpTracker::new("tracker.torrent.eu.org:451", &info_hash, &peer_id);
+    /// let info_hash = Arc::new([0u8; 20]);
+    /// let peer_id = Arc::new(gen_peer_id());
+    /// let mut tracker = UdpTracker::new("tracker.torrent.eu.org:451".to_string(), info_hash, peer_id);
     /// ```
-    pub fn new(announce: &'a str, info_hash: &'a [u8; 20], peer_id: &'a [u8; 20]) -> Self {
-        error!("实际的地址: {}", announce);
+    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: Arc<[u8; 20]>) -> Self {
         Self {
             connect: Connect::default(),
             retry_count: 0,
             announce,
             info_hash,
             peer_id,
+            next_request_time: 0,
         }
+    }
+
+    pub fn next_request_time(&self) -> u64 {
+        self.next_request_time
     }
 
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub fn announcing(&mut self, event: Event, info: AnnounceInfo) -> Result<Announce> {
+    pub fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
         self.update_connect()?;
         let (req_tran_id, mut req) =
             Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
 
-        req.write(self.info_hash)?;
-        req.write(self.peer_id)?;
-        req.write_u64::<BigEndian>(info.download)?;
-        req.write_u64::<BigEndian>(info.left)?;
-        req.write_u64::<BigEndian>(info.uploaded)?;
+        let download = info.download.load(Ordering::Acquire);
+        let left = info.resource_size - download;
+        req.write(self.info_hash.as_slice())?;
+        req.write(self.peer_id.as_slice())?;
+        req.write_u64::<BigEndian>(download)?;
+        req.write_u64::<BigEndian>(left)?;
+        req.write_u64::<BigEndian>(info.uploaded.load(Ordering::Acquire))?;
         req.write_u32::<BigEndian>(event as u32)?;
         req.write_u32::<BigEndian>(0)?; // ip
         req.write_u32::<BigEndian>(tracker::gen_process_key())?;
@@ -133,6 +143,8 @@ impl<'a> UdpTracker<'a> {
         //     tracker::parse_peers_v6(&resp[20..])?
         // };
 
+        self.next_request_time = datetime::now_secs() + interval as u64;
+
         Ok(Announce {
             interval,
             leechers,
@@ -147,6 +159,21 @@ impl<'a> UdpTracker<'a> {
     pub fn scraping(&mut self) -> Result<Scrape> {
         self.update_connect()?;
         todo!()
+    }
+
+    /// 重试次数 +1，返回距离下一次请求的间隔时间
+    pub fn inc_retry_count(&mut self) -> u64 {
+        if self.retry_count > MAX_RETRY_NUM {
+            return u64::MAX;
+        }
+        self.retry_count += 1;
+        let interval = SOCKET_READ_TIMEOUT.as_millis() as u64 * self.retry_count as u64;
+        self.next_request_time = datetime::now_secs() + interval;
+        interval
+    }
+
+    pub fn announce(&self) -> &str {
+        &self.announce
     }
 
     /// 发送数据到指定地址，并接收期望大小的数据。如果 expect_size 为负数，则接收默认大小（）的数据。
@@ -263,7 +290,7 @@ impl<'a> UdpTracker<'a> {
             return Err(Error::Timeout);
         }
 
-        match self.send_recv(data, self.announce, expect_size) {
+        match self.send_recv(data, &self.announce, expect_size) {
             Ok(resp) => {
                 self.retry_count = 0;
                 Ok(resp)

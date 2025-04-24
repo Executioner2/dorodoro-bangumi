@@ -1,11 +1,20 @@
+pub mod command;
 pub mod error;
 pub mod http_tracker;
 pub mod udp_tracker;
 
 use crate::bytes::Bytes2Int;
+use crate::config::Config;
+use crate::datetime;
+use crate::emitter::Emitter;
+use crate::emitter::constant::TRACKER;
+use crate::peer_manager::gasket::command::DiscoverPeerAddr;
+use crate::runtime::{DelayedTask, Runnable};
+use crate::torrent::TorrentArc;
 use crate::tracker::error::Error::{InvalidHost, PeerBytesInvalid};
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
+use ahash::AHashSet;
 use core::fmt::Display;
 use core::str::FromStr;
 use error::Result;
@@ -13,6 +22,13 @@ use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::RngCore;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc::channel;
+use tracing::error;
 
 lazy_static! {
     /// 进程 id，发送给 Tracker 的，用于区分多开情况
@@ -152,7 +168,7 @@ impl From<([u8; 16], u16)> for Host {
 }
 
 /// 解析 peer 列表 - IpV4
-pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<Host>> {
+pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<SocketAddr>> {
     if peers.len() % 6 != 0 {
         return Err(PeerBytesInvalid);
     }
@@ -160,13 +176,13 @@ pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<Host>> {
         .chunks(6)
         .map(|chunk| {
             let ip_bytes: [u8; 4] = chunk[..4].try_into().unwrap();
-            Host::from((ip_bytes, u16::from_be_slice(&chunk[4..])))
+            SocketAddr::from((ip_bytes, u16::from_be_slice(&chunk[4..])))
         })
-        .collect::<Vec<Host>>())
+        .collect::<Vec<SocketAddr>>())
 }
 
 /// 解析 peer 列表 - IpV6
-pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<Host>> {
+pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<SocketAddr>> {
     if peers.len() % 18 != 0 {
         return Err(PeerBytesInvalid);
     }
@@ -174,9 +190,9 @@ pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<Host>> {
         .chunks(18)
         .map(|chunk| {
             let ip_bytes: [u8; 16] = chunk[..16].try_into().unwrap();
-            Host::from((ip_bytes, u16::from_be_slice(&chunk[16..])))
+            SocketAddr::from((ip_bytes, u16::from_be_slice(&chunk[16..])))
         })
-        .collect::<Vec<Host>>())
+        .collect::<Vec<SocketAddr>>())
 }
 
 /// announce event
@@ -207,42 +223,237 @@ impl Display for Event {
     }
 }
 
-enum TrackerType {
-    UDP,
-    HTTP,
-}
-
-pub enum Tracker<'a> {
-    UDP(UdpTracker<'a>),
-    HTTP(HttpTracker<'a>),
-}
-
 pub struct AnnounceInfo {
-    download: u64,
-    left: u64,
-    uploaded: u64,
+    download: Arc<AtomicU64>,
+    uploaded: Arc<AtomicU64>,
+    resource_size: u64,
     port: u16,
 }
 
+impl AnnounceInfo {
+    pub fn new(
+        download: Arc<AtomicU64>,
+        uploaded: Arc<AtomicU64>,
+        resource_size: u64,
+        port: u16,
+    ) -> Self {
+        Self {
+            download,
+            uploaded,
+            resource_size,
+            port,
+        }
+    }
+}
+
+impl Clone for AnnounceInfo {
+    fn clone(&self) -> Self {
+        Self {
+            download: self.download.clone(),
+            uploaded: self.uploaded.clone(),
+            resource_size: self.resource_size,
+            port: self.port,
+        }
+    }
+}
+
 /// 解析 tracker 地址
-pub fn parse_tracker_host<'a>(
-    announce: &'a str,
-    info_hash: &'a [u8; 20],
-    peer_id: &'a [u8; 20],
-) -> Option<Tracker<'a>> {
+fn parse_tracker_host(
+    announce: &String,
+    info_hash: Arc<[u8; 20]>,
+    peer_id: Arc<[u8; 20]>,
+) -> Option<TrackerInstance> {
     if announce.starts_with("http") {
-        Some(Tracker::HTTP(HttpTracker::new(
-            announce, info_hash, peer_id,
+        Some(TrackerInstance::HTTP(HttpTracker::new(
+            announce.clone(),
+            info_hash.clone(),
+            peer_id.clone(),
         )))
     } else if announce.starts_with("udp://") {
         if let Some(end) = announce[6..].find("/announce") {
-            let announce = &announce[6..end + 6];
-            Some(Tracker::UDP(UdpTracker::new(announce, info_hash, peer_id)))
+            let announce = announce[6..end + 6].to_string();
+            Some(TrackerInstance::UDP(UdpTracker::new(
+                announce,
+                info_hash.clone(),
+                peer_id.clone(),
+            )))
         } else {
-            let announce = &announce[6..];
-            Some(Tracker::UDP(UdpTracker::new(announce, info_hash, peer_id)))
+            let announce = announce[6..].to_string();
+            Some(TrackerInstance::UDP(UdpTracker::new(
+                announce,
+                info_hash.clone(),
+                peer_id.clone(),
+            )))
         }
     } else {
         None
+    }
+}
+
+fn instance_tracker(peer_id: Arc<[u8; 20]>, torrent: TorrentArc) -> Vec<(Event, TrackerInstance)> {
+    let mut trackers = vec![];
+    let info_hash = Arc::new(torrent.info_hash);
+    let root = &torrent.announce;
+    let mut visited = AHashSet::new();
+
+    std::iter::once(root)
+        .chain(torrent.announce_list.iter().flatten())
+        .for_each(|announce| {
+            if !visited.contains(announce) {
+                if let Some(tracker) =
+                    parse_tracker_host(announce, info_hash.clone(), peer_id.clone())
+                {
+                    trackers.push((Event::Started, tracker))
+                }
+                visited.insert(announce);
+            }
+        });
+
+    trackers
+}
+
+pub enum TrackerInstance {
+    UDP(UdpTracker),
+    HTTP(HttpTracker),
+}
+
+/// tracker
+pub struct Tracker {
+    info: AnnounceInfo,
+    emitter: Emitter,
+    config: Config,
+    gasket_transfer_id: String,
+    trackers: Arc<Mutex<Vec<(Event, TrackerInstance)>>>,
+}
+
+impl Tracker {
+    pub fn new(
+        torrent: TorrentArc,
+        peer_id: Arc<[u8; 20]>,
+        info: AnnounceInfo,
+        emitter: Emitter,
+        config: Config,
+        gasket_transfer_id: String,
+    ) -> Self {
+        let trackers = instance_tracker(peer_id, torrent);
+        let trackers = Arc::new(Mutex::new(trackers));
+
+        Self {
+            info,
+            emitter,
+            config,
+            gasket_transfer_id,
+            trackers,
+        }
+    }
+
+    pub fn get_transfer_id(gasket_transfer_id: &String) -> String {
+        format!("{}{}", gasket_transfer_id, TRACKER)
+    }
+
+    async fn scan_tracker(
+        trackers: Arc<Mutex<Vec<(Event, TrackerInstance)>>>,
+        scan_time: u64,
+        info: AnnounceInfo,
+    ) -> (u64, Vec<SocketAddr>) {
+        let mut interval: u64 = u64::MAX;
+        let mut peers = vec![];
+
+        for tracker in trackers.lock().await.iter_mut() {
+            match tracker {
+                (event, TrackerInstance::UDP(tracker)) => {
+                    if tracker.next_request_time() <= scan_time {
+                        let nrt = match tracker.announcing(event.clone(), &info) {
+                            Ok(mut announce) => {
+                                *event = Event::None;
+                                peers.append(&mut announce.peers);
+                                announce.interval as u64
+                            }
+                            Err(e) => {
+                                error!(
+                                    "从 tracker [{}] 那里获取 peer 失败\n{}",
+                                    tracker.announce(),
+                                    e
+                                );
+                                tracker.inc_retry_count()
+                            }
+                        };
+                        interval = interval.min(nrt);
+                    }
+                }
+                (event, TrackerInstance::HTTP(tracker)) => {
+                    if tracker.next_request_time() <= scan_time {
+                        let nrt = match tracker.announcing(event.clone(), &info).await {
+                            Ok(mut announce) => {
+                                *event = Event::None;
+                                peers.append(&mut announce.peers);
+                                match announce.min_interval {
+                                    Some(interval) => interval,
+                                    None => announce.interval,
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "从 tracker [{}] 那里获取 peer 失败\n{}",
+                                    tracker.announce(),
+                                    e
+                                );
+                                tracker.unusable()
+                            }
+                        };
+                        interval = interval.min(nrt);
+                    }
+                }
+            }
+        }
+
+        (interval, peers)
+    }
+
+    /// 创建定时扫描任务
+    fn create_scan_task(
+        &self,
+        delay: u64,
+    ) -> DelayedTask<Pin<Box<dyn Future<Output = (u64, Vec<SocketAddr>)> + Send>>> {
+        let task = Tracker::scan_tracker(
+            self.trackers.clone(),
+            datetime::now_secs(),
+            self.info.clone(),
+        );
+        let delayed_task_handle =
+            DelayedTask::new(Duration::from_secs(delay), Box::pin(task) as Pin<Box<_>>);
+        delayed_task_handle
+    }
+}
+
+impl Runnable for Tracker {
+    async fn run(mut self) {
+        let (send, mut recv) = channel(self.config.channel_buffer());
+        self.emitter
+            .register(Tracker::get_transfer_id(&self.gasket_transfer_id), send)
+            .await
+            .unwrap();
+
+        let mut delayed_task_handle = self.create_scan_task(0);
+
+        loop {
+            tokio::select! {
+                res = &mut delayed_task_handle => {
+                    match res {
+                        Some((next_scan_time, peers)) => {
+                            delayed_task_handle = self.create_scan_task(next_scan_time);
+                            let cmd = DiscoverPeerAddr { peers }.into();
+                            self.emitter.send(&self.gasket_transfer_id, cmd).await.unwrap();
+                        }
+                        None => {
+                            delayed_task_handle = self.create_scan_task(15);
+                        }
+                    }
+                }
+                _ = recv.recv() => {
+
+                }
+            }
+        }
     }
 }

@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::Mutex;
@@ -22,14 +21,10 @@ use crate::core::tcp_server::future::Accept;
 pub mod command;
 mod future;
 
-/// 读超时时间 60 秒
-const READ_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// 链接id，一般需要 TcpServer 管理资源释放的才需要这个
 type ConnId = u64;
 
 struct ConnInfo {
-    id: ConnId,
     join_handle: JoinHandle<()>,
 }
 
@@ -184,7 +179,7 @@ impl Runnable for TcpServer {
                     if let Some(cmd) = res {
                         let cmd = cmd.instance::<command::Command>();
                         trace!("tcp server 收到了消息: {:?}", cmd);
-                        tokio::spawn(cmd.handle(self.get_context()));
+                        cmd.handle(&self).await;
                     }
                 }
             }

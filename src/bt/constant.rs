@@ -18,7 +18,7 @@ pub mod udp_tracker {
     pub const DEFAULT_ADDR: &str = "0.0.0.0:0";
 
     /// UDP 包最大大小
-    pub const MAX_PACKET_SIZE: usize = 65535;
+    pub const _MAX_PACKET_SIZE: usize = 65535;
 
     /// UDP 包最大负载大小。 65507 = 65535 - 8(UDP头) - 20(IP头)
     pub const MAX_PAYLOAD_SIZE: usize = 65507;
@@ -33,7 +33,7 @@ pub mod udp_tracker {
     pub const MIN_ANNOUNCE_RESP_SIZE: usize = 20;
 
     /// 最小 scrape 响应数据包大小
-    pub const MIN_SCRAPE_RESP_SIZE: usize = 12;
+    pub const _MIN_SCRAPE_RESP_SIZE: usize = 12;
 }
 
 /// HTTP tracker 相关常量

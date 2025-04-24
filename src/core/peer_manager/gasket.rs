@@ -1,23 +1,23 @@
 pub mod command;
 
+use crate::bt;
+use crate::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::GASKET_PREFIX;
 use crate::emitter::constant::PEER_PREFIX;
 use crate::peer::Peer;
 use crate::peer_manager::PeerManagerContext;
+use crate::peer_manager::gasket::command::Command;
 use crate::runtime::Runnable;
 use crate::torrent::TorrentArc;
-use crate::tracker::Tracker;
-use crate::{bt, tracker};
-use ahash::{AHashSet, RandomState};
+use crate::tracker::{AnnounceInfo, Tracker};
+use ahash::RandomState;
 use bytes::BytesMut;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
@@ -60,13 +60,14 @@ pub struct GasketContext {
     torrent: TorrentArc,
     download_path: Arc<String>,
     peer_id: Arc<[u8; 20]>,
+    unstart_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
 }
 
 impl GasketContext {
     pub fn cancel_token(&self) -> WaitForCancellationFuture {
         self.context.cancel_token.cancelled()
     }
-    
+
     pub fn peer_id(&self) -> &[u8; 20] {
         self.peer_id.as_ref()
     }
@@ -92,12 +93,16 @@ impl GasketContext {
     }
 
     pub async fn peer_exit(&mut self, peer_no: u64, reason: ExitReason) {
-        let mut peers = self.peers.lock().await;
-        if let Some(mut peer) = peers.remove(&peer_no) {
-            if reason == ExitReason::NotHasJob {
-                peer.join_handle = None;
-                self.wait_queue.lock().await.push_back(peer);
-            }
+        let peer = self.peers.lock().await.remove(&peer_no);
+        if peer.is_none() {
+            return;
+        }
+        let mut peer = peer.unwrap();
+        if reason == ExitReason::NotHasJob {
+            peer.join_handle = None;
+            self.wait_queue.lock().await.push_back(peer);
+        } else {
+            self.unstart_host.lock().await.remove(&peer.addr);
         }
     }
 
@@ -163,7 +168,7 @@ impl GasketContext {
 }
 
 /// 同一个任务的peer交给一个垫片来管理，垫片对peer进行分块下载任务的分配
-pub struct Gasket<'a> {
+pub struct Gasket {
     /// gasket 的 id
     id: u64,
 
@@ -197,8 +202,8 @@ pub struct Gasket<'a> {
     /// 这个有部分还在下载中，但是为了避免其它 peer 选择重叠，下载的 peer 会把它下载的那个分块标记为 1
     underway_bytefield: Arc<Mutex<BytesMut>>,
 
-    /// 不可用的 host
-    unable_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
+    /// 不可 start peer 的 host
+    unstart_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
 
     /// 可连接，但是没有任务可分配的 peer，
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
@@ -208,19 +213,9 @@ pub struct Gasket<'a> {
 
     /// 全局配置
     config: Config,
-
-    /// trakcer 集合
-    trackers: Vec<TrackerPtr<'a>>,
 }
 
-struct TrackerPtr<'a> {
-    ptr: *const Tracker<'a>,
-}
-
-unsafe impl<'a> Send for TrackerPtr<'a> {}
-unsafe impl<'a> Sync for TrackerPtr<'a> {}
-
-impl<'a> Gasket<'a> {
+impl Gasket {
     pub fn new(
         id: u64,
         torrent: TorrentArc,
@@ -237,8 +232,6 @@ impl<'a> Gasket<'a> {
         let bytefield = Arc::new(Mutex::new(BytesMut::from(vec![0u8; min].as_slice())));
         let underway_bytefield = Arc::new(Mutex::new(BytesMut::from(vec![0u8; min].as_slice())));
 
-        let trackers = instance_tracker(peer_id.clone(), torrent.clone());
-
         Self {
             id,
             context,
@@ -251,11 +244,10 @@ impl<'a> Gasket<'a> {
             uploaded: Arc::new(AtomicU64::new(uploaded)),
             bytefield,
             underway_bytefield,
-            unable_host: Arc::new(Mutex::new(HashSet::default())),
+            unstart_host: Arc::new(Mutex::new(HashSet::default())),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
             config,
-            trackers,
         }
     }
 
@@ -270,7 +262,8 @@ impl<'a> Gasket<'a> {
             download: self.download.clone(),
             torrent: self.torrent.clone(),
             download_path: self.download_path.clone(),
-            peer_id: self.peer_id.clone()
+            peer_id: self.peer_id.clone(),
+            unstart_host: self.unstart_host.clone(),
         }
     }
 
@@ -296,13 +289,13 @@ impl<'a> Gasket<'a> {
                         },
                     );
                 }
-                Err(_) => {
-                    self.unable_host.lock().await.insert(addr);
-                }
+                Err(_) => {}
             }
-        } else {
-            self.unable_host.lock().await.insert(addr);
         }
+
+        // 成功与否都需要加入到 unstart 集合中，避免重复链接
+        // todo - 需要改，避免多个资源同时下载时，有某个 peer 多个资源中都被发现了
+        self.unstart_host.lock().await.insert(addr);
     }
 
     async fn shutdown(self) {
@@ -314,41 +307,39 @@ impl<'a> Gasket<'a> {
     fn get_transfer_id(&self) -> String {
         format!("{}{}", GASKET_PREFIX, self.id)
     }
+
+    async fn start_tracker(&self) -> JoinHandle<()> {
+        let transfer_id = self.get_transfer_id();
+        trace!("启动 {} 的 tracker", transfer_id);
+        let info = AnnounceInfo::new(
+            self.download.clone(),
+            self.uploaded.clone(),
+            self.torrent.info.length,
+            self.config.tcp_server_addr().port(),
+        );
+        let tracker = Tracker::new(
+            self.torrent.clone(),
+            self.peer_id.clone(),
+            info,
+            self.emitter.clone(),
+            self.config.clone(),
+            transfer_id,
+        );
+        tokio::spawn(tracker.run())
+    }
 }
 
-fn instance_tracker<'a>(peer_id: Arc<[u8; 20]>, torrent: TorrentArc) -> Vec<TrackerPtr<'a>> {
-    let mut trackers = vec![];
-    let info_hash = &torrent.info_hash;
-    let root = &torrent.announce;
-    let mut visited = AHashSet::new();
-
-    std::iter::once(root)
-        .chain(torrent.announce_list.iter().flatten())
-        .for_each(|announce| {
-            if !visited.contains(announce) {
-                if let Some(tracker) = tracker::parse_tracker_host(announce, info_hash, &*peer_id) {
-                    let ptr = Box::into_raw(Box::new(tracker));
-                    trackers.push(TrackerPtr {
-                        ptr: ptr as *const Tracker,
-                    })
-                }
-                visited.insert(announce);
-            }
-        });
-
-    trackers
-}
-
-impl<'a> Runnable for Gasket<'a> {
+impl Runnable for Gasket {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.config.channel_buffer());
         let transfer_id = self.get_transfer_id();
         self.emitter
-            .register(transfer_id.clone(), send)
+            .register(transfer_id.clone(), send.clone())
             .await
             .unwrap();
 
         trace!("启动 gasket");
+        let tracker_handle = self.start_tracker().await;
 
         loop {
             tokio::select! {
@@ -356,34 +347,16 @@ impl<'a> Runnable for Gasket<'a> {
                     info!("peer 取消了请求");
                     break;
                 },
-                _ = TrackerFuture::new(&self.trackers) => {
-
-                },
-                _ = recv.recv() => {
-                    todo!("")
+                cmd = recv.recv() => {
+                    if let Some(cmd) = cmd {
+                        let cmd: Command = cmd.instance();
+                        cmd.handle(&self).await;
+                    }
                 }
             }
         }
 
+        tracker_handle.await.unwrap();
         self.shutdown().await;
-    }
-}
-
-/// tracker 定时任务
-struct TrackerFuture<'a> {
-    trackers: &'a Vec<TrackerPtr<'a>>,
-}
-
-impl<'a> TrackerFuture<'a> {
-    pub fn new(trackers: &'a Vec<TrackerPtr<'a>>) -> Self {
-        Self { trackers }
-    }
-}
-
-impl<'a> Future for TrackerFuture<'_> {
-    type Output = Option<Vec<SocketAddr>>;
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        todo!()
     }
 }

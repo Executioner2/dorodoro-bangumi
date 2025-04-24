@@ -9,7 +9,7 @@ impl TransferPtr {
         Self { inner }
     }
     
-    pub fn instance<T: CommandHandler>(self) -> T {
+    pub fn instance<'a, T: CommandHandler<'a>>(self) -> T {
         unsafe {(self.inner as *const T).read()}
     }
 }
@@ -17,7 +17,7 @@ impl TransferPtr {
 unsafe impl Send for TransferPtr {}
 unsafe impl Sync for TransferPtr {}
 
-impl<T: CommandHandler> From<T> for TransferPtr {
+impl<'a, T: CommandHandler<'a>> From<T> for TransferPtr {
     fn from(value: T) -> Self {
         let data = Box::new(value);
         let inner = Box::into_raw(data) as *const ();

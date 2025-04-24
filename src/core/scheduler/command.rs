@@ -3,12 +3,13 @@
 use crate::core::command::CommandHandler;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::peer_manager::command;
-use crate::core::scheduler::SchedulerContext;
+use crate::core::scheduler::{Scheduler, SchedulerContext};
 use crate::torrent::TorrentArc;
 use core::fmt::{Debug, Formatter};
 use tracing::info;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Command {
     /// 关闭调度器
     Shutdown(Shutdown),
@@ -17,13 +18,13 @@ pub enum Command {
     TorrentAdd(TorrentAdd),
 }
 
-impl CommandHandler for Command {
-    type Target = SchedulerContext;
+impl<'a> CommandHandler<'a> for Command {
+    type Target = &'a Scheduler;
 
     async fn handle(self, context: Self::Target) {
         match self {
-            Command::Shutdown(v) => v.handle(context).await,
-            Command::TorrentAdd(v) => v.handle(context).await,
+            Command::Shutdown(cmd) => cmd.handle(context).await,
+            Command::TorrentAdd(cmd) => cmd.handle(context).await,
         }
     }
 }
@@ -31,8 +32,8 @@ impl CommandHandler for Command {
 /// 关机指令
 #[derive(Debug)]
 pub struct Shutdown;
-impl CommandHandler for Shutdown {
-    type Target = SchedulerContext;
+impl<'a> CommandHandler<'a> for Shutdown {
+    type Target = &'a Scheduler;
 
     async fn handle(self, context: Self::Target) {
         if !context.cancel_token.is_cancelled() {
@@ -53,8 +54,8 @@ impl Into<Command> for TorrentAdd {
         Command::TorrentAdd(self)
     }
 }
-impl CommandHandler for TorrentAdd {
-    type Target = SchedulerContext;
+impl<'a> CommandHandler<'a> for TorrentAdd {
+    type Target = &'a Scheduler;
 
     async fn handle(self, context: Self::Target) {
         async fn task(torrent: TorrentArc, download_path: String, context: SchedulerContext) {
@@ -73,6 +74,7 @@ impl CommandHandler for TorrentAdd {
                 .await
                 .unwrap();
         }
+        let context = context.get_context();
         tokio::spawn(task(self.0, self.1, context));
     }
 }

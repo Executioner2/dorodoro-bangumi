@@ -13,6 +13,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -27,9 +28,9 @@ fn test_connect() {
     let info_hash = [0u8; 20];
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
-        "tracker.torrent.eu.org:451",
-        &info_hash,
-        &peer_id,
+        "tracker.torrent.eu.org:451".to_string(),
+        Arc::new(info_hash),
+        Arc::new(peer_id),
     );
     println!("connect before: {:?}", tracker.connect);
     tracker.update_connect().unwrap();
@@ -44,17 +45,17 @@ fn test_announce() {
 
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
-        "tracker.torrent.eu.org:451",
-        &torrent.info_hash,
-        &peer_id,
+        "tracker.torrent.eu.org:451".to_string(),
+        Arc::new(torrent.info_hash),
+        Arc::new(peer_id),
     );
     let info = AnnounceInfo {
-        download: 0,
-        left: torrent.info.length,
-        uploaded: 0,
+        download: Arc::new(AtomicU64::new(0)),
+        uploaded: Arc::new(AtomicU64::new(0)),
+        resource_size: torrent.info.length,
         port: 9987,
     };
-    let announce = tracker.announcing(Event::None, info).unwrap();
+    let announce = tracker.announcing(Event::None, &info).unwrap();
     println!("announce result: {:?}", announce);
     println!("peers length: {}", announce.peers.len());
 }

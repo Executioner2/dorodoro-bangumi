@@ -6,7 +6,7 @@ pub enum Command {
     Exit(Exit),
 }
 
-impl CommandHandler for Command {
+impl<'a> CommandHandler<'a> for Command {
     type Target = ();
 
     async fn handle(self, context: Self::Target) {
@@ -23,7 +23,7 @@ impl From<Download> for Command {
         Command::Download(value)
     }
 }
-impl CommandHandler for Download {
+impl<'a> CommandHandler<'a> for Download {
     type Target = ();
 
     async fn handle(self, _context: Self::Target) {
@@ -34,7 +34,7 @@ impl CommandHandler for Download {
 }
 
 pub struct Exit;
-impl CommandHandler for Exit {
+impl<'a> CommandHandler<'a> for Exit {
     type Target = ();
 
     async fn handle(self, _context: Self::Target) {

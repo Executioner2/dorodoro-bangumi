@@ -7,20 +7,17 @@ mod tests;
 
 use crate::bt::bencoding;
 use crate::bt::bencoding::BEncodeHashMap;
+use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
 use crate::tracker;
 use crate::tracker::http_tracker::error::Error::{
     FieldValueError, MissingField, ResponseStatusNotOk,
 };
-use crate::tracker::{AnnounceInfo, Event, Host};
+use crate::tracker::{AnnounceInfo, Event};
 use error::Result;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
-use std::time::Duration;
-
-#[derive(Debug, Eq, PartialEq, Hash)]
-pub struct Peer {
-    peer_id: String,
-    host: Host,
-}
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
 pub struct Announce {
@@ -37,53 +34,69 @@ pub struct Announce {
     pub downloaded: u64,
 
     /// peer 主机列表
-    pub peers: Vec<Host>,
+    pub peers: Vec<SocketAddr>,
 
     /// 最小 announce 间隔（秒）
     pub min_interval: Option<u64>,
 
     /// peer 主机列表（IPv6）
-    pub peers6: Vec<Host>,
+    pub peers6: Vec<SocketAddr>,
 }
 
-pub struct HttpTracker<'a> {
-    announce: &'a str,
-    info_hash: &'a [u8; 20],
-    peer_id: &'a [u8; 20],
+pub struct HttpTracker {
+    announce: String,
+    info_hash: Arc<[u8; 20]>,
+    peer_id: Arc<[u8; 20]>,
+    next_request_time: u64,
 }
 
-impl<'a> HttpTracker<'a> {
-    pub fn new(announce: &'a str, info_hash: &'a [u8; 20], peer_id: &'a [u8; 20]) -> Self {
+impl HttpTracker {
+    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: Arc<[u8; 20]>) -> Self {
         Self {
             announce,
             info_hash,
             peer_id,
+            next_request_time: 0,
         }
+    }
+
+    pub fn next_request_time(&self) -> u64 {
+        self.next_request_time
+    }
+
+    pub fn unusable(&mut self) -> u64 {
+        self.next_request_time = u64::MAX;
+        self.next_request_time
+    }
+
+    pub fn announce(&self) -> &str {
+        &self.announce
     }
 
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub async fn announcing(&self, event: Event, info: AnnounceInfo) -> Result<Announce> {
+    pub async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
+        let download = info.download.load(Ordering::Acquire);
+        let left = info.resource_size - download;
         let query_url = format!(
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
             self.announce,
-            percent_encode(self.info_hash, NON_ALPHANUMERIC).to_string(),
-            percent_encode(self.peer_id, NON_ALPHANUMERIC).to_string(),
+            percent_encode(self.info_hash.as_slice(), NON_ALPHANUMERIC).to_string(),
+            percent_encode(self.peer_id.as_slice(), NON_ALPHANUMERIC).to_string(),
             info.port,
-            info.uploaded,
-            info.download,
-            info.left,
+            info.uploaded.load(Ordering::Acquire),
+            download,
+            left,
             event.to_string(),
         );
         let response = if let Ok(Ok(response)) =
-            tokio::time::timeout(Duration::from_secs(15), reqwest::get(&query_url)).await
+            tokio::time::timeout(HTTP_REQUEST_TIMEOUT, reqwest::get(&query_url)).await
         {
             response
         } else {
             return Err(error::Error::TimeoutError);
         };
-        // let response = reqwest::get(&query_url).await?;
 
         if !response.status().is_success() {
             return Err(ResponseStatusNotOk(
@@ -101,6 +114,7 @@ impl<'a> HttpTracker<'a> {
         if interval < 0 {
             return Err(FieldValueError(format!("interval = {}", interval)));
         }
+        self.next_request_time += interval as u64;
 
         let complete = encode.get_int("complete").ok_or(MissingField("complete"))?;
         if complete < 0 {
@@ -126,6 +140,7 @@ impl<'a> HttpTracker<'a> {
                 if min_interval < 0 {
                     return Err(FieldValueError(format!("{}", min_interval)));
                 }
+                self.next_request_time += min_interval as u64;
                 Some(min_interval as u64)
             }
             None => None,

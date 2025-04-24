@@ -34,30 +34,30 @@ impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
     type Output = Result<Bytes, io::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let reader = unsafe { self.get_unchecked_mut() };
-        if reader.buf.len() == 0 {
+        let this = unsafe { self.get_unchecked_mut() };
+        if this.buf.len() == 0 {
             return Poll::Ready(Ok(Bytes::new()));
         }
 
         loop {
-            let mut read_buf = ReadBuf::new(&mut reader.buf[reader.read_count..]);
-            match Pin::new(&mut reader.stream).poll_read(cx, &mut read_buf) {
+            let mut read_buf = ReadBuf::new(&mut this.buf[this.read_count..]);
+            match Pin::new(&mut this.stream).poll_read(cx, &mut read_buf) {
                 Poll::Ready(Ok(())) => {
                     let filled = read_buf.filled().len();
                     if filled == 0 {
                         trace!("客户端主动说bye-bye");
                         return Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()));
                     }
-                    reader.read_count += filled;
-                    if reader.read_count >= reader.buf.capacity() {
-                        let buf = reader.buf.take();
+                    this.read_count += filled;
+                    if this.read_count >= this.buf.capacity() {
+                        let buf = this.buf.take();
                         return Poll::Ready(Ok(buf));
                     }
                 }
                 Poll::Ready(Err(e)) => {
                     error!(
                         "因神秘力量，和客户端失去了联系\t{}，addr: {}",
-                        e, reader.addr
+                        e, this.addr
                     );
                     return Poll::Ready(Err(e));
                 }

@@ -14,13 +14,15 @@ use tracing::{info, trace};
 pub mod command;
 
 /// 多线程下的共享数据
+#[allow(dead_code)]
 pub struct SchedulerContext {
-    pub config: Config,
-    pub cancel_token: CancellationToken,
-    pub emitter: Emitter,
+    config: Config,
+    cancel_token: CancellationToken,
+    emitter: Emitter,
 }
 
 pub struct Scheduler {
+    #[allow(dead_code)]
     context: Context,
     cancel_token: CancellationToken,
     config: Config,
@@ -69,9 +71,9 @@ impl Runnable for Scheduler {
                 }
                 recv = recv.recv() => {
                     if let Some(cmd) = recv {
-                        let cmd = cmd.instance::<Command>();
+                        let cmd: Command = cmd.instance();
                         trace!("scheduler 收到命令: {:?}", cmd);
-                        CommandHandler::handle(cmd, self.get_context()).await;
+                        cmd.handle(&self).await;
                     }
                 }
             }

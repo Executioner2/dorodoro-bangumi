@@ -1,52 +1,33 @@
 use crate::command::CommandHandler;
-use crate::peer_manager::gasket::{ExitReason, GasketContext};
-use tracing::info;
+use crate::peer_manager::gasket::Gasket;
+use std::net::SocketAddr;
 
 #[derive(Debug)]
 pub enum Command {
-    PeerJoin(PeerJoin),
-    PeerExit(PeerExit),
+    DiscoverPeerAddr(DiscoverPeerAddr),
 }
 
-impl CommandHandler for Command {
-    type Target = GasketContext;
+impl<'a> CommandHandler<'a> for Command {
+    type Target = &'a Gasket;
 
     async fn handle(self, context: Self::Target) {
         match self {
-            Command::PeerJoin(cmd) => cmd.handle(context).await,
-            Command::PeerExit(cmd) => cmd.handle(context).await,
+            Command::DiscoverPeerAddr(cmd) => cmd.handle(context).await,
         }
     }
 }
 
-/// Peer 完成握手
+/// 发现了 peer addr
 #[derive(Debug)]
-pub struct PeerJoin {
-    id: u64,
+pub struct DiscoverPeerAddr {
+    pub peers: Vec<SocketAddr>,
 }
-impl PeerJoin {
-    pub fn new(id: u64) -> Self {
-        Self { id }
-    }
-}
-impl CommandHandler for PeerJoin {
-    type Target = GasketContext;
+impl<'a> CommandHandler<'a> for DiscoverPeerAddr {
+    type Target = &'a Gasket;
 
-    async fn handle(self, _context: Self::Target) {
-        info!("peer完成了握手")
-    }
-}
-
-/// Peer 退出
-#[derive(Debug)]
-pub struct PeerExit {
-    pub peer_no: u64,
-    pub reasone: ExitReason,
-}
-impl CommandHandler for PeerExit {
-    type Target = GasketContext;
-
-    async fn handle(self, mut context: Self::Target) {
-        context.peer_exit(self.peer_no, self.reasone).await;
+    async fn handle(self, context: Self::Target) {
+        for addr in self.peers {
+            context.start_peer(addr).await    
+        }
     }
 }

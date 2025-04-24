@@ -52,41 +52,41 @@ impl<'a> Future for Accept<'_> {
     type Output = Option<Protocol>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let accept = unsafe { self.get_unchecked_mut() };
+        let this = unsafe { self.get_unchecked_mut() };
 
-        let buf = match pin!(&mut accept.reader_handle).poll(cx) {
+        let buf = match pin!(&mut this.reader_handle).poll(cx) {
             Poll::Ready(Ok(buf)) => buf,
             Poll::Ready(Err(_e)) => return Poll::Ready(None),
             Poll::Pending => return Poll::Pending,
         };
 
-        match accept.state {
+        match this.state {
             State::ProtocolLen => {
-                accept.reader_handle.reset(buf[0] as usize);
-                accept.state = State::Protocol;
+                this.reader_handle.reset(buf[0] as usize);
+                this.state = State::Protocol;
             }
             State::Protocol => {
-                accept.protocol = Some(buf);
-                let protocol = accept.protocol.as_ref().unwrap();
-                accept.state = State::ParseProtocol;
-                if let Some((id, size)) = accept.parse_protocol(protocol) {
-                    accept.reader_handle.reset(size);
-                    accept.protocol_id = Some(id);
+                this.protocol = Some(buf);
+                let protocol = this.protocol.as_ref().unwrap();
+                this.state = State::ParseProtocol;
+                if let Some((id, size)) = this.parse_protocol(protocol) {
+                    this.reader_handle.reset(size);
+                    this.protocol_id = Some(id);
                 } else {
                     warn!("未知协议: {}", String::from_utf8_lossy(protocol));
                     return Poll::Ready(None);
                 }
             }
             State::ParseProtocol => {
-                let id = accept.protocol_id.take().unwrap();
+                let id = this.protocol_id.take().unwrap();
                 let protocol = Protocol { id, payload: buf };
-                accept.state = State::Finished;
+                this.state = State::Finished;
                 return Poll::Ready(Some(protocol));
             }
             State::Finished => {
                 return Poll::Ready(None);
             }
         }
-        pin!(accept).poll(cx)
+        pin!(this).poll(cx)
     }
 }

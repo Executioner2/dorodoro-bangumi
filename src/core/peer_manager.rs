@@ -6,7 +6,6 @@ use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::runtime::Runnable;
 use crate::peer_manager::command::Command;
-use crate::torrent::TorrentArc;
 use crate::tracker;
 use ahash::RandomState;
 use std::collections::{HashMap, HashSet};
@@ -23,7 +22,6 @@ pub mod gasket;
 
 pub struct GasketInfo {
     id: u64,
-    torrent: TorrentArc,
     peer_id: Arc<[u8; 20]>,
     join_handle: JoinHandle<()>,
 }
@@ -118,7 +116,7 @@ impl Runnable for PeerManager {
                     trace!("peer manager 收到了消息: {:?}", recv);
                     if let Some(cmd) = recv {
                         let cmd: Command = cmd.instance();
-                        cmd.handle(self.get_context()).await;
+                        cmd.handle(&self).await;
                     }
                 }
             }
