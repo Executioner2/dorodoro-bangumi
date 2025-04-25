@@ -1,31 +1,20 @@
 //! 向调度器发送的指令
 
+use crate::command_system;
 use crate::core::command::CommandHandler;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::peer_manager::command;
 use crate::core::scheduler::{Scheduler, SchedulerContext};
+use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use crate::torrent::TorrentArc;
 use core::fmt::{Debug, Formatter};
 use tracing::info;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum Command {
-    /// 关闭调度器
-    Shutdown(Shutdown),
-
-    /// 种子
-    TorrentAdd(TorrentAdd),
-}
-
-impl<'a> CommandHandler<'a> for Command {
-    type Target = &'a Scheduler;
-
-    async fn handle(self, context: Self::Target) {
-        match self {
-            Command::Shutdown(cmd) => cmd.handle(context).await,
-            Command::TorrentAdd(cmd) => cmd.handle(context).await,
-        }
+command_system! {
+    ctx: Scheduler,
+    Command {
+        Shutdown,
+        TorrentAdd,
     }
 }
 
@@ -35,9 +24,9 @@ pub struct Shutdown;
 impl<'a> CommandHandler<'a> for Shutdown {
     type Target = &'a Scheduler;
 
-    async fn handle(self, context: Self::Target) {
-        if !context.cancel_token.is_cancelled() {
-            context.cancel_token.cancel();
+    async fn handle(self, ctx: Self::Target) {
+        if !ctx.cancel_token.is_cancelled() {
+            ctx.cancel_token.cancel();
         }
     }
 }
@@ -49,15 +38,10 @@ impl Debug for TorrentAdd {
         write!(f, "Torrent Add")
     }
 }
-impl Into<Command> for TorrentAdd {
-    fn into(self) -> Command {
-        Command::TorrentAdd(self)
-    }
-}
 impl<'a> CommandHandler<'a> for TorrentAdd {
     type Target = &'a Scheduler;
 
-    async fn handle(self, context: Self::Target) {
+    async fn handle(self, ctx: Self::Target) {
         async fn task(torrent: TorrentArc, download_path: String, context: SchedulerContext) {
             // 添加到下载列表
             info!("开始查询历史下载量等操作");
@@ -74,7 +58,7 @@ impl<'a> CommandHandler<'a> for TorrentAdd {
                 .await
                 .unwrap();
         }
-        let context = context.get_context();
+        let context = ctx.get_context();
         tokio::spawn(task(self.0, self.1, context));
     }
 }

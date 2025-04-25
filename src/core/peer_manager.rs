@@ -116,7 +116,7 @@ impl Runnable for PeerManager {
                     trace!("peer manager 收到了消息: {:?}", recv);
                     if let Some(cmd) = recv {
                         let cmd: Command = cmd.instance();
-                        cmd.handle(&self).await;
+                        cmd.handle(&mut self).await;
                     }
                 }
             }

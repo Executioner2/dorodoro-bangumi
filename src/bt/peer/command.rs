@@ -1,13 +1,18 @@
 use crate::core::command::CommandHandler;
 use tracing::trace;
+use crate::emitter::transfer::{CommandEnum, TransferPtr};
+use crate::peer::Peer;
+use crate::peer_manager::gasket::ExitReason;
 
 pub enum Command {
     Download(Download),
     Exit(Exit),
 }
 
+impl CommandEnum for Command {}
+
 impl<'a> CommandHandler<'a> for Command {
-    type Target = ();
+    type Target = &'a mut Peer;
 
     async fn handle(self, context: Self::Target) {
         match self {
@@ -23,8 +28,13 @@ impl From<Download> for Command {
         Command::Download(value)
     }
 }
+impl Into<TransferPtr> for Download {
+    fn into(self) -> TransferPtr {
+        Command::Download(self).into()
+    }
+}
 impl<'a> CommandHandler<'a> for Download {
-    type Target = ();
+    type Target = &'a mut Peer;
 
     async fn handle(self, _context: Self::Target) {
         trace!("被唤醒，执行下载任务");
@@ -33,11 +43,19 @@ impl<'a> CommandHandler<'a> for Download {
     }
 }
 
-pub struct Exit;
+pub struct Exit {
+    pub reason: ExitReason
+}
+impl Into<TransferPtr> for Exit {
+    fn into(self) -> TransferPtr {
+        Command::Exit(self).into()
+    }
+}
 impl<'a> CommandHandler<'a> for Exit {
-    type Target = ();
+    type Target = &'a mut Peer;
 
+    /// 什么都不需要做，在 peer 中会处理的
     async fn handle(self, _context: Self::Target) {
-        todo!()
+        unimplemented!()
     }
 }

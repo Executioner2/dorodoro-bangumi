@@ -179,7 +179,7 @@ impl Runnable for TcpServer {
                     if let Some(cmd) = res {
                         let cmd = cmd.instance::<command::Command>();
                         trace!("tcp server 收到了消息: {:?}", cmd);
-                        cmd.handle(&self).await;
+                        cmd.handle(&mut self).await;
                     }
                 }
             }

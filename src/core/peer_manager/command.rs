@@ -1,6 +1,8 @@
+use crate::command_system;
 use crate::core::command::CommandHandler;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::PEER_MANAGER;
+use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use crate::peer_manager::gasket::Gasket;
 use crate::peer_manager::{GasketInfo, PeerManager};
 use crate::runtime::Runnable;
@@ -9,20 +11,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::trace;
 
-#[derive(Debug)]
-pub enum Command {
-    NewDownloadTask(NewDownloadTask),
-    GasketExit(GasketExit),
-}
-
-impl<'a> CommandHandler<'a> for Command {
-    type Target = &'a PeerManager;
-
-    async fn handle(self, context: Self::Target) {
-        match self {
-            Command::NewDownloadTask(cmd) => cmd.handle(context).await,
-            Command::GasketExit(cmd) => cmd.handle(context).await,
-        }
+command_system! {
+    ctx: PeerManager,
+    Command {
+        NewDownloadTask,
+        GasketExit,
     }
 }
 
@@ -33,11 +26,11 @@ pub struct NewDownloadTask {
     pub download_path: String,
 }
 impl<'a> CommandHandler<'a> for NewDownloadTask {
-    type Target = &'a PeerManager;
+    type Target = &'a mut PeerManager;
 
-    async fn handle(self, context: Self::Target) {
+    async fn handle(self, ctx: Self::Target) {
         trace!("收到新的下载任务");
-        let context = context.get_context();
+        let context = ctx.get_context();
 
         let download = 0;
         let uploaded = 0;
@@ -71,13 +64,14 @@ impl<'a> CommandHandler<'a> for NewDownloadTask {
     }
 }
 
+/// Gasket 退出
 #[derive(Debug)]
 pub struct GasketExit(pub u64);
 impl<'a> CommandHandler<'a> for GasketExit {
-    type Target = &'a PeerManager;
+    type Target = &'a mut PeerManager;
 
-    async fn handle(self, context: Self::Target) {
-        let context = context.get_context();
+    async fn handle(self, ctx: Self::Target) {
+        let context = ctx.get_context();
         context.remove_gasket(self.0).await;
     }
 }

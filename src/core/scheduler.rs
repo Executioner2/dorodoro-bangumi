@@ -73,7 +73,7 @@ impl Runnable for Scheduler {
                     if let Some(cmd) = recv {
                         let cmd: Command = cmd.instance();
                         trace!("scheduler 收到命令: {:?}", cmd);
-                        cmd.handle(&self).await;
+                        cmd.handle(&mut self).await;
                     }
                 }
             }

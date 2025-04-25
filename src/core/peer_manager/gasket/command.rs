@@ -1,19 +1,16 @@
 use crate::command::CommandHandler;
+use crate::command_system;
+use crate::emitter::transfer::CommandEnum;
+use crate::emitter::transfer::TransferPtr;
 use crate::peer_manager::gasket::Gasket;
 use std::net::SocketAddr;
+use tracing::{info, trace};
 
-#[derive(Debug)]
-pub enum Command {
-    DiscoverPeerAddr(DiscoverPeerAddr),
-}
-
-impl<'a> CommandHandler<'a> for Command {
-    type Target = &'a Gasket;
-
-    async fn handle(self, context: Self::Target) {
-        match self {
-            Command::DiscoverPeerAddr(cmd) => cmd.handle(context).await,
-        }
+command_system! {
+    ctx: Gasket,
+    Command {
+        DiscoverPeerAddr,
+        StartWaittingAddr,
     }
 }
 
@@ -22,12 +19,31 @@ impl<'a> CommandHandler<'a> for Command {
 pub struct DiscoverPeerAddr {
     pub peers: Vec<SocketAddr>,
 }
-impl<'a> CommandHandler<'a> for DiscoverPeerAddr {
-    type Target = &'a Gasket;
 
-    async fn handle(self, context: Self::Target) {
+impl<'a> CommandHandler<'a> for DiscoverPeerAddr {
+    type Target = &'a mut Gasket;
+
+    async fn handle(self, ctx: Self::Target) {
         for addr in self.peers {
-            context.start_peer(addr).await    
+            ctx.start_peer(addr).await
+        }
+    }
+}
+
+/// 启动一个等待中的地址
+#[derive(Debug)]
+pub struct StartWaittingAddr;
+
+impl<'a> CommandHandler<'a> for StartWaittingAddr {
+    type Target = &'a mut Gasket;
+
+    async fn handle(self, ctx: Self::Target) {
+        trace!("从等待队列中唤醒一个");
+        if let Some(peer) = ctx.wait_queue.lock().await.pop_front() {
+            trace!("唤醒了 [{}]", peer.addr);
+            ctx.start_peer(peer.addr).await
+        } else {
+            info!("没有 peer 可以用了")
         }
     }
 }

@@ -22,9 +22,9 @@ use tokio::runtime::Builder;
 use tokio::time::timeout;
 
 /// 测试是否能发起 connect 请求
-#[test]
+#[tokio::test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
-fn test_connect() {
+async fn test_connect() {
     let info_hash = [0u8; 20];
     let peer_id = tracker::gen_peer_id();
     let mut tracker = UdpTracker::new(
@@ -33,7 +33,7 @@ fn test_connect() {
         Arc::new(peer_id),
     );
     println!("connect before: {:?}", tracker.connect);
-    tracker.update_connect().unwrap();
+    tracker.update_connect().await.unwrap();
     println!("connect after: {:?}", tracker.connect);
 }
 

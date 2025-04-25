@@ -386,7 +386,7 @@ impl Tracker {
             nrt = match tracker.announcing(event.clone(), info).await {
                 Ok(announce) => {
                     *event = Event::None;
-                    let peers = Vec::from(announce.peers);
+                    let peers = announce.peers.clone();
                     info!(
                         "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
                         tracker.announce(),
@@ -398,7 +398,7 @@ impl Tracker {
                 }
                 Err(e) => {
                     error!(
-                        "从 tracker [{}] 那里获取 peer 失败\n{}",
+                        "从 tracker [{}] 那里获取 peer 失败\t{}",
                         tracker.announce(),
                         e
                     );
@@ -421,7 +421,7 @@ impl Tracker {
             nrt = match tracker.announcing(event.clone(), &info).await {
                 Ok(announce) => {
                     *event = Event::None;
-                    let peers = Vec::from(announce.peers);
+                    let peers = announce.peers.clone();
                     info!(
                         "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
                         tracker.announce(),
@@ -436,7 +436,7 @@ impl Tracker {
                 }
                 Err(e) => {
                     error!(
-                        "从 tracker [{}] 那里获取 peer 失败\n{}",
+                        "从 tracker [{}] 那里获取 peer 失败\t{}",
                         tracker.announce(),
                         e
                     );
@@ -480,11 +480,8 @@ impl Tracker {
         delay: u64,
     ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
         trace!("创建 tracker 扫描任务\t{}秒后执行", delay);
-        let send_to_gasket: Sender<TransferPtr> = self
-            .emitter
-            .get(&Tracker::get_transfer_id(&self.gasket_transfer_id))
-            .await
-            .unwrap();
+        let send_to_gasket: Sender<TransferPtr> =
+            self.emitter.get(&self.gasket_transfer_id).await.unwrap();
         let task = Tracker::scan_tracker(
             self.trackers.clone(),
             self.scan_time,

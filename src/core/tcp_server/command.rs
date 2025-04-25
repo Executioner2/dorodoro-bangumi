@@ -1,20 +1,13 @@
+use crate::command_system;
 use crate::core::command::CommandHandler;
 use crate::core::tcp_server::TcpServer;
+use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use tracing::trace;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum Command {
-    Exit(Exit),
-}
-
-impl<'a> CommandHandler<'a> for Command {
-    type Target = &'a TcpServer;
-
-    async fn handle(self, context: Self::Target) {
-        match self {
-            Command::Exit(cmd) => cmd.handle(context).await,
-        }
+command_system! {
+    ctx: TcpServer,
+    Command {
+        Exit
     }
 }
 

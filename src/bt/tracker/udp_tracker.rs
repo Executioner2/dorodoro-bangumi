@@ -107,7 +107,7 @@ impl UdpTracker {
     ///
     /// 正常情况下返回可用资源的地址
     pub async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
-        self.update_connect()?;
+        self.update_connect().await?;
         let (req_tran_id, mut req) =
             Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
 
@@ -124,7 +124,7 @@ impl UdpTracker {
         req.write_i32::<BigEndian>(-1)?; // 期望的 peer 数量
         req.write_u16::<BigEndian>(info.port)?;
 
-        let resp = self.send(&req, -1)?;
+        let resp = self.send(&req, -1).await?;
 
         // 解析响应数据
         if resp.len() < MIN_ANNOUNCE_RESP_SIZE {
@@ -156,8 +156,8 @@ impl UdpTracker {
     /// 向 Tracker 发送抓取请求
     ///
     /// 返回 Tracker 上的资源信息
-    pub fn scraping(&mut self) -> Result<Scrape> {
-        self.update_connect()?;
+    pub async fn scraping(&mut self) -> Result<Scrape> {
+        self.update_connect().await?;
         todo!()
     }
 
@@ -186,11 +186,12 @@ impl UdpTracker {
     ///
     /// # Returns
     /// 正常的情况下，返回接收到的数据。
-    fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
+    async fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
         let socket = UdpSocket::bind(DEFAULT_ADDR)?;
         socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
         socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
-        socket.send_to(data, target)?;
+        let socket = tokio::net::UdpSocket::from_std(socket)?;
+        socket.send_to(data, target).await?;
         let expect_size = if expect_size < 0 {
             MAX_PAYLOAD_SIZE
         } else {
@@ -198,7 +199,7 @@ impl UdpTracker {
         };
 
         let mut buffer = ByteBuffer::new(expect_size);
-        let (size, _socket_addr) = socket.recv_from(buffer.as_mut())?;
+        let (size, _socket_addr) = socket.recv_from(buffer.as_mut()).await?;
 
         // 转换为已初始化的缓冲区
         buffer.resize(size);
@@ -210,7 +211,7 @@ impl UdpTracker {
     ///
     /// # Returns
     /// 正确的情况下返回 `OK(())`
-    fn update_connect(&mut self) -> Result<()> {
+    async fn update_connect(&mut self) -> Result<()> {
         let now = datetime::now_secs();
         if self.connect.timestamp <= now && now - self.connect.timestamp <= CONNECTION_ID_TIMEOUT {
             // 无需重新获取连接 ID
@@ -218,7 +219,7 @@ impl UdpTracker {
         }
 
         // 重新获取连接 ID
-        let connect = self.connecting()?;
+        let connect = self.connecting().await?;
         self.connect = connect;
         Ok(())
     }
@@ -227,9 +228,9 @@ impl UdpTracker {
     ///
     /// # Returns
     /// 正确的情况下，返回 Connect
-    fn connecting(&mut self) -> Result<Connect> {
+    async fn connecting(&mut self) -> Result<Connect> {
         let (req_tran_id, req) = Self::gen_protocol_head(TRACKER_PROTOCOL_ID, Action::Connect);
-        let resp = self.send(&req, MIN_CONNECT_RESP_SIZE as isize)?;
+        let resp = self.send(&req, MIN_CONNECT_RESP_SIZE as isize).await?;
 
         // 解析响应数据
         if resp.len() < MIN_CONNECT_RESP_SIZE {
@@ -285,19 +286,19 @@ impl UdpTracker {
     ///
     /// # Returns
     /// 正确的情况下，返回响应的数据
-    fn send(&mut self, data: &[u8], expect_size: isize) -> Result<Bytes> {
+    async fn send(&mut self, data: &[u8], expect_size: isize) -> Result<Bytes> {
         if self.retry_count > MAX_RETRY_NUM {
             return Err(Error::Timeout);
         }
 
-        match self.send_recv(data, &self.announce, expect_size) {
+        match self.send_recv(data, &self.announce, expect_size).await {
             Ok(resp) => {
                 self.retry_count = 0;
                 Ok(resp)
             }
             Err(e) => {
                 // todo - 可能需要针对不同任务做处理，以及需要做基准测试
-                warn!("电波无法传达！\n{}", e);
+                warn!("电波无法传达！\t{}", e);
                 Err(e)
                 // self.retry_count += 1;
                 // let lazy = Duration::from_millis(

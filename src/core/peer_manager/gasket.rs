@@ -1,17 +1,16 @@
 pub mod command;
 
-use crate::bt;
 use crate::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::GASKET_PREFIX;
-use crate::emitter::constant::PEER_PREFIX;
 use crate::peer::Peer;
 use crate::peer_manager::PeerManagerContext;
-use crate::peer_manager::gasket::command::Command;
+use crate::peer_manager::gasket::command::{Command, StartWaittingAddr};
 use crate::runtime::Runnable;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
+use crate::{peer, util};
 use ahash::RandomState;
 use bytes::BytesMut;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -22,7 +21,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::WaitForCancellationFuture;
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 #[derive(PartialEq, Debug)]
 pub enum ExitReason {
@@ -37,15 +36,8 @@ pub enum ExitReason {
 }
 
 struct PeerInfo {
-    peer_no: u64,
     join_handle: Option<JoinHandle<()>>,
     addr: SocketAddr,
-}
-
-impl PeerInfo {
-    fn get_transfer_id(&self) -> String {
-        format!("{}{}", PEER_PREFIX, self.peer_no)
-    }
 }
 
 #[derive(Clone)]
@@ -61,6 +53,7 @@ pub struct GasketContext {
     download_path: Arc<String>,
     peer_id: Arc<[u8; 20]>,
     unstart_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
+    gasket_transfer_id: String,
 }
 
 impl GasketContext {
@@ -93,22 +86,39 @@ impl GasketContext {
     }
 
     pub async fn peer_exit(&mut self, peer_no: u64, reason: ExitReason) {
+        trace!("peer_no [{}] 退出了，退出原因: {:?}", peer_no, reason);
         let peer = self.peers.lock().await.remove(&peer_no);
+        trace!("成功移除 peer_no [{}]", peer_no);
         if peer.is_none() {
             return;
         }
+
         let mut peer = peer.unwrap();
         if reason == ExitReason::NotHasJob {
             peer.join_handle = None;
             self.wait_queue.lock().await.push_back(peer);
-        } else {
-            self.unstart_host.lock().await.remove(&peer.addr);
+            return;
         }
+
+        self.unstart_host.lock().await.remove(&peer.addr);
+        trace!("将这个地址从不可用host中移除了");
+
+        // 从等待队列中唤醒一个
+        if let Err(e) = self.emitter
+            .send(&self.gasket_transfer_id, StartWaittingAddr.into())
+            .await {
+            error!("唤醒等待队列中的失败！{}", e);
+        }
+
+        trace!("发送了唤醒消息");
     }
 
     /// 申请下载分块
     pub async fn apply_download_piece(&self, peer_no: u64, idx: usize, offset: u8) -> bool {
-        trace!("peer {} 申请下载分块", peer_no);
+        trace!(
+            "peer {} 申请下载分块\tidx: {}\toffset: {}",
+            peer_no, idx, offset
+        );
         let mut ub = self.underway_bytefield.lock().await;
 
         if idx >= ub.len() {
@@ -116,7 +126,7 @@ impl GasketContext {
         }
 
         let flag = ub[idx] & offset == 0;
-        ub.as_mut().get_mut(idx).map(|x| *x |= offset);
+        ub.get_mut(idx).map(|x| *x |= offset);
         flag
     }
 
@@ -124,8 +134,7 @@ impl GasketContext {
     pub async fn give_back_download_piece(&self, peer_no: u64, piece_index: u32) {
         trace!("peer {} 归还下载分块", peer_no);
         let mut ub = self.underway_bytefield.lock().await;
-        let idx = (piece_index / 8) as usize;
-        let offset = 1 << (piece_index % 8);
+        let (idx, offset) = util::bytes::bitmap_offset(piece_index as usize);
 
         if idx >= ub.len() {
             return;
@@ -140,11 +149,13 @@ impl GasketContext {
         let peers = self.peers.lock().await;
 
         // 通知 peer 结束运行
-        if let Some(peer) = peers.get(&peer_no) {
-            self.emitter
-                .send(&peer.get_transfer_id(), bt::peer::command::Exit.into())
-                .await
-                .unwrap();
+        if let Some(_) = peers.get(&peer_no) {
+            let tid = Peer::get_transfer_id(peer_no);
+            let cmd = peer::command::Exit {
+                reason: ExitReason::NotHasJob,
+            }
+            .into();
+            self.emitter.send(&tid, cmd).await.unwrap();
         }
     }
 
@@ -264,26 +275,22 @@ impl Gasket {
             download_path: self.download_path.clone(),
             peer_id: self.peer_id.clone(),
             unstart_host: self.unstart_host.clone(),
+            gasket_transfer_id: self.get_transfer_id(),
         }
     }
 
     async fn start_peer(&self, addr: SocketAddr) {
         let peer_no = self.peer_no_count.fetch_add(1, Ordering::Acquire);
         let context = self.get_context();
-        let mut emmiter = Emitter::new();
-        let transfer_id = self.get_transfer_id();
-        self.emitter.get(&transfer_id).await.map(async |send| {
-            emmiter.register(transfer_id, send).await.unwrap();
-        });
 
-        if let Some(mut peer) = Peer::new(peer_no, addr, context, emmiter).await {
+        if let Some(mut peer) = Peer::new(peer_no, addr, context, self.emitter.clone()).await {
+            let peers = self.peers.clone();
             match peer.start().await {
                 Ok(_) => {
                     let join_handle = tokio::spawn(peer.run());
-                    self.peers.lock().await.insert(
+                    peers.lock().await.insert(
                         peer_no,
                         PeerInfo {
-                            peer_no,
                             join_handle: Some(join_handle),
                             addr,
                         },
@@ -291,6 +298,21 @@ impl Gasket {
                 }
                 Err(_) => {}
             }
+            // tokio::spawn(async move { // 不开异步的话，可能导致 channel 堆积满了然后崩溃
+            //     match peer.start().await {
+            //         Ok(_) => {
+            //             let join_handle = tokio::spawn(peer.run());
+            //             peers.lock().await.insert(
+            //                 peer_no,
+            //                 PeerInfo {
+            //                     join_handle: Some(join_handle),
+            //                     addr,
+            //                 },
+            //             );
+            //         }
+            //         Err(_) => {}
+            //     }
+            // });
         }
 
         // 成功与否都需要加入到 unstart 集合中，避免重复链接
@@ -350,7 +372,7 @@ impl Runnable for Gasket {
                 cmd = recv.recv() => {
                     if let Some(cmd) = cmd {
                         let cmd: Command = cmd.instance();
-                        cmd.handle(&self).await;
+                        cmd.handle(&mut self).await;
                     }
                 }
             }

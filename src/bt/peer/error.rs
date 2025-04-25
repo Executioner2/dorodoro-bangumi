@@ -8,6 +8,8 @@ pub enum Error {
     TryFromError,
     HandleError(String),
     ResponseDataIncomplete,
+    BitfieldError,
+    PieceCheckoutError(u32),
 }
 
 impl std::fmt::Display for Error {
@@ -18,6 +20,8 @@ impl std::fmt::Display for Error {
             Error::TryFromError => write!(f, "try from error"),
             Error::HandleError(s) => write!(f, "handle error: {}", s),
             Error::ResponseDataIncomplete => write!(f, "response data incomplete - 响应数据不完整"),
+            Error::BitfieldError => write!(f, "bitfield 有问题"),
+            Error::PieceCheckoutError(index) => write!(f, "第 {} 个分块校验有问题", index),
         }
     }
 }
