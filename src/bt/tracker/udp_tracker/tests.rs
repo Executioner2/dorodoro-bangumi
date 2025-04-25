@@ -38,9 +38,9 @@ fn test_connect() {
 }
 
 /// 测试是否能发起 announce 请求
-#[test]
+#[tokio::test]
 #[cfg_attr(miri, ignore)]
-fn test_announce() {
+async fn test_announce() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
     let peer_id = tracker::gen_peer_id();
@@ -55,7 +55,7 @@ fn test_announce() {
         resource_size: torrent.info.length,
         port: 9987,
     };
-    let announce = tracker.announcing(Event::None, &info).unwrap();
+    let announce = tracker.announcing(Event::None, &info).await.unwrap();
     println!("announce result: {:?}", announce);
     println!("peers length: {}", announce.peers.len());
 }

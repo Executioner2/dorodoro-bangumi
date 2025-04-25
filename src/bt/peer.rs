@@ -547,7 +547,6 @@ impl Runnable for Peer {
                             }
                         },
                         None => {
-                            // trace!("peer 接收无法正确处理的响应");
                             error!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
                             break;
                         }

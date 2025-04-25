@@ -106,7 +106,7 @@ impl UdpTracker {
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
+    pub async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
         self.update_connect()?;
         let (req_tran_id, mut req) =
             Self::gen_protocol_head(self.connect.connection_id, Action::Announce);

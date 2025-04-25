@@ -1,4 +1,4 @@
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
@@ -9,17 +9,17 @@ pub trait Runnable {
     fn run(self) -> impl Future<Output = ()> + Send;
 }
 
+#[derive(Debug)]
 enum DelayedTaskState {
-    Wait,
+    Wait(Pin<Box<tokio::time::Sleep>>),
     Ready,
     Finished,
 }
 
 pub struct DelayedTask<F> {
-    delay: Duration,
     task: F,
     state: DelayedTaskState,
-    cancel: Arc<AtomicBool>
+    cancel: Arc<AtomicBool>,
 }
 
 impl<U, F> DelayedTask<F>
@@ -29,16 +29,15 @@ where
 {
     pub fn new(delay: Duration, task: F) -> Self {
         Self {
-            delay,
             task,
-            state: DelayedTaskState::Wait,
-            cancel: Arc::new(AtomicBool::new(false))
+            state: DelayedTaskState::Wait(Box::pin(tokio::time::sleep(delay))),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
-    
+
     /// 取消掉任务
     pub fn cancel(self) {
-        self.cancel.fetch_and(false, Ordering::Relaxed);
+        self.cancel.fetch_and(true, Ordering::Relaxed);
     }
 }
 
@@ -50,9 +49,9 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        while this.cancel.load(Ordering::Relaxed) {
-            match this.state {
-                DelayedTaskState::Wait => match pin!(tokio::time::sleep(this.delay)).poll(cx) {
+        while !this.cancel.load(Ordering::Relaxed) {
+            match &mut this.state {
+                DelayedTaskState::Wait(sleep) => match Pin::new(sleep).poll(cx) {
                     Poll::Ready(_) => {
                         this.state = DelayedTaskState::Ready;
                     }
