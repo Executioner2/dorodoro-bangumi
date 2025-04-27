@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use crate::command_system;
 use crate::core::command::CommandHandler;
 use crate::core::emitter::Emitter;
@@ -23,7 +24,7 @@ command_system! {
 #[derive(Debug)]
 pub struct NewDownloadTask {
     pub torrent: TorrentArc,
-    pub download_path: String,
+    pub download_path: PathBuf,
 }
 impl<'a> CommandHandler<'a> for NewDownloadTask {
     type Target = &'a mut PeerManager;

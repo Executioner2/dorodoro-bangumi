@@ -21,12 +21,14 @@ use crate::core::protocol::{
 use crate::core::runtime::Runnable;
 use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
+use crate::fs::OpenOptionsExt;
 use crate::peer::error::Error;
 use crate::peer::error::Error::{
     BitfieldError, HandshakeError, PieceCheckoutError, ResponseDataIncomplete, TryFromError,
 };
 use crate::peer::future::BtResp;
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
+use crate::torrent::TorrentArc;
 use crate::{datetime, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
@@ -36,6 +38,7 @@ use std::cmp::min;
 use std::io::SeekFrom;
 use std::mem;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -456,15 +459,14 @@ impl Peer {
         let now_time = datetime::now_millis();
         let piece_index = u32::from_be_slice(&bytes[0..4]);
         let block_offset = u32::from_be_slice(&bytes[4..8]);
-        let block_data_len = bytes[8..].len();
-        let torrent = self.context.torrent();
-        let file_path = format!("{}{}", self.context.download_path(), torrent.info.name);
+        let block_data = &bytes[8..];
+        let block_data_len = block_data.len();
         Self::write_file(
             piece_index,
             block_offset,
-            bytes,
-            file_path,
-            torrent.info.piece_length,
+            block_data,
+            self.context.download_path(),
+            self.context.torrent().clone(),
         )
         .await?;
 
@@ -516,51 +518,99 @@ impl Peer {
     /// 校验分块
     async fn checkout(&self, piece_index: u32) -> Result<bool> {
         let read_length = self.get_piece_length(piece_index);
-        let piece_index = piece_index as usize;
         let torrent = self.context.torrent();
-        let piece_length = torrent.info.piece_length;
-        let hash = &torrent.info.pieces[piece_index * 20..(piece_index + 1) * 20];
-        let file = format!("{}{}", self.context.download_path(), torrent.info.name);
-        let mut file = tokio::fs::OpenOptions::new().read(true).open(file).await?;
-        file.seek(SeekFrom::Start(piece_index as u64 * piece_length))
-            .await?;
+        let hash = &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
+
+        let list = Self::analyse_cover_file(
+            &torrent,
+            piece_index,
+            0,
+            self.context.download_path(),
+            read_length as usize,
+        );
+
         let mut data = ByteBuffer::new(read_length as usize);
-        let n = file.read_exact(data.as_mut()).await?;
-        trace!("读取了{}个字节，期望读取{}个字节", n, read_length);
+        let mut offset = 0;
+        for (filepath, start, len) in list {
+            let mut file = tokio::fs::OpenOptions::new()
+                .read(true)
+                .open_with_parent_dirs(filepath)
+                .await?;
+            file.seek(SeekFrom::Start(start)).await?;
+            let n = file.read_exact(&mut data[offset..offset + len]).await?;
+            offset += n;
+        }
+
+        if offset != read_length as usize {
+            error!(
+                "没从磁盘中读取到期望的数据量\t期望值: {}\t实际值: {}",
+                read_length, offset
+            );
+            return Ok(false);
+        }
+
         let mut hasher = Sha1::new();
-        hasher.update(&data[0..n]);
+        hasher.update(&data[0..offset]);
         let result = &hasher.finalize();
         Ok(result.as_slice() == hash)
+    }
+
+    /// 根据区块下标和区块大小列出覆盖的文件
+    ///
+    /// 返回值：(文件相对路径 起始位置 写入数据量)
+    fn analyse_cover_file(
+        torrent: &TorrentArc,
+        piece_index: u32,
+        block_offset: u32,
+        path: &PathBuf,
+        total_size: usize,
+    ) -> Vec<(PathBuf, u64, usize)> {
+        match torrent.find_file_of_piece_index(piece_index, block_offset as u64, total_size) {
+            None => {
+                let piece_length = torrent.info.piece_length;
+                vec![(
+                    path.join(&torrent.info.name),
+                    piece_index as u64 * piece_length + block_offset as u64,
+                    total_size,
+                )]
+            }
+            Some(res) => res
+                .iter()
+                .map(|item| {
+                    let filepath = path
+                        .join(&torrent.info.name)
+                        .join(torrent.info.files[item.0].path.iter().collect::<PathBuf>());
+                    (filepath, item.1, item.2 as usize)
+                })
+                .collect(),
+        }
     }
 
     /// 写入文件
     async fn write_file(
         piece_index: u32,
         block_offset: u32,
-        block_data: Bytes,
-        file: String,
-        piece_length: u64,
+        block_data: &[u8],
+        path: &PathBuf,
+        torrent: TorrentArc,
     ) -> Result<()> {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(file)
-            .await?;
+        let list =
+            Self::analyse_cover_file(&torrent, piece_index, block_offset, path, block_data.len());
+        let mut offset = 0;
 
-        trace!(
-            "写入文件\t{} - {} - {}偏移量: {}",
-            piece_index,
-            piece_length,
-            block_offset,
-            piece_index as u64 * piece_length + block_offset as u64
-        );
+        for (filepath, start, len) in list {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open_with_parent_dirs(filepath)
+                .await?;
 
-        file.seek(SeekFrom::Start(
-            piece_index as u64 * piece_length + block_offset as u64,
-        ))
-        .await?;
-        file.write_all(&block_data[8..]).await?;
-        file.flush().await?;
+            file.seek(SeekFrom::Start(start)).await?;
+
+            file.write_all(&block_data[offset..offset + len]).await?;
+            file.flush().await?;
+            offset += len;
+        }
 
         Ok(())
     }

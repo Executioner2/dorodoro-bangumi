@@ -14,7 +14,7 @@ use std::net::UdpSocket;
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_bencoded_string() {
-    let bytes = fs::read("tests/resources/test1.torrent").unwrap();
+    let bytes = fs::read("tests/resources/test6.torrent").unwrap();
     let data = bencoding::decode(Bytes::from_owner(bytes)).unwrap();
     println!("decoded data: {:?}", data);
 }
@@ -55,7 +55,7 @@ fn test_info_hash() {
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_udp_tracker_handshake() {
-    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
+    let torrent = Torrent::parse_torrent("tests/resources/test6.torrent").unwrap();
 
     println!("tracker: {}", torrent.announce);
 

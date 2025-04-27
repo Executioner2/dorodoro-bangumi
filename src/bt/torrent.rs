@@ -2,10 +2,14 @@
 
 pub mod error;
 
+#[cfg(test)]
+mod tests;
+
 use self::error::Result;
 use crate::bencoding::error::Error::TransformError;
 use crate::bt::bencoding;
 use crate::bt::bencoding::BEncode;
+use crate::if_else;
 use crate::torrent::error::Error::InvalidTorrent;
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
@@ -58,13 +62,14 @@ pub struct Torrent {
 /// 种子信息结构体
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct Info {
-    pub length: u64,         // 文件大小
-    pub piece_length: u64,   // 分片大小
-    pub pieces: Vec<u8>,     // 每20个字节一块的校验码
-    pub name: String,        // 文件名
-    pub files: Vec<File>,    // 文件列表
-    _md5sum: Option<String>, // 文件md5值
-    _private: Option<u8>,    // 是否私有
+    pub length: u64,             // 文件大小
+    pub piece_length: u64,       // 分片大小
+    pub pieces: Vec<u8>,         // 每20个字节一块的校验码
+    pub name: String,            // 文件名
+    pub files: Vec<File>,        // 文件列表
+    _md5sum: Option<String>,     // 文件md5值
+    _private: Option<u8>,        // 是否私有
+    file_piece: Vec<(u32, u32)>, // 多文件情况下，分片下标对应的文件
 }
 
 /// 文件结构体，适用于多文件种子
@@ -72,6 +77,7 @@ pub struct Info {
 pub struct File {
     pub length: u64,         // 文件大小
     pub path: Vec<String>,   // 文件路径
+    length_prefix_sum: u64,  // 总大小的前缀和
     _md5sum: Option<String>, // 文件md5值
 }
 
@@ -95,6 +101,15 @@ impl Torrent {
             _encoding: None,
         }
     }
+
+    pub fn find_file_of_piece_index(
+        &self,
+        piece_index: u32,
+        offset: u64,
+        len: usize,
+    ) -> Option<Vec<(usize, u64, u64)>> {
+        self.info.find_file_of_piece_index(piece_index, offset, len)
+    }
 }
 
 impl Info {
@@ -103,8 +118,9 @@ impl Info {
         length: u64,
         piece_length: u64,
         pieces: Vec<u8>,
-        files: Vec<File>,
+        mut files: Vec<File>,
     ) -> Self {
+        let file_piece = Self::calculate_file_piece(&mut files, piece_length);
         Self {
             name,
             length,
@@ -113,7 +129,62 @@ impl Info {
             files,
             _md5sum: None,
             _private: None,
+            file_piece,
         }
+    }
+
+    fn calculate_file_piece(files: &mut Vec<File>, piece_length: u64) -> Vec<(u32, u32)> {
+        let mut file_piece = Vec::with_capacity(files.len());
+        let mut sum = 0;
+        let mut prev = 0;
+        for file in files {
+            let start = (prev + (sum % piece_length == 0) as i64) as u64;
+            sum += file.length;
+            let end = (sum + piece_length - 1) / piece_length;
+            file_piece.push((start as u32 - 1, end as u32 - 1));
+            prev = end as i64;
+            file.length_prefix_sum = sum;
+        }
+        file_piece
+    }
+
+    /// 返回值：(files下标 起始位置 数据长度)
+    pub fn find_file_of_piece_index(
+        &self,
+        piece_index: u32,
+        offset: u64,
+        len: usize,
+    ) -> Option<Vec<(usize, u64, u64)>> {
+        if self.file_piece.is_empty() {
+            return None;
+        }
+
+        let m_low = self.file_piece.partition_point(|&(_, r)| r < piece_index);
+
+        if m_low >= self.file_piece.len() || self.file_piece[m_low].0 > piece_index {
+            return None;
+        }
+
+        let n_high = self.file_piece.partition_point(|&(l, _)| l <= piece_index);
+
+        let mut res = vec![];
+        let begin = piece_index as u64 * self.piece_length + offset;
+        let end = begin + len as u64;
+        let mut left = len as u64;
+
+        for i in m_low..n_high {
+            let file = &self.files[i];
+            let lps = file.length_prefix_sum;
+            if lps >= begin && lps - file.length < end {
+                let start = if_else!(begin <= lps - file.length, 0, begin - (lps - file.length));
+                let len =
+                    if_else!(end <= lps, end - (lps - file.length), file.length - start).min(left);
+                res.push((i, start, len));
+                left -= len;
+            }
+        }
+
+        Some(res)
     }
 }
 
@@ -122,6 +193,7 @@ impl File {
         Self {
             length,
             path,
+            length_prefix_sum: 0,
             _md5sum: None,
         }
     }

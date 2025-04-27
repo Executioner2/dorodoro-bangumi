@@ -9,6 +9,7 @@ use crate::core::scheduler::command::Shutdown;
 use crate::core::tcp_server::command::Exit;
 use crate::torrent::{Parse, TorrentArc};
 use std::fs;
+use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::select;
@@ -77,10 +78,13 @@ impl Runnable for Controller {
                         },
                         Ok(1) => {
                             trace!("接收到了添加种子文件的指令");
-                            let data = fs::read("tests/resources/test5.torrent").unwrap();
-                            let download_path = String::from("./download/");
+                            let data = fs::read("tests/resources/test6.torrent").unwrap();
+                            let path = PathBuf::from("./download/");
                             let torrent = TorrentArc::parse_torrent(data).unwrap();
-                            let cmd = command::TorrentAdd(torrent, download_path);
+                            let cmd = command::TorrentAdd {
+                                torrent,
+                                path
+                            };
                             self.emitter.send(SCHEDULER, cmd.into()).await.unwrap();
                             break;
                         },

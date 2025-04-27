@@ -6,3 +6,4 @@ pub mod log;
 pub mod rand;
 pub mod shortcut;
 pub mod net;
+pub mod fs;

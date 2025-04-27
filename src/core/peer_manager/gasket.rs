@@ -15,6 +15,7 @@ use ahash::RandomState;
 use bytes::BytesMut;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
@@ -50,7 +51,7 @@ pub struct GasketContext {
     emitter: Emitter,
     download: Arc<AtomicU64>,
     torrent: TorrentArc,
-    download_path: Arc<String>,
+    download_path: Arc<PathBuf>,
     peer_id: Arc<[u8; 20]>,
     unstart_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
     gasket_transfer_id: String,
@@ -73,8 +74,8 @@ impl GasketContext {
         self.context.config.clone()
     }
 
-    pub fn download_path(&self) -> &str {
-        self.download_path.as_str()
+    pub fn download_path(&self) -> &PathBuf {
+        &self.download_path
     }
 
     pub async fn bytefield(&self) -> BytesMut {
@@ -193,7 +194,7 @@ pub struct Gasket {
     torrent: TorrentArc,
 
     /// 下载路径
-    download_path: Arc<String>,
+    download_path: Arc<PathBuf>,
 
     /// peer_id 自增计数
     peer_no_count: Arc<AtomicU64>,
@@ -232,7 +233,7 @@ impl Gasket {
         torrent: TorrentArc,
         context: PeerManagerContext,
         peer_id: Arc<[u8; 20]>,
-        download_path: String,
+        download_path: PathBuf,
         download: u64,
         uploaded: u64,
         emitter: Emitter,

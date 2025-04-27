@@ -8,6 +8,7 @@ use crate::core::scheduler::{Scheduler, SchedulerContext};
 use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use crate::torrent::TorrentArc;
 use core::fmt::{Debug, Formatter};
+use std::path::PathBuf;
 use tracing::info;
 
 command_system! {
@@ -32,7 +33,10 @@ impl<'a> CommandHandler<'a> for Shutdown {
 }
 
 /// 添加种子
-pub struct TorrentAdd(pub TorrentArc, pub String);
+pub struct TorrentAdd {
+    pub torrent: TorrentArc,
+    pub path: PathBuf   
+}
 impl Debug for TorrentAdd {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "Torrent Add")
@@ -42,7 +46,7 @@ impl<'a> CommandHandler<'a> for TorrentAdd {
     type Target = &'a Scheduler;
 
     async fn handle(self, ctx: Self::Target) {
-        async fn task(torrent: TorrentArc, download_path: String, context: SchedulerContext) {
+        async fn task(torrent: TorrentArc, download_path: PathBuf, context: SchedulerContext) {
             // 添加到下载列表
             info!("开始查询历史下载量等操作");
             let emitter = context.emitter;
@@ -59,6 +63,6 @@ impl<'a> CommandHandler<'a> for TorrentAdd {
                 .unwrap();
         }
         let context = ctx.get_context();
-        tokio::spawn(task(self.0, self.1, context));
+        tokio::spawn(task(self.torrent, self.path, context));
     }
 }
