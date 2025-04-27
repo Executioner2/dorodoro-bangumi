@@ -106,10 +106,10 @@ macro_rules! command_system {
             }
         )+
 
-        impl<'a> CommandHandler<'a> for Command {
+        impl<'a> CommandHandler<'a, Result<()>> for Command {
             type Target = &'a mut $ctx;
 
-            async fn handle(self, ctx: Self::Target) {
+            async fn handle(self, ctx: Self::Target) -> Result<()> {
                 match self {
                     $(
                         Self::$variant(cmd) => {

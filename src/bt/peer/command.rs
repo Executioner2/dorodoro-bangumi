@@ -1,61 +1,43 @@
 use crate::core::command::CommandHandler;
-use tracing::trace;
+use tracing::{trace};
+use crate::command_system;
 use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use crate::peer::Peer;
 use crate::peer_manager::gasket::ExitReason;
+use crate::bt::peer::error::Result;
 
-pub enum Command {
-    Download(Download),
-    Exit(Exit),
+command_system! {
+    ctx: Peer,
+    Command {
+        Download,
+        Exit,
+    }
 }
 
-impl CommandEnum for Command {}
-
-impl<'a> CommandHandler<'a> for Command {
+#[derive(Debug)]
+pub struct Download {
+    pub(crate) piece: (u32, u32)   
+}
+impl<'a> CommandHandler<'a, Result<()>> for Download {
     type Target = &'a mut Peer;
 
-    async fn handle(self, context: Self::Target) {
-        match self {
-            Command::Download(cmd) => cmd.handle(context).await,
-            Command::Exit(cmd) => cmd.handle(context).await,
-        }
-    }
-}
-
-pub struct Download;
-impl From<Download> for Command {
-    fn from(value: Download) -> Self {
-        Command::Download(value)
-    }
-}
-impl Into<TransferPtr> for Download {
-    fn into(self) -> TransferPtr {
-        Command::Download(self).into()
-    }
-}
-impl<'a> CommandHandler<'a> for Download {
-    type Target = &'a mut Peer;
-
-    async fn handle(self, _context: Self::Target) {
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
         trace!("被唤醒，执行下载任务");
-        unimplemented!()
-        // let _ = context.try_find_downloadable_pices().await;
+        ctx.set_downloading_pieces(self.piece.0, self.piece.1);
+        let _ = ctx.request_block(self.piece.0).await?;
+        Ok(())
     }
 }
 
+#[derive(Debug)]
 pub struct Exit {
     pub reason: ExitReason
 }
-impl Into<TransferPtr> for Exit {
-    fn into(self) -> TransferPtr {
-        Command::Exit(self).into()
-    }
-}
-impl<'a> CommandHandler<'a> for Exit {
+impl<'a> CommandHandler<'a, Result<()>> for Exit {
     type Target = &'a mut Peer;
 
     /// 什么都不需要做，在 peer 中会处理的
-    async fn handle(self, _context: Self::Target) {
+    async fn handle(self, _ctx: Self::Target) -> Result<()> {
         unimplemented!()
     }
 }

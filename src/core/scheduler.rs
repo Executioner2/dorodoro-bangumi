@@ -9,9 +9,10 @@ use crate::core::runtime::Runnable;
 use command::Command;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 pub mod command;
+mod error;
 
 /// 多线程下的共享数据
 #[allow(dead_code)]
@@ -73,7 +74,10 @@ impl Runnable for Scheduler {
                     if let Some(cmd) = recv {
                         let cmd: Command = cmd.instance();
                         trace!("scheduler 收到命令: {:?}", cmd);
-                        cmd.handle(&mut self).await;
+                        if let Err(e) = cmd.handle(&mut self).await {
+                            error!("处理指令出现错误\t{}", e);
+                            break;
+                        }
                     }
                 }
             }

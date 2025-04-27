@@ -29,7 +29,8 @@ use crate::peer::error::Error::{
 use crate::peer::future::BtResp;
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use crate::torrent::TorrentArc;
-use crate::{datetime, util};
+use crate::{datetime, store, util};
+use ahash::HashMap;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
 use error::Result;
@@ -137,7 +138,7 @@ impl PeerStatistics {
 enum Status {
     Choke,
     UnChoke,
-    Wait, // 等待新的分块下载
+    _Wait, // 等待新的分块下载
 }
 
 pub struct Peer {
@@ -171,11 +172,13 @@ pub struct Peer {
     /// 对端拥有的分块
     opposite_peer_bitfield: Option<BytesMut>,
 
-    /// 当前下载分块的偏移量
-    sharding_offset: u64,
-
     /// 当前正在下载的分块
-    downloading_piece: Option<u32>,
+    ///
+    /// (分块下标 偏移位置 )
+    downloading_pieces: HashMap<u32, u32>,
+
+    /// 成功收到的 piece 的响应次数
+    secuessed_piece: u64,
 
     /// 指令发射器
     emitter: Emitter,
@@ -204,8 +207,8 @@ impl Peer {
             opposite_peer_id: None,
             opposite_peer_status: Status::Choke,
             opposite_peer_bitfield: None,
-            sharding_offset: 0,
-            downloading_piece: None,
+            downloading_pieces: HashMap::default(),
+            secuessed_piece: 0,
             emitter,
         })
     }
@@ -284,46 +287,62 @@ impl Peer {
         Ok(res)
     }
 
+    pub fn set_downloading_pieces(&mut self, piece_index: u32, block_offset: u32) {
+        self.downloading_pieces.insert(piece_index, block_offset);
+    }
+
     /// 顺序请求分块
     async fn request_block(&mut self, piece_index: u32) -> Result<bool> {
         let sharding_size = self.context.config().sharding_size();
         let piece_length = self.get_piece_length(piece_index);
         self.statistics.last_request_time = datetime::now_millis();
+        let offset = self.downloading_pieces.entry(piece_index).or_insert(0);
 
-        let over = self.sharding_offset >= piece_length;
+        let over = *offset >= piece_length;
         if !over {
             trace!(
                 "peer_no [{}] 请求下载分块 {} - {}",
-                self.no, piece_index, self.sharding_offset
+                self.no, piece_index, offset
             );
             let mut req = Vec::with_capacity(13);
             WriteBytesExt::write_u32::<BigEndian>(&mut req, 13)?;
             WriteBytesExt::write_u8(&mut req, MsgType::Request as u8)?;
             WriteBytesExt::write_u32::<BigEndian>(&mut req, piece_index)?;
-            WriteBytesExt::write_u32::<BigEndian>(&mut req, self.sharding_offset as u32)?;
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, *offset)?;
             WriteBytesExt::write_u32::<BigEndian>(
                 &mut req,
-                min(piece_length - self.sharding_offset, sharding_size) as u32,
+                min(piece_length - *offset, sharding_size),
             )?;
 
             self.writer.write_all(&req).await?;
-            self.sharding_offset += sharding_size;
+            *offset += sharding_size;
         } else {
-            self.sharding_offset = 0;
+            self.downloading_pieces.remove(&piece_index);
         }
 
         Ok(over)
     }
 
-    fn get_piece_length(&self, piece_index: u32) -> u64 {
+    fn get_piece_length(&self, piece_index: u32) -> u32 {
         let torrent = self.context.torrent();
         let piece_length = torrent.info.piece_length;
         let resource_length = torrent.info.length;
-        piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length))
+        piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length)) as u32
+    }
+
+    fn is_can_be_download(&self) -> bool {
+        let config = self.context.config();
+        self.status == Status::UnChoke
+            && self.downloading_pieces.len() < config.con_req_piece_limit()
+            && self.secuessed_piece % config.sucessed_recv_piece() as u64 == 0
     }
 
     /// 尝试寻找可以下载的分块进行下载
     pub async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
+        if !self.is_can_be_download() {
+            return Ok(false);
+        }
+
         let torrent = self.context.torrent();
         let bit_len = torrent.info.pieces.len() / 20;
 
@@ -336,14 +355,14 @@ impl Peer {
                 .as_ref()
                 .map(|bytes| bytes[idx] & offset != 0)
             {
-                if self
+                let piece_index = i as u32;
+                if let Some(block_offset) = self
                     .context
-                    .apply_download_piece(self.no, idx, offset)
+                    .apply_download_piece(self.no, piece_index)
                     .await
                 {
                     trace!("peer_no [{}] 发现新的可下载分块：{}", self.no, i);
-                    let piece_index = i as u32;
-                    self.downloading_piece = Some(piece_index);
+                    self.downloading_pieces.insert(piece_index, block_offset);
                     self.request_block(piece_index).await?;
                     return Ok(true);
                 }
@@ -351,8 +370,9 @@ impl Peer {
         }
 
         // 没有分块可以下载了，告诉 gasket
-        self.downloading_piece = None;
-        self.context.report_no_downloadable_piece(self.no).await;
+        if self.downloading_pieces.is_empty() {
+            self.context.report_no_downloadable_piece(self.no).await;
+        }
         Ok(false)
     }
 
@@ -367,6 +387,7 @@ impl Peer {
     async fn handle_un_choke(&mut self) -> Result<()> {
         trace!("peer_no [{}] 对端告诉我们可以下载数据", self.no);
         self.status = Status::UnChoke;
+        self.try_find_downloadable_pices().await?;
         Ok(())
     }
 
@@ -401,21 +422,11 @@ impl Peer {
         let bit = u32::from_be_slice(&bytes[..4]);
         let (idx, offset) = util::bytes::bitmap_offset(bit as usize);
 
-        if self
-            .context
-            .apply_download_piece(self.no, idx, offset)
-            .await
-        {
-            self.opposite_peer_bitfield
-                .as_mut()
-                .map(|bytes| bytes[idx] |= offset);
-            if self.status == Status::Wait {
-                // 正在等新的分块可用，刚好这里来了个新的，那么就直接下载，不用告诉 gasket，有下得更快的想来抢，
-                // 就让他告诉 gasket，让 gasket 来决定是否分配给其它 peer
-                self.downloading_piece = Some(bit);
-                self.request_block(bit).await?;
-            }
-        }
+        self.opposite_peer_bitfield
+            .as_mut()
+            .map(|bytes| bytes[idx] |= offset);
+
+        self.try_find_downloadable_pices().await?;
 
         Ok(())
     }
@@ -450,7 +461,7 @@ impl Peer {
     }
 
     /// 对端给我们发来了数据
-    async fn handle_piece(&mut self, bytes: Bytes) -> Result<()> {
+    async fn handle_piece(&mut self, mut bytes: Bytes) -> Result<()> {
         trace!("peer_no [{}] 收到了对端发来的数据", self.no);
         // 下载到本地
         if bytes.len() < 8 {
@@ -459,7 +470,7 @@ impl Peer {
         let now_time = datetime::now_millis();
         let piece_index = u32::from_be_slice(&bytes[0..4]);
         let block_offset = u32::from_be_slice(&bytes[4..8]);
-        let block_data = &bytes[8..];
+        let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
         Self::write_file(
             piece_index,
@@ -469,6 +480,8 @@ impl Peer {
             self.context.torrent().clone(),
         )
         .await?;
+
+        self.secuessed_piece += 1;
 
         let mut over = false;
         if self.request_block(piece_index).await? {
@@ -501,10 +514,7 @@ impl Peer {
             )
             .await;
 
-        if over {
-            // 这个分块下载完了，寻找新的分块下载
-            self.try_find_downloadable_pices().await?;
-        }
+        self.try_find_downloadable_pices().await?;
 
         Ok(())
     }
@@ -531,7 +541,8 @@ impl Peer {
 
         let mut data = ByteBuffer::new(read_length as usize);
         let mut offset = 0;
-        for (filepath, start, len) in list {
+        for (filepath, start, len, _) in list {
+            store::flush(&filepath).await?;
             let mut file = tokio::fs::OpenOptions::new()
                 .read(true)
                 .open_with_parent_dirs(filepath)
@@ -564,7 +575,7 @@ impl Peer {
         block_offset: u32,
         path: &PathBuf,
         total_size: usize,
-    ) -> Vec<(PathBuf, u64, usize)> {
+    ) -> Vec<(PathBuf, u64, usize, u64)> {
         match torrent.find_file_of_piece_index(piece_index, block_offset as u64, total_size) {
             None => {
                 let piece_length = torrent.info.piece_length;
@@ -572,15 +583,17 @@ impl Peer {
                     path.join(&torrent.info.name),
                     piece_index as u64 * piece_length + block_offset as u64,
                     total_size,
+                    torrent.info.length,
                 )]
             }
             Some(res) => res
                 .iter()
                 .map(|item| {
+                    let file = &torrent.info.files[item.0];
                     let filepath = path
                         .join(&torrent.info.name)
-                        .join(torrent.info.files[item.0].path.iter().collect::<PathBuf>());
-                    (filepath, item.1, item.2 as usize)
+                        .join(file.path.iter().collect::<PathBuf>());
+                    (filepath, item.1, item.2 as usize, file.length)
                 })
                 .collect(),
         }
@@ -590,26 +603,24 @@ impl Peer {
     async fn write_file(
         piece_index: u32,
         block_offset: u32,
-        block_data: &[u8],
+        mut block_data: Bytes,
         path: &PathBuf,
         torrent: TorrentArc,
     ) -> Result<()> {
         let list =
             Self::analyse_cover_file(&torrent, piece_index, block_offset, path, block_data.len());
-        let mut offset = 0;
 
-        for (filepath, start, len) in list {
+        for (filepath, start, len, file_len) in list {
             let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
-                .open_with_parent_dirs(filepath)
+                .open_with_parent_dirs(&filepath)
                 .await?;
 
             file.seek(SeekFrom::Start(start)).await?;
 
-            file.write_all(&block_data[offset..offset + len]).await?;
-            file.flush().await?;
-            offset += len;
+            let data = block_data.split_to(len);
+            store::write(filepath, start, data, file_len).await;
         }
 
         Ok(())
@@ -662,7 +673,11 @@ impl Runnable for Peer {
                                 reason = exit.reason;
                                 break;
                             }
-                            cmd.handle(&mut self).await;
+                            if let Err(e) = cmd.handle(&mut self).await {
+                                error!("处理指令出现错误\t{}", e);
+                                reason = ExitReason::Exception;
+                                break;
+                            }
                         }
                         None => {
                             unimplemented!()
@@ -673,9 +688,9 @@ impl Runnable for Peer {
         }
 
         // 归还未下完的分块
-        if let Some(bit) = self.downloading_piece {
-            self.context.give_back_download_piece(self.no, bit).await;
-        }
+        self.context
+            .give_back_download_piece(self.no, self.downloading_pieces)
+            .await;
         self.context.peer_exit(self.no, reason).await;
     }
 }

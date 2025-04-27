@@ -16,10 +16,12 @@ use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
+use crate::core::tcp_server::command::Command;
 use crate::core::tcp_server::future::Accept;
 
 pub mod command;
 mod future;
+mod error;
 
 /// 链接id，一般需要 TcpServer 管理资源释放的才需要这个
 type ConnId = u64;
@@ -177,9 +179,12 @@ impl Runnable for TcpServer {
                 }
                 res = recv.recv() => {
                     if let Some(cmd) = res {
-                        let cmd = cmd.instance::<command::Command>();
+                        let cmd: Command = cmd.instance();
                         trace!("tcp server 收到了消息: {:?}", cmd);
-                        cmd.handle(&mut self).await;
+                        if let Err(e) = cmd.handle(&mut self).await {
+                            error!("处理指令出现错误\t{}", e);
+                            break;
+                        }
                     }
                 }
             }

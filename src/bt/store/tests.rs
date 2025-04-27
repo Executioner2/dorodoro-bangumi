@@ -1,0 +1,135 @@
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
+use tokio::time::Duration;
+use crate::buffer::ByteBuffer;
+use crate::fs::OpenOptionsExt;
+
+// 包装 File 并记录写入次数
+struct InstrumentedFile {
+    inner: File,
+    write_count: Arc<AtomicUsize>,
+}
+
+impl InstrumentedFile {
+    fn new(file: File) -> Self {
+        Self {
+            inner: file,
+            write_count: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn _write_count(&self) -> usize {
+        self.write_count.load(Ordering::SeqCst)
+    }
+}
+
+impl AsyncWrite for InstrumentedFile {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        let pinned_inner = Pin::new(&mut self.inner);
+        let result = pinned_inner.poll_write(cx, buf);
+        if let Poll::Ready(Ok(_)) = &result {
+            self.write_count.fetch_add(1, Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl AsyncSeek for InstrumentedFile {
+    fn start_seek(mut self: Pin<&mut Self>, position: SeekFrom) -> std::io::Result<()> {
+        Pin::new(&mut self.inner).start_seek(position)
+    }
+
+    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<u64>> {
+        Pin::new(&mut self.inner).poll_complete(cx)
+    }
+}
+
+#[tokio::test]
+async fn test_buf_writer() {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open("./tests/resources/test_buf_writer.txt")
+        .await
+        .unwrap();
+
+    let instrumented_file = InstrumentedFile::new(file);
+    let write_count = instrumented_file.write_count.clone();
+
+    let mut buf = BufWriter::new(instrumented_file);
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    buf.seek(SeekFrom::Start(10)).await.unwrap();
+    println!("5秒到了，写入 hello world");
+    buf.write_all(b"hello world").await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    println!("5秒到了，设置起始位置");
+    // buf.seek(SeekFrom::Start(4)).await.unwrap();
+    buf.seek(SeekFrom::Start(21)).await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    println!("5秒到了，写入 ni hao");
+    buf.write_all(b"ni hao").await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    println!("刷新 ni hao 到磁盘");
+    buf.flush().await.unwrap();
+
+    // 获取最终写入次数
+    let count = write_count.load(Ordering::SeqCst);
+    println!("实际磁盘写入次数: {}", count);
+}
+
+/// 测试在刷新数据到磁盘之前读取
+/// 
+/// 结论：不 flush 到磁盘，是读不到的
+#[tokio::test]
+async fn test_flush_before_read() {
+    let file = OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create(true)
+        .open_with_parent_dirs("./tests/resources/test_flush_before_read.txt")
+        .await
+        .unwrap();
+    
+    let mut writer = BufWriter::new(file);
+    writer.write(b"hello world").await.unwrap();
+    // writer.flush().await.unwrap();
+
+    let file = OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create(true)
+        .open_with_parent_dirs("./tests/resources/test_flush_before_read.txt")
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(file);
+    let mut buff = ByteBuffer::new(11);
+    let n = reader.read(buff.as_mut()).await.unwrap();
+    println!("数据量: {}\t数据: {:?}", n, buff.as_ref())
+}

@@ -1,19 +1,20 @@
 pub mod command;
+mod error;
 
 use crate::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::GASKET_PREFIX;
+use crate::peer;
 use crate::peer::Peer;
 use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{Command, StartWaittingAddr};
 use crate::runtime::Runnable;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
-use crate::{peer, util};
-use ahash::RandomState;
+use ahash::{HashMap, HashSet};
 use bytes::BytesMut;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +37,18 @@ pub enum ExitReason {
     Exception,
 }
 
+#[derive(Eq, PartialEq)]
+enum PieceStatus {
+    /// 进行中
+    Ing,
+
+    /// 暂停，未开始也用这个标记
+    Pause(u32),
+
+    /// 已完成
+    Finished,
+}
+
 struct PeerInfo {
     join_handle: Option<JoinHandle<()>>,
     addr: SocketAddr,
@@ -43,17 +56,17 @@ struct PeerInfo {
 
 #[derive(Clone)]
 pub struct GasketContext {
-    peers: Arc<Mutex<HashMap<u64, PeerInfo, RandomState>>>,
+    peers: Arc<Mutex<HashMap<u64, PeerInfo>>>,
     context: PeerManagerContext,
     bytefield: Arc<Mutex<BytesMut>>,
-    underway_bytefield: Arc<Mutex<BytesMut>>,
+    underway_bytefield: Arc<Mutex<HashMap<u32, PieceStatus>>>,
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
     emitter: Emitter,
     download: Arc<AtomicU64>,
     torrent: TorrentArc,
     download_path: Arc<PathBuf>,
     peer_id: Arc<[u8; 20]>,
-    unstart_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
+    unstart_host: Arc<Mutex<HashSet<SocketAddr>>>,
     gasket_transfer_id: String,
 }
 
@@ -82,10 +95,6 @@ impl GasketContext {
         self.bytefield.lock().await.clone()
     }
 
-    pub async fn underway_bytefield(&self) -> BytesMut {
-        self.underway_bytefield.lock().await.clone()
-    }
-
     pub async fn peer_exit(&mut self, peer_no: u64, reason: ExitReason) {
         trace!("peer_no [{}] 退出了，退出原因: {:?}", peer_no, reason);
         let peer = self.peers.lock().await.remove(&peer_no);
@@ -105,9 +114,11 @@ impl GasketContext {
         trace!("将这个地址从不可用host中移除了");
 
         // 从等待队列中唤醒一个
-        if let Err(e) = self.emitter
+        if let Err(e) = self
+            .emitter
             .send(&self.gasket_transfer_id, StartWaittingAddr.into())
-            .await {
+            .await
+        {
             error!("唤醒等待队列中的失败！{}", e);
         }
 
@@ -115,33 +126,25 @@ impl GasketContext {
     }
 
     /// 申请下载分块
-    pub async fn apply_download_piece(&self, peer_no: u64, idx: usize, offset: u8) -> bool {
-        trace!(
-            "peer {} 申请下载分块\tidx: {}\toffset: {}",
-            peer_no, idx, offset
-        );
+    pub async fn apply_download_piece(&self, peer_no: u64, piece_index: u32) -> Option<u32> {
+        trace!("peer {} 申请下载分块: {}", peer_no, piece_index);
         let mut ub = self.underway_bytefield.lock().await;
-
-        if idx >= ub.len() {
-            return false;
+        let status = ub.entry(piece_index).or_insert(PieceStatus::Pause(0));
+        let mut res = None;
+        if let PieceStatus::Pause(block_offset) = status {
+            res = Some(*block_offset);
+            *status = PieceStatus::Ing;
         }
-
-        let flag = ub[idx] & offset == 0;
-        ub.get_mut(idx).map(|x| *x |= offset);
-        flag
+        res
     }
 
     /// 归还分块下载
-    pub async fn give_back_download_piece(&self, peer_no: u64, piece_index: u32) {
+    pub async fn give_back_download_piece(&self, peer_no: u64, give_back: HashMap<u32, u32>) {
         trace!("peer {} 归还下载分块", peer_no);
         let mut ub = self.underway_bytefield.lock().await;
-        let (idx, offset) = util::bytes::bitmap_offset(piece_index as usize);
-
-        if idx >= ub.len() {
-            return;
+        for (piece_index, block_offset) in give_back {
+            ub.insert(piece_index, PieceStatus::Pause(block_offset));
         }
-
-        ub.as_mut().get_mut(idx).map(|x| *x &= !offset);
     }
 
     /// 有 peer 告诉我们没有分块可以下载了。在这里根据下载情况，决定是否让这个 peer 去抢占别人的任务
@@ -175,6 +178,13 @@ impl GasketContext {
             "peer {} 下载完了第 {} 块的第 {} 个，全部完成了吗? {}。平均速率: {}\t最后一次下载的速率: {}",
             peer_no, piece_index, block_offset, is_over, avg_rate, last_rate
         );
+        if is_over {
+            self.underway_bytefield
+                .lock()
+                .await
+                .get_mut(&piece_index)
+                .map(|status| *status = PieceStatus::Finished);
+        }
         self.download.fetch_add(block_size, Ordering::Relaxed);
     }
 }
@@ -200,7 +210,7 @@ pub struct Gasket {
     peer_no_count: Arc<AtomicU64>,
 
     /// 正在运行中的 peer
-    peers: Arc<Mutex<HashMap<u64, PeerInfo, RandomState>>>,
+    peers: Arc<Mutex<HashMap<u64, PeerInfo>>>,
 
     /// 已下载的量
     download: Arc<AtomicU64>,
@@ -212,10 +222,10 @@ pub struct Gasket {
     bytefield: Arc<Mutex<BytesMut>>,
 
     /// 这个有部分还在下载中，但是为了避免其它 peer 选择重叠，下载的 peer 会把它下载的那个分块标记为 1
-    underway_bytefield: Arc<Mutex<BytesMut>>,
+    underway_bytefield: Arc<Mutex<HashMap<u32, PieceStatus>>>,
 
     /// 不可 start peer 的 host
-    unstart_host: Arc<Mutex<HashSet<SocketAddr, RandomState>>>,
+    unstart_host: Arc<Mutex<HashSet<SocketAddr>>>,
 
     /// 可连接，但是没有任务可分配的 peer，
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
@@ -242,7 +252,6 @@ impl Gasket {
         // todo - 计算有哪些分块是下载了的，哪些是还需要下载的
         let min = ((torrent.info.pieces.len() / 20) + 7) / 8;
         let bytefield = Arc::new(Mutex::new(BytesMut::from(vec![0u8; min].as_slice())));
-        let underway_bytefield = Arc::new(Mutex::new(BytesMut::from(vec![0u8; min].as_slice())));
 
         Self {
             id,
@@ -255,7 +264,7 @@ impl Gasket {
             download: Arc::new(AtomicU64::new(download)),
             uploaded: Arc::new(AtomicU64::new(uploaded)),
             bytefield,
-            underway_bytefield,
+            underway_bytefield: Arc::new(Mutex::new(HashMap::default())),
             unstart_host: Arc::new(Mutex::new(HashSet::default())),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
@@ -373,7 +382,10 @@ impl Runnable for Gasket {
                 cmd = recv.recv() => {
                     if let Some(cmd) = cmd {
                         let cmd: Command = cmd.instance();
-                        cmd.handle(&mut self).await;
+                        if let Err(e) = cmd.handle(&mut self).await {
+                            error!("处理指令出现错误\t{}", e);
+                            break;
+                        }
                     }
                 }
             }

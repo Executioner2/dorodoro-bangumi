@@ -15,10 +15,11 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 pub mod command;
 pub mod gasket;
+mod error;
 
 pub struct GasketInfo {
     id: u64,
@@ -116,7 +117,10 @@ impl Runnable for PeerManager {
                     trace!("peer manager 收到了消息: {:?}", recv);
                     if let Some(cmd) = recv {
                         let cmd: Command = cmd.instance();
-                        cmd.handle(&mut self).await;
+                        if let Err(e) = cmd.handle(&mut self).await {
+                            error!("处理指令出现错误\t{}", e);
+                            break;
+                        }
                     }
                 }
             }

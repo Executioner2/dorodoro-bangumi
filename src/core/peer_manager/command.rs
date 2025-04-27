@@ -11,6 +11,7 @@ use crate::torrent::TorrentArc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::trace;
+use super::error::Result;
 
 command_system! {
     ctx: PeerManager,
@@ -26,10 +27,10 @@ pub struct NewDownloadTask {
     pub torrent: TorrentArc,
     pub download_path: PathBuf,
 }
-impl<'a> CommandHandler<'a> for NewDownloadTask {
+impl<'a> CommandHandler<'a, Result<()>> for NewDownloadTask {
     type Target = &'a mut PeerManager;
 
-    async fn handle(self, ctx: Self::Target) {
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
         trace!("收到新的下载任务");
         let context = ctx.get_context();
 
@@ -62,17 +63,19 @@ impl<'a> CommandHandler<'a> for NewDownloadTask {
         };
 
         context.add_gasket(gasket_info).await;
+        Ok(())
     }
 }
 
 /// Gasket 退出
 #[derive(Debug)]
 pub struct GasketExit(pub u64);
-impl<'a> CommandHandler<'a> for GasketExit {
+impl<'a> CommandHandler<'a, Result<()>> for GasketExit {
     type Target = &'a mut PeerManager;
 
-    async fn handle(self, ctx: Self::Target) {
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
         let context = ctx.get_context();
         context.remove_gasket(self.0).await;
+        Ok(())
     }
 }

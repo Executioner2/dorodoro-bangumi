@@ -7,7 +7,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 fn global_init() -> Result<WorkerGuard, Box<dyn std::error::Error>> {
     // warning - 这个日志占用了 4MB 的内存，后续看看有没有平替
     // let guard = log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::INFO)?;
-    let guard = log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::TRACE)?;
+    let guard = log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::INFO)?;
     Ok(guard)
 }
 

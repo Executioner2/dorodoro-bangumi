@@ -9,7 +9,7 @@ impl TransferPtr {
         Self { inner }
     }
 
-    pub fn instance<'a, T: CommandHandler<'a>>(self) -> T {
+    pub fn instance<'a, T: CommandHandler<'a, U>, U>(self) -> T {
         unsafe { (self.inner as *const T).read() }
     }
 }

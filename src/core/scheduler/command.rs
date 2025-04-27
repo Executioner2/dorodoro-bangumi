@@ -10,6 +10,7 @@ use crate::torrent::TorrentArc;
 use core::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use tracing::info;
+use super::error::Result;
 
 command_system! {
     ctx: Scheduler,
@@ -22,13 +23,14 @@ command_system! {
 /// 关机指令
 #[derive(Debug)]
 pub struct Shutdown;
-impl<'a> CommandHandler<'a> for Shutdown {
+impl<'a> CommandHandler<'a, Result<()>> for Shutdown {
     type Target = &'a Scheduler;
 
-    async fn handle(self, ctx: Self::Target) {
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
         if !ctx.cancel_token.is_cancelled() {
             ctx.cancel_token.cancel();
         }
+        Ok(())
     }
 }
 
@@ -42,10 +44,10 @@ impl Debug for TorrentAdd {
         write!(f, "Torrent Add")
     }
 }
-impl<'a> CommandHandler<'a> for TorrentAdd {
+impl<'a> CommandHandler<'a, Result<()>> for TorrentAdd {
     type Target = &'a Scheduler;
 
-    async fn handle(self, ctx: Self::Target) {
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
         async fn task(torrent: TorrentArc, download_path: PathBuf, context: SchedulerContext) {
             // 添加到下载列表
             info!("开始查询历史下载量等操作");
@@ -64,5 +66,6 @@ impl<'a> CommandHandler<'a> for TorrentAdd {
         }
         let context = ctx.get_context();
         tokio::spawn(task(self.torrent, self.path, context));
+        Ok(())
     }
 }

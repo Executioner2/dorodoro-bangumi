@@ -1,3 +1,5 @@
+use crate::store;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// 错误类型
@@ -10,6 +12,7 @@ pub enum Error {
     ResponseDataIncomplete,
     BitfieldError,
     PieceCheckoutError(u32),
+    StoreError(store::error::Error)
 }
 
 impl std::fmt::Display for Error {
@@ -22,6 +25,7 @@ impl std::fmt::Display for Error {
             Error::ResponseDataIncomplete => write!(f, "response data incomplete - 响应数据不完整"),
             Error::BitfieldError => write!(f, "bitfield 有问题"),
             Error::PieceCheckoutError(index) => write!(f, "第 {} 个分块校验有问题", index),
+            Error::StoreError(e) => write!(f, "store error: {}", e),
         }
     }
 }
@@ -32,10 +36,17 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<store::error::Error> for Error {
+    fn from(e: store::error::Error) -> Self {
+        Error::StoreError(e)
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::IoError(e) => Some(e),
+            Error::StoreError(e) => Some(e),
             _ => None,
         }
     }
