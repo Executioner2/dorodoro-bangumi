@@ -7,12 +7,9 @@ mod test;
 pub mod transfer;
 
 use crate::core::emitter::error::Error;
-use crate::core::emitter::error::Error::RepeatRegister;
-use ahash::RandomState;
+use dashmap::DashMap;
 use error::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use transfer::TransferPtr;
 
@@ -23,7 +20,7 @@ pub enum EmitterType {
 }
 
 pub struct Emitter {
-    mpsc_senders: Arc<RwLock<HashMap<String, Sender<TransferPtr>, RandomState>>>,
+    mpsc_senders: Arc<DashMap<String, Sender<TransferPtr>>>,
 }
 
 unsafe impl Send for Emitter {}
@@ -40,12 +37,12 @@ impl Clone for Emitter {
 impl Emitter {
     pub fn new() -> Self {
         Self {
-            mpsc_senders: Arc::new(RwLock::new(HashMap::default())),
+            mpsc_senders: Arc::new(DashMap::default()),
         }
     }
 
     pub async fn send(&self, transfer_id: &str, data: TransferPtr) -> Result<()> {
-        if let Some(sender) = self.mpsc_senders.read().await.get(transfer_id) {
+        if let Some(sender) = self.mpsc_senders.get(transfer_id) {
             match sender.send(data).await {
                 Ok(_) => Ok(()),
                 Err(e) => Err(Error::SendError(e)),
@@ -55,29 +52,20 @@ impl Emitter {
         }
     }
 
-    pub async fn register<T: ToString>(
-        &mut self,
-        transfer_id: T,
-        sender: Sender<TransferPtr>,
-    ) -> Result<()> {
+    pub fn register<T: ToString>(&mut self, transfer_id: T, sender: Sender<TransferPtr>) {
         let transfer_id = transfer_id.to_string();
-        let mut lock = self.mpsc_senders.write().await;
-        if lock.contains_key(&transfer_id) {
-            return Err(RepeatRegister);
-        }
-        lock.insert(transfer_id, sender);
-        Ok(())
+        self.mpsc_senders.insert(transfer_id, sender);
     }
 
-    pub async fn get(&self, transfer_id: &str) -> Option<Sender<TransferPtr>> {
+    pub fn get(&self, transfer_id: &str) -> Option<Sender<TransferPtr>> {
         self.mpsc_senders
-            .read()
-            .await
             .get(transfer_id)
             .map(|sender| sender.clone())
     }
-    
-    pub async fn remove(&self, transfer_id: &str) -> Option<Sender<TransferPtr>> {
-        self.mpsc_senders.write().await.remove(transfer_id)
+
+    pub fn remove(&self, transfer_id: &str) -> Option<Sender<TransferPtr>> {
+        self.mpsc_senders
+            .remove(transfer_id)
+            .map(|(_, value)| value)
     }
 }

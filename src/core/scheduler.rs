@@ -53,15 +53,15 @@ impl Scheduler {
         }
     }
 
-    async fn shutdown(self) {
-        self.emitter.remove(SCHEDULER).await.unwrap();
+    fn shutdown(self) {
+        self.emitter.remove(SCHEDULER);
     }
 }
 
 impl Runnable for Scheduler {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.config.channel_buffer());
-        self.emitter.register(SCHEDULER, send).await.unwrap();
+        self.emitter.register(SCHEDULER, send);
 
         info!("scheduler 已启动");
         loop {
@@ -83,7 +83,7 @@ impl Runnable for Scheduler {
             }
         }
 
-        self.shutdown().await;
+        self.shutdown();
         info!("scheduler 已关闭")
     }
 }

@@ -16,6 +16,7 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fs;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// 种子，多线程共享
@@ -81,6 +82,13 @@ pub struct File {
     _md5sum: Option<String>, // 文件md5值
 }
 
+pub struct BlockInfo {
+    pub filepath: PathBuf,
+    pub start: u64,
+    pub len: usize,
+    pub file_len: u64,
+}
+
 impl Torrent {
     fn new(
         announce: String,
@@ -102,13 +110,15 @@ impl Torrent {
         }
     }
 
+    /// 根据分片下标，查询处相关文件
     pub fn find_file_of_piece_index(
         &self,
+        path_buf: &PathBuf,
         piece_index: u32,
-        offset: u64,
+        offset: u32,
         len: usize,
-    ) -> Option<Vec<(usize, u64, u64)>> {
-        self.info.find_file_of_piece_index(piece_index, offset, len)
+    ) -> Vec<BlockInfo> {
+        self.info.find_file_of_piece_index(path_buf, piece_index, offset, len)
     }
 }
 
@@ -148,27 +158,27 @@ impl Info {
         file_piece
     }
 
-    /// 返回值：(files下标 起始位置 数据长度)
-    pub fn find_file_of_piece_index(
+    fn find_file_of_piece_index(
         &self,
+        path_buf: &PathBuf,
         piece_index: u32,
-        offset: u64,
+        offset: u32,
         len: usize,
-    ) -> Option<Vec<(usize, u64, u64)>> {
+    ) -> Vec<BlockInfo> {
         if self.file_piece.is_empty() {
-            return None;
+            return vec![BlockInfo {
+                filepath: path_buf.join(&self.name),
+                start: piece_index as u64 * self.piece_length + offset as u64,
+                len,
+                file_len: self.length,
+            }];
         }
 
         let m_low = self.file_piece.partition_point(|&(_, r)| r < piece_index);
-
-        if m_low >= self.file_piece.len() || self.file_piece[m_low].0 > piece_index {
-            return None;
-        }
-
         let n_high = self.file_piece.partition_point(|&(l, _)| l <= piece_index);
 
         let mut res = vec![];
-        let begin = piece_index as u64 * self.piece_length + offset;
+        let begin = piece_index as u64 * self.piece_length + offset as u64;
         let end = begin + len as u64;
         let mut left = len as u64;
 
@@ -179,12 +189,24 @@ impl Info {
                 let start = if_else!(begin <= lps - file.length, 0, begin - (lps - file.length));
                 let len =
                     if_else!(end <= lps, end - (lps - file.length), file.length - start).min(left);
-                res.push((i, start, len));
+                
+                let file = &self.files[i];
+                let filepath = path_buf
+                    .join(&self.name)
+                    .join(file.path.iter().collect::<PathBuf>());
+                
+                res.push(BlockInfo {
+                    filepath,
+                    start,
+                    len: len as usize,
+                    file_len: file.length,
+                });
+                
                 left -= len;
             }
         }
 
-        Some(res)
+        res
     }
 }
 

@@ -37,8 +37,8 @@ impl<'a> CommandHandler<'a, Result<()>> for NewDownloadTask {
         let download = 0;
         let uploaded = 0;
         let mut emitter = Emitter::new();
-        context.emitter.get(PEER_MANAGER).await.map(async |send| {
-            emitter.register(PEER_MANAGER, send).await.unwrap();
+        context.emitter.get(PEER_MANAGER).map(async |send| {
+            emitter.register(PEER_MANAGER, send);
         });
 
         let gasket_id = context.gasket_id.fetch_add(1, Ordering::Relaxed);
@@ -53,6 +53,7 @@ impl<'a> CommandHandler<'a, Result<()>> for NewDownloadTask {
             uploaded,
             emitter,
             context.config.clone(),
+            context.store.clone(),
         );
 
         let join_handle = tokio::spawn(gasket.run());

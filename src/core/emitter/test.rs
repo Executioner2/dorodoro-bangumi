@@ -218,8 +218,8 @@ async fn test_transfer_unsafe_ptr() {
     let (send2, recv2) = channel(100);
 
     let mut emitter = Emitter::new();
-    emitter.register("scheduler", send1).await.unwrap();
-    emitter.register("peer_manager", send2).await.unwrap();
+    emitter.register("scheduler", send1);
+    emitter.register("peer_manager", send2);
 
     let t1 = tokio::spawn(scheduler_loop(recv1));
     let t2 = tokio::spawn(peer_manager_loop(recv2));

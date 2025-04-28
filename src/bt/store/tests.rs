@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
+use dashmap::DashMap;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::time::Duration;
@@ -132,4 +133,27 @@ async fn test_flush_before_read() {
     let mut buff = ByteBuffer::new(11);
     let n = reader.read(buff.as_mut()).await.unwrap();
     println!("数据量: {}\t数据: {:?}", n, buff.as_ref())
+}
+
+/// 测试迭代过程删除
+#[test]
+#[ignore]
+fn test_iter_remove() {
+    let map = DashMap::new();
+    map.insert(1, 1);
+    map.insert(2, 2);
+    map.insert(3, 3);
+    
+    for item in map.iter_mut() {
+        println!("key: {}\tvalue: {}", item.key(), item.value());
+        // map.remove(&item.key()); // 不能在里面删除，会卡死
+    }
+
+    // 这个同理
+    // if let Some(item) = map.get_mut(&1) {
+    //     println!("key: {}\tvalue: {}", item.key(), item.value());
+    //     map.remove(&1);
+    // }
+    
+    println!("{:?}", map);
 }

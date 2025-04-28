@@ -11,7 +11,6 @@ pub mod command;
 mod error;
 mod future;
 
-use crate::buffer::ByteBuffer;
 use crate::bytes::Bytes2Int;
 use crate::collection::FixedQueue;
 use crate::command::CommandHandler;
@@ -21,26 +20,22 @@ use crate::core::protocol::{
 use crate::core::runtime::Runnable;
 use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
-use crate::fs::OpenOptionsExt;
 use crate::peer::error::Error;
 use crate::peer::error::Error::{
     BitfieldError, HandshakeError, PieceCheckoutError, ResponseDataIncomplete, TryFromError,
 };
 use crate::peer::future::BtResp;
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
-use crate::torrent::TorrentArc;
-use crate::{datetime, store, util};
+use crate::store::Store;
+use crate::{datetime, util};
 use ahash::HashMap;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
 use error::Result;
-use sha1::{Digest, Sha1};
 use std::cmp::min;
-use std::io::SeekFrom;
 use std::mem;
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::channel;
@@ -182,6 +177,9 @@ pub struct Peer {
 
     /// 指令发射器
     emitter: Emitter,
+
+    /// 存储处理
+    store: Store,
 }
 
 impl Peer {
@@ -190,6 +188,7 @@ impl Peer {
         addr: SocketAddr,
         context: GasketContext,
         emitter: Emitter,
+        store: Store,
     ) -> Option<Self> {
         let stream = match TcpStream::connect(addr).await {
             Ok(stream) => stream,
@@ -210,6 +209,7 @@ impl Peer {
             downloading_pieces: HashMap::default(),
             secuessed_piece: 0,
             emitter,
+            store,
         })
     }
 
@@ -250,7 +250,7 @@ impl Peer {
         self.opposite_peer_id = Some(peer_id.try_into().unwrap());
 
         // 告诉对方自己拥有的分块
-        let bitfield = self.context.bytefield().await;
+        let bitfield = self.context.bytefield();
         let mut bytes = Vec::with_capacity(5 + bitfield.len());
         WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1 + bitfield.len() as u32)?;
         WriteBytesExt::write_u8(&mut bytes, MsgType::Bitfield as u8)?;
@@ -347,8 +347,7 @@ impl Peer {
         let bit_len = torrent.info.pieces.len() / 20;
 
         for i in 0..bit_len {
-            let idx = i / 8;
-            let offset = 1 << (7 - i % 8);
+            let (idx, offset) = util::bytes::bitmap_offset(i);
 
             if let Some(true) = self
                 .opposite_peer_bitfield
@@ -356,10 +355,7 @@ impl Peer {
                 .map(|bytes| bytes[idx] & offset != 0)
             {
                 let piece_index = i as u32;
-                if let Some(block_offset) = self
-                    .context
-                    .apply_download_piece(self.no, piece_index)
-                    .await
+                if let Some(block_offset) = self.context.apply_download_piece(self.no, piece_index)
                 {
                     trace!("peer_no [{}] 发现新的可下载分块：{}", self.no, i);
                     self.downloading_pieces.insert(piece_index, block_offset);
@@ -435,11 +431,11 @@ impl Peer {
     async fn handle_bitfield(&mut self, bytes: Bytes) -> Result<()> {
         trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
         let torrent = self.context.torrent();
-        let bit_len = torrent.info.pieces.len() / 20;
-        if bytes.len() != (bit_len + 7) / 8 {
+        let bit_len = (torrent.info.pieces.len() / 20 + 7) >> 3;
+        if bytes.len() != bit_len {
             warn!(
                 "远端给到的 bitfield 长度和期望的不一致，期望的: {}\t实际的bytes: {:?}",
-                (bit_len + 7) / 8,
+                bit_len,
                 &bytes[..]
             );
             return Err(BitfieldError);
@@ -472,14 +468,8 @@ impl Peer {
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
-        Self::write_file(
-            piece_index,
-            block_offset,
-            block_data,
-            self.context.download_path(),
-            self.context.torrent().clone(),
-        )
-        .await?;
+        self.write_file(piece_index, block_offset, block_data)
+            .await?;
 
         self.secuessed_piece += 1;
 
@@ -502,17 +492,15 @@ impl Peer {
         self.statistics.total_bytes_recv += block_data_len as u64;
         self.statistics.download_speed = rate;
         self.statistics.rate_window.push(rate);
-        self.context
-            .report_statistics(
-                self.no,
-                piece_index,
-                block_offset,
-                block_data_len as u64,
-                self.statistics.avg_rate(),
-                rate,
-                over,
-            )
-            .await;
+        self.context.report_statistics(
+            self.no,
+            piece_index,
+            block_offset,
+            block_data_len as u64,
+            self.statistics.avg_rate(),
+            rate,
+            over,
+        );
 
         self.try_find_downloadable_pices().await?;
 
@@ -529,98 +517,28 @@ impl Peer {
     async fn checkout(&self, piece_index: u32) -> Result<bool> {
         let read_length = self.get_piece_length(piece_index);
         let torrent = self.context.torrent();
+        let path = self.context.download_path();
         let hash = &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
-
-        let list = Self::analyse_cover_file(
-            &torrent,
-            piece_index,
-            0,
-            self.context.download_path(),
-            read_length as usize,
-        );
-
-        let mut data = ByteBuffer::new(read_length as usize);
-        let mut offset = 0;
-        for (filepath, start, len, _) in list {
-            store::flush(&filepath).await?;
-            let mut file = tokio::fs::OpenOptions::new()
-                .read(true)
-                .open_with_parent_dirs(filepath)
-                .await?;
-            file.seek(SeekFrom::Start(start)).await?;
-            let n = file.read_exact(&mut data[offset..offset + len]).await?;
-            offset += n;
-        }
-
-        if offset != read_length as usize {
-            error!(
-                "没从磁盘中读取到期望的数据量\t期望值: {}\t实际值: {}",
-                read_length, offset
-            );
-            return Ok(false);
-        }
-
-        let mut hasher = Sha1::new();
-        hasher.update(&data[0..offset]);
-        let result = &hasher.finalize();
-        Ok(result.as_slice() == hash)
-    }
-
-    /// 根据区块下标和区块大小列出覆盖的文件
-    ///
-    /// 返回值：(文件相对路径 起始位置 写入数据量)
-    fn analyse_cover_file(
-        torrent: &TorrentArc,
-        piece_index: u32,
-        block_offset: u32,
-        path: &PathBuf,
-        total_size: usize,
-    ) -> Vec<(PathBuf, u64, usize, u64)> {
-        match torrent.find_file_of_piece_index(piece_index, block_offset as u64, total_size) {
-            None => {
-                let piece_length = torrent.info.piece_length;
-                vec![(
-                    path.join(&torrent.info.name),
-                    piece_index as u64 * piece_length + block_offset as u64,
-                    total_size,
-                    torrent.info.length,
-                )]
-            }
-            Some(res) => res
-                .iter()
-                .map(|item| {
-                    let file = &torrent.info.files[item.0];
-                    let filepath = path
-                        .join(&torrent.info.name)
-                        .join(file.path.iter().collect::<PathBuf>());
-                    (filepath, item.1, item.2 as usize, file.length)
-                })
-                .collect(),
-        }
+        let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
+        let res = self.store.checkout(list, hash).await?;
+        Ok(res)
     }
 
     /// 写入文件
     async fn write_file(
+        &self,
         piece_index: u32,
         block_offset: u32,
         mut block_data: Bytes,
-        path: &PathBuf,
-        torrent: TorrentArc,
     ) -> Result<()> {
-        let list =
-            Self::analyse_cover_file(&torrent, piece_index, block_offset, path, block_data.len());
+        let torrent = &self.context.torrent();
+        let path = self.context.download_path();
 
-        for (filepath, start, len, file_len) in list {
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .open_with_parent_dirs(&filepath)
-                .await?;
-
-            file.seek(SeekFrom::Start(start)).await?;
-
-            let data = block_data.split_to(len);
-            store::write(filepath, start, data, file_len).await;
+        for block_info in
+            torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
+        {
+            let data = block_data.split_to(block_info.len);
+            self.store.write(block_info, data).await?;
         }
 
         Ok(())
@@ -635,7 +553,7 @@ impl Runnable for Peer {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.context.config().channel_buffer());
         let transfer_id = Self::get_transfer_id(self.no);
-        self.emitter.register(transfer_id, send).await.unwrap();
+        self.emitter.register(transfer_id, send);
 
         trace!("开始监听数据 peer_no:{}\taddr: {}", self.no, self.addr);
         let reason: ExitReason;
@@ -689,8 +607,7 @@ impl Runnable for Peer {
 
         // 归还未下完的分块
         self.context
-            .give_back_download_piece(self.no, self.downloading_pieces)
-            .await;
+            .give_back_download_piece(self.no, self.downloading_pieces);
         self.context.peer_exit(self.no, reason).await;
     }
 }

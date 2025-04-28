@@ -51,7 +51,7 @@ impl Controller {
 
     async fn shutdown(self) {
         let transfer_id = self.get_transfer_id();
-        self.emitter.remove(&transfer_id).await.unwrap();
+        self.emitter.remove(&transfer_id);
         info!("控制器[{}]已退出", transfer_id);
     }
 }
@@ -60,7 +60,7 @@ impl Runnable for Controller {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.config.channel_buffer());
         let transfer_id = self.get_transfer_id();
-        self.emitter.register(transfer_id, send).await.unwrap();
+        self.emitter.register(transfer_id, send);
 
         info!("控制器启动");
         loop {

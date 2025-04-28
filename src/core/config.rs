@@ -8,18 +8,27 @@ pub struct Config {
 struct ConfigInner {
     /// 信道大小
     channel_buffer: usize,
-    
+
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
-    
+
     /// 分片大小
     sharding_size: u32,
-    
+
     /// 单个 peer 同时请求下载的分片的数量
     con_req_piece_limit: usize,
-    
+
     /// 在成功获取到 n 个 piece 响应后，增加一个分片请求
     sucessed_recv_piece: usize,
+
+    /// 刷入磁盘的缓存上限
+    buf_limit: usize,
+
+    /// 计算 hash 值时，一次读取的 chunk 大小
+    hash_chunk_size: usize,
+
+    /// hash 计算的队列长度，队列内的都是并发计算
+    hash_concurrency: usize,
 }
 
 impl Clone for Config {
@@ -39,43 +48,67 @@ impl Config {
                 sharding_size: 1 << 14,
                 con_req_piece_limit: 5,
                 sucessed_recv_piece: 64, // 按照一次响应 16384 个字节，64 次响应成功，即为响应了 1MB 的数据
+                buf_limit: 16 << 20, // 16MB 的写入缓存
+                hash_chunk_size: 512,
+                hash_concurrency: 1, // 默认就一个
             }),
         }
     }
 
     pub fn set_channel_buffer(mut self, channel_buffer: usize) -> Self {
         assert!(channel_buffer > 0, "Channel buffer must be greater than 0");
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+        Arc::get_mut(&mut self.inner).map(|inner| {
             inner.channel_buffer = channel_buffer;
-        }
+        });
         self
     }
 
     pub fn set_tcp_server_addr(mut self, tcp_server_addr: SocketAddr) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+        Arc::get_mut(&mut self.inner).map(|inner| {
             inner.tcp_server_addr = tcp_server_addr;
-        }
+        });
         self
     }
     
     pub fn set_sharding_size(mut self, sharding_size: u32) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+        Arc::get_mut(&mut self.inner).map(|inner| {
             inner.sharding_size = sharding_size;
-        }
+        });
         self
     }
-    
+
     pub fn set_con_req_piece_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+        Arc::get_mut(&mut self.inner).map(|inner| {
             inner.con_req_piece_limit = limit;
-        }
+        });
         self
     }
-    
+
     pub fn set_sucessed_recv_piece(mut self, num: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+        Arc::get_mut(&mut self.inner).map(|inner| {
             inner.sucessed_recv_piece = num;
-        }
+        });
+        self
+    }
+
+    pub fn set_buf_limit(mut self, limit: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.buf_limit = limit;
+        });
+        self
+    }
+
+    pub fn set_hash_chunk_size(mut self, size: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.hash_chunk_size = size;
+        });
+        self
+    }
+
+    pub fn set_hash_concurrency(mut self, len: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.hash_concurrency = len;
+        });
         self
     }
 
@@ -90,12 +123,24 @@ impl Config {
     pub fn sharding_size(&self) -> u32 {
         self.inner.sharding_size
     }
-    
+
     pub fn con_req_piece_limit(&self) -> usize {
         self.inner.con_req_piece_limit
     }
-    
+
     pub fn sucessed_recv_piece(&self) -> usize {
         self.inner.sucessed_recv_piece
+    }
+
+    pub fn buf_limit(&self) -> usize {
+        self.inner.buf_limit
+    }
+
+    pub fn hash_chunk_size(&self) -> usize {
+        self.inner.hash_chunk_size
+    }
+
+    pub fn hash_concurrency(&self) -> usize {
+        self.inner.hash_concurrency
     }
 }

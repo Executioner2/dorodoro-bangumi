@@ -5,23 +5,22 @@ use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::TCP_SERVER;
 use crate::core::protocol::{Identifier, Protocol};
 use crate::core::runtime::Runnable;
-use std::collections::HashMap;
+use crate::core::tcp_server::command::Command;
+use crate::core::tcp_server::future::Accept;
+use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
-use crate::core::tcp_server::command::Command;
-use crate::core::tcp_server::future::Accept;
 
 pub mod command;
-mod future;
 mod error;
+mod future;
 
 /// 链接id，一般需要 TcpServer 管理资源释放的才需要这个
 type ConnId = u64;
@@ -34,15 +33,14 @@ struct ConnInfo {
 pub struct TcpServerContext {
     cancel_token: CancellationToken,
     conn_id: Arc<AtomicU64>,
-    conns: Arc<Mutex<HashMap<ConnId, ConnInfo>>>,
+    conns: Arc<DashMap<ConnId, ConnInfo>>,
     config: Config,
     emitter: Emitter,
 }
 
 impl TcpServerContext {
     pub async fn remove_conn(&self, conn_id: ConnId) {
-        let mut conns = self.conns.lock().await;
-        conns.remove(&conn_id);
+        self.conns.remove(&conn_id);
     }
 }
 
@@ -57,7 +55,7 @@ pub struct TcpServer {
     conn_id: Arc<AtomicU64>,
 
     /// 链接
-    conns: Arc<Mutex<HashMap<ConnId, ConnInfo>>>,
+    conns: Arc<DashMap<ConnId, ConnInfo>>,
 
     /// 配置项
     config: Config,
@@ -72,7 +70,7 @@ impl TcpServer {
             addr: config.tcp_server_addr(),
             cancel_token,
             conn_id: Arc::new(AtomicU64::new(0)),
-            conns: Arc::new(Mutex::new(HashMap::new())),
+            conns: Arc::new(DashMap::default()),
             config,
             emitter,
         }
@@ -89,10 +87,9 @@ impl TcpServer {
     }
 
     async fn shutdown(self) {
-        self.emitter.remove(TCP_SERVER).await.unwrap();
-        let mut conns = self.conns.lock().await;
-        trace!("等待关闭的子线程数量: {}", conns.len());
-        for (_, conn) in conns.iter_mut() {
+        self.emitter.remove(TCP_SERVER);
+        trace!("等待关闭的子线程数量: {}", self.conns.len());
+        for mut conn in self.conns.iter_mut() {
             let join_handle = &mut conn.join_handle;
             join_handle.await.unwrap()
         }
@@ -158,7 +155,7 @@ impl Runnable for TcpServer {
 
         // 注册接收器
         let (send, mut recv) = channel(self.config.channel_buffer());
-        self.emitter.register(TCP_SERVER, send).await.unwrap();
+        self.emitter.register(TCP_SERVER, send);
 
         loop {
             select! {

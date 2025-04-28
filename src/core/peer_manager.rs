@@ -7,19 +7,18 @@ use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::runtime::Runnable;
 use crate::peer_manager::command::Command;
 use crate::tracker;
-use ahash::RandomState;
-use std::collections::{HashMap, HashSet};
+use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
+use crate::store::Store;
 
 pub mod command;
-pub mod gasket;
 mod error;
+pub mod gasket;
 
 pub struct GasketInfo {
     id: u64,
@@ -32,18 +31,18 @@ pub struct PeerManagerContext {
     pub config: Config,
     pub cancel_token: CancellationToken,
     pub emitter: Emitter,
-    pub gaskets: Arc<Mutex<HashMap<u64, GasketInfo, RandomState>>>,
+    pub gaskets: Arc<DashMap<u64, GasketInfo>>,
     pub gasket_id: Arc<AtomicU64>,
-    peer_id_pool: Arc<Mutex<HashSet<[u8; 20], RandomState>>>,
+    pub store: Store,
+    peer_id_pool: Arc<DashSet<[u8; 20]>>,
 }
 
 impl PeerManagerContext {
     pub async fn get_peer_id(&self) -> [u8; 20] {
         for _ in 0..10 {
             let peer_id = tracker::gen_peer_id();
-            let mut pool = self.peer_id_pool.lock().await;
-            if !pool.contains(&peer_id) {
-                pool.insert(peer_id.clone());
+            if !self.peer_id_pool.contains(&peer_id) {
+                self.peer_id_pool.insert(peer_id.clone());
                 return peer_id;
             }
         }
@@ -51,12 +50,12 @@ impl PeerManagerContext {
     }
 
     pub async fn add_gasket(&self, gasket: GasketInfo) {
-        self.gaskets.lock().await.insert(gasket.id, gasket);
+        self.gaskets.insert(gasket.id, gasket);
     }
 
     pub async fn remove_gasket(&self, gasket_id: u64) {
-        if let Some(gasket) = self.gaskets.lock().await.remove(&gasket_id) {
-            self.peer_id_pool.lock().await.remove(&*gasket.peer_id);
+        if let Some((_key, gasket)) = self.gaskets.remove(&gasket_id) {
+            self.peer_id_pool.remove(&*gasket.peer_id);
         }
     }
 }
@@ -64,21 +63,24 @@ impl PeerManagerContext {
 pub struct PeerManager {
     cancel_token: CancellationToken,
     config: Config,
-    gaskets: Arc<Mutex<HashMap<u64, GasketInfo, RandomState>>>,
+    gaskets: Arc<DashMap<u64, GasketInfo>>,
     emitter: Emitter,
     gasket_id: Arc<AtomicU64>,
-    peer_id_pool: Arc<Mutex<HashSet<[u8; 20], RandomState>>>,
+    peer_id_pool: Arc<DashSet<[u8; 20]>>,
+    store: Store
 }
 
 impl PeerManager {
     pub fn new(config: Config, cancel_token: CancellationToken, emitter: Emitter) -> Self {
+        let store = Store::new(config.clone(), emitter.clone());
         Self {
             cancel_token,
             config,
-            gaskets: Arc::new(Mutex::new(HashMap::default())),
+            gaskets: Arc::new(DashMap::new()),
             emitter,
             gasket_id: Arc::new(AtomicU64::new(0)),
-            peer_id_pool: Arc::new(Mutex::new(HashSet::default())),
+            peer_id_pool: Arc::new(DashSet::new()),
+            store
         }
     }
 
@@ -89,14 +91,15 @@ impl PeerManager {
             emitter: self.emitter.clone(),
             gaskets: self.gaskets.clone(),
             gasket_id: self.gasket_id.clone(),
+            store: self.store.clone(),
             peer_id_pool: self.peer_id_pool.clone(),
         }
     }
 
     async fn shutdown(self) {
-        self.emitter.remove(PEER_MANAGER).await.unwrap();
-        for (_id, gasket_info) in self.gaskets.lock().await.iter_mut() {
-            let handle = &mut gasket_info.join_handle;
+        self.emitter.remove(PEER_MANAGER);
+        for mut item in self.gaskets.iter_mut() {
+            let handle = &mut item.join_handle;
             handle.await.unwrap()
         }
     }
@@ -105,7 +108,7 @@ impl PeerManager {
 impl Runnable for PeerManager {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.config.channel_buffer());
-        self.emitter.register(PEER_MANAGER, send).await.unwrap();
+        self.emitter.register(PEER_MANAGER, send);
 
         info!("peer manager 已启动");
         loop {
