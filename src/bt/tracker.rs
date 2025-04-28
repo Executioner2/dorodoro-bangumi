@@ -479,9 +479,6 @@ impl Tracker {
         &self,
         delay: u64,
     ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
-        let delay = delay + 99999999;
-        let cmd = DiscoverPeerAddr { peers: vec![SocketAddr::from_str("192.168.2.177:3115").unwrap()] }.into();
-        self.emitter.send(&self.gasket_transfer_id, cmd).await.unwrap();
         trace!("创建 tracker 扫描任务\t{}秒后执行", delay);
         let send_to_gasket: Sender<TransferPtr> = self.emitter.get(&self.gasket_transfer_id).unwrap();
         let task = Tracker::scan_tracker(
