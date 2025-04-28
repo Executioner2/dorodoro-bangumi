@@ -1,7 +1,10 @@
+#[cfg(test)]
+mod tests;
+
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 /// 这个标记实现者是一个持续运行时
@@ -16,10 +19,60 @@ enum DelayedTaskState {
     Finished,
 }
 
+pub struct CancelToken {
+    cancel: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl Clone for CancelToken {
+    fn clone(&self) -> Self {
+        Self {
+            cancel: self.cancel.clone(),
+            waker: self.waker.clone()
+        }
+    }
+}
+
+impl CancelToken {
+    fn new(waker: Option<Waker>) -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            waker: Arc::new(Mutex::new(waker)),
+        }
+    }
+
+    fn update_waker(&self, waker: Waker) {
+        match self.waker.lock() {
+            Ok(mut mutex) => {
+                let _ = mutex.insert(waker);
+            }
+            Err(mut e) => {
+                let _ = e.get_mut().insert(waker);
+            }
+        }
+    }
+    
+    fn is_cancel(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+    
+    pub fn cancel(self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        match self.waker.lock() {
+            Ok(mut mutex) => {
+                mutex.take().map(|waker| waker.wake());
+            }
+            Err(mut e) => {
+                e.get_mut().take().map(|waker| waker.wake());
+            }
+        }
+    }
+}
+
 pub struct DelayedTask<F> {
     task: F,
     state: DelayedTaskState,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 }
 
 impl<U, F> DelayedTask<F>
@@ -31,13 +84,13 @@ where
         Self {
             task,
             state: DelayedTaskState::Wait(Box::pin(tokio::time::sleep(delay))),
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: CancelToken::new(None),
         }
     }
-
-    /// 取消掉任务
-    pub fn cancel(self) {
-        self.cancel.fetch_and(true, Ordering::Relaxed);
+    
+    /// 获取取消 token
+    pub fn cancel_token(&self) -> CancelToken {
+        self.cancel.clone()
     }
 }
 
@@ -49,7 +102,8 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        while !this.cancel.load(Ordering::Relaxed) {
+        while !this.cancel.is_cancel() {
+            this.cancel.update_waker(cx.waker().clone());
             match &mut this.state {
                 DelayedTaskState::Wait(sleep) => match Pin::new(sleep).poll(cx) {
                     Poll::Ready(_) => {
