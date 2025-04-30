@@ -12,6 +12,7 @@ pub enum Error {
     ResponseDataIncomplete,
     BitfieldError,
     PieceCheckoutError(u32),
+    PieceWriteError(u32, u32),
     StoreError(store::error::Error)
 }
 
@@ -25,6 +26,7 @@ impl std::fmt::Display for Error {
             Error::ResponseDataIncomplete => write!(f, "response data incomplete - 响应数据不完整"),
             Error::BitfieldError => write!(f, "bitfield 有问题"),
             Error::PieceCheckoutError(index) => write!(f, "第 {} 个分块校验有问题", index),
+            Error::PieceWriteError(index, offset) => write!(f, "piece: {}\toffset: {} 写入失败", index, offset),
             Error::StoreError(e) => write!(f, "store error: {}", e),
         }
     }

@@ -10,7 +10,6 @@ mod error;
 mod future;
 
 use crate::bytes::Bytes2Int;
-use crate::collection::FixedQueue;
 use crate::command::CommandHandler;
 use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
@@ -18,14 +17,16 @@ use crate::core::protocol::{
 use crate::core::runtime::Runnable;
 use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
+use crate::emitter::transfer::TransferPtr;
+use crate::peer::command::{Exit, PeerTransfer, PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::error::Error;
 use crate::peer::error::Error::{
-    BitfieldError, HandshakeError, PieceCheckoutError, ResponseDataIncomplete, TryFromError,
+    BitfieldError, HandshakeError, ResponseDataIncomplete, TryFromError,
 };
 use crate::peer::future::BtResp;
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use crate::store::Store;
-use crate::{datetime, util};
+use crate::util;
 use ahash::HashMap;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
@@ -36,8 +37,9 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::mpsc::channel;
-use tracing::{debug, error, info, trace, warn};
+use tokio::sync::mpsc::{Sender, channel};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, trace, warn};
 
 /// Peer 通信的消息类型
 #[derive(Debug)]
@@ -102,31 +104,6 @@ impl TryFrom<u8> for MsgType {
     }
 }
 
-struct PeerStatistics {
-    total_bytes_recv: u64,        // 总共接收的字节数
-    last_bytes_recv: u64,         // 上次接收的字节数
-    last_request_time: u128,      // 上次请求时间
-    download_speed: u64,          // 下载速度
-    rate_window: FixedQueue<u64>, // 最近 n 次的下载速率
-}
-
-impl PeerStatistics {
-    fn new() -> Self {
-        Self {
-            total_bytes_recv: 0,
-            last_bytes_recv: 0,
-            last_request_time: datetime::now_millis(), // 初始化为当前时间，方便处理一直没有下载的情况
-            download_speed: 0,
-            rate_window: FixedQueue::new(10),
-        }
-    }
-
-    /// 计算出平均速率，多少字节/秒
-    fn avg_rate(&self) -> u64 {
-        self.rate_window.iter().sum::<u64>() / self.rate_window.len() as u64
-    }
-}
-
 #[derive(Eq, PartialEq, Hash)]
 enum Status {
     Choke,
@@ -140,9 +117,6 @@ pub struct Peer {
 
     /// gasket 共享上下文
     context: GasketContext,
-
-    /// peer 统计信息
-    statistics: PeerStatistics,
 
     /// reader，peer actor 启动后会把这个 reader 消费掉
     reader: Option<OwnedReadHalf>,
@@ -165,19 +139,19 @@ pub struct Peer {
     /// 对端拥有的分块
     opposite_peer_bitfield: Option<BytesMut>,
 
-    /// 当前正在下载的分块
-    ///
-    /// (分块下标 偏移位置 )
-    downloading_pieces: HashMap<u32, u32>,
-
-    /// 成功收到的 piece 的响应次数
-    secuessed_piece: u64,
-
     /// 指令发射器
     emitter: Emitter,
 
     /// 存储处理
     store: Store,
+
+    /// 成功收到的 piece 的响应次数
+    secuessed_piece: u64,
+
+    /// 当前正在下载的分块
+    ///
+    /// (分块下标 偏移位置 )
+    pub(crate) downloading_pieces: HashMap<u32, u32>,
 }
 
 impl Peer {
@@ -196,7 +170,6 @@ impl Peer {
         Some(Peer {
             no,
             context,
-            statistics: PeerStatistics::new(),
             reader: Some(reader),
             writer,
             status: Status::Choke,
@@ -204,10 +177,10 @@ impl Peer {
             opposite_peer_id: None,
             opposite_peer_status: Status::Choke,
             opposite_peer_bitfield: None,
-            downloading_pieces: HashMap::default(),
-            secuessed_piece: 0,
             emitter,
             store,
+            secuessed_piece: 0,
+            downloading_pieces: HashMap::default(),
         })
     }
 
@@ -231,7 +204,12 @@ impl Peer {
         self.reader.as_ref().unwrap().readable().await?;
 
         let mut handshake_resp = vec![0u8; bytes.len()];
-        let size = self.reader.as_mut().unwrap().read(&mut handshake_resp).await?;
+        let size = self
+            .reader
+            .as_mut()
+            .unwrap()
+            .read(&mut handshake_resp)
+            .await?;
         if size != bytes.len() {
             return Err(HandshakeError);
         }
@@ -293,7 +271,6 @@ impl Peer {
     async fn request_block(&mut self, piece_index: u32) -> Result<bool> {
         let sharding_size = self.context.config().sharding_size();
         let piece_length = self.get_piece_length(piece_index);
-        self.statistics.last_request_time = datetime::now_millis();
         let offset = self.downloading_pieces.entry(piece_index).or_insert(0);
 
         let over = *offset >= piece_length;
@@ -461,45 +438,21 @@ impl Peer {
         if bytes.len() < 8 {
             return Err(ResponseDataIncomplete);
         }
-        let now_time = datetime::now_millis();
+
         let piece_index = u32::from_be_slice(&bytes[0..4]);
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
-        self.write_file(piece_index, block_offset, block_data)
-            .await?;
+        self.write_file(piece_index, block_offset, block_data);
 
         self.secuessed_piece += 1;
 
-        let mut over = false;
         if self.request_block(piece_index).await? {
-            // 校验分块 hash
-            if !self.checkout(piece_index).await? {
-                error!("分块校验不通过，中断链接");
-                return Err(PieceCheckoutError(piece_index));
-            } else {
-                info!("第 {} 个分块校验通过", piece_index);
-            }
-            over = true;
+            self.checkout(piece_index); // 校验分块 hash
         }
 
         // 上报给 gasket
-        let take_time = 1.max(now_time.saturating_sub(self.statistics.last_request_time)); // 耗时
-        let rate = ((block_data_len as u128) * 1000 / take_time) as u64; // 速率（乘以 1000 毫秒，方便计算出字节/秒）
-        self.statistics.last_bytes_recv = block_data_len as u64;
-        self.statistics.total_bytes_recv += block_data_len as u64;
-        self.statistics.download_speed = rate;
-        self.statistics.rate_window.push(rate);
-        self.context.report_statistics(
-            self.no,
-            piece_index,
-            block_offset,
-            block_data_len as u64,
-            self.statistics.avg_rate(),
-            rate,
-            over,
-        );
-
+        self.context.reported_download(block_data_len as u64);
         self.try_find_downloadable_pices().await?;
 
         Ok(())
@@ -511,35 +464,57 @@ impl Peer {
         Ok(())
     }
 
-    /// 校验分块
-    async fn checkout(&self, piece_index: u32) -> Result<bool> {
-        let read_length = self.get_piece_length(piece_index);
-        let torrent = self.context.torrent();
-        let path = self.context.download_path();
-        let hash = &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
-        let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
-        let res = self.store.checkout(list, hash).await?;
-        Ok(res)
+    /// 写入文件
+    fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes) {
+        let context = self.context.clone();
+        let store = self.store.clone();
+        let sender = self.emitter.get(&Self::get_transfer_id(self.no)).unwrap();
+
+        tokio::spawn(async move {
+            let torrent = context.torrent();
+            let path = context.download_path();
+
+            for block_info in
+                torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
+            {
+                let data = block_data.split_to(block_info.len);
+                if store.write(block_info, data).await.is_err() {
+                    let cmd = PieceWriteFailed {
+                        piece_index,
+                        block_offset,
+                    }
+                    .into();
+                    sender.send(cmd).await.unwrap();
+                }
+            }
+        });
     }
 
-    /// 写入文件
-    async fn write_file(
-        &self,
-        piece_index: u32,
-        block_offset: u32,
-        mut block_data: Bytes,
-    ) -> Result<()> {
-        let torrent = &self.context.torrent();
-        let path = self.context.download_path();
+    /// 校验分块
+    fn checkout(&self, piece_index: u32) {
+        let context = self.context.clone();
+        let read_length = self.get_piece_length(piece_index);
+        let sender = self.emitter.get(&Self::get_transfer_id(self.no)).unwrap();
+        let store = self.store.clone();
 
-        for block_info in
-            torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
-        {
-            let data = block_data.split_to(block_info.len);
-            self.store.write(block_info, data).await?;
-        }
-
-        Ok(())
+        tokio::spawn(async move {
+            trace!("开始校验 {} 个分块", piece_index);
+            let torrent = context.torrent();
+            let path = context.download_path();
+            let hash =
+                &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
+            let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
+            match store.checkout(list, hash).await {
+                Ok(false) | Err(_) => {
+                    let cmd = PieceCheckoutFailed { piece_index }.into();
+                    sender.send(cmd).await.unwrap();
+                }
+                _ => {
+                    trace!("第 {} 个分块校验通过", piece_index);
+                    context.reported_piece_finished(piece_index);
+                }
+            }
+        });
     }
 
     pub fn get_transfer_id(no: u64) -> String {
@@ -551,38 +526,28 @@ impl Runnable for Peer {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.context.config().channel_buffer());
         let transfer_id = Self::get_transfer_id(self.no);
-        self.emitter.register(transfer_id, send);
+        self.emitter.register(transfer_id, send.clone());
 
         trace!("开始监听数据 peer_no:{}\taddr: {}", self.no, self.addr);
         let reason: ExitReason;
-        let mut reader = self.reader.take().unwrap();
-        let mut bt_resp = BtResp::new(&mut reader, self.addr);
+        let cancel = CancellationToken::new();
+        let recv_handle = tokio::spawn(
+            Recv {
+                no: self.no,
+                reader: self.reader.take(),
+                cancel_token: cancel.clone(),
+                addr: self.addr,
+                sender: send,
+            }
+            .run(),
+        ); // 让 recv 独立一个异步任务，保证读取不会被任务处理阻塞
+
         loop {
             tokio::select! {
                 _ = self.context.cancel_token() => {
                     debug!("peer {} cancelled", self.no);
                     reason = ExitReason::Normal;
                     break;
-                }
-                result = &mut bt_resp => {
-                    match result {
-                        Some((msg_type, buf)) => {
-                            match self.handle(msg_type, buf).await {
-                                Ok(_) => {},
-                                Err(e) => {
-                                    error!("处理响应数据时出现错误\t{}", e);
-                                    reason = ExitReason::Exception;
-                                    break;
-                                }
-                            }
-                        },
-                        None => {
-                            warn!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
-                            reason = ExitReason::Exception;
-                            break;
-                        }
-                    }
-                    bt_resp = BtResp::new(&mut reader, self.addr);
                 }
                 result = recv.recv() => {
                     match result {
@@ -606,9 +571,53 @@ impl Runnable for Peer {
             }
         }
 
+        cancel.cancelled().await;
+        recv_handle.await.unwrap();
+
         // 归还未下完的分块
         self.context
             .give_back_download_piece(self.no, self.downloading_pieces);
         self.context.peer_exit(self.no, reason).await;
+    }
+}
+
+struct Recv {
+    no: u64,
+    reader: Option<OwnedReadHalf>,
+    cancel_token: CancellationToken,
+    addr: SocketAddr,
+    sender: Sender<TransferPtr>,
+}
+
+impl Runnable for Recv {
+    async fn run(mut self) {
+        let mut reader = self.reader.take().unwrap();
+        let mut bt_resp = BtResp::new(&mut reader, self.addr);
+        loop {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => {
+                    break;
+                }
+                result = &mut bt_resp => {
+                    match result {
+                        Some((msg_type, buf)) => {
+                            let buf_len = buf.len() as u64;
+                            self.sender.send(PeerTransfer {
+                                msg_type,
+                                buf,
+                                read_size: 5 + buf_len
+                            }.into()).await.unwrap()
+                        },
+                        None => {
+                            warn!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
+                            let reason = ExitReason::Exception;
+                            self.sender.send(Exit{ reason }.into()).await.unwrap();
+                            break;
+                        }
+                    }
+                    bt_resp = BtResp::new(&mut reader, self.addr);
+                }
+            }
+        }
     }
 }

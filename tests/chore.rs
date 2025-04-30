@@ -2,6 +2,8 @@
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::thread;
+use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
@@ -146,4 +148,16 @@ impl Future for Test {
             State::End => Poll::Ready(()),
         }
     }
+}
+
+/// 测试时间戳和时间间隔
+#[test]
+fn test_instant_duration() {
+    let start = Instant::now();
+    thread::sleep(Duration::from_secs(1));
+    let end = start.elapsed();
+    thread::sleep(Duration::from_secs(1));
+    let end2 = start.elapsed();
+    println!("{:?}", end);
+    println!("{:?}", end2);
 }

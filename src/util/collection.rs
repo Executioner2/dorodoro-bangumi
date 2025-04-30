@@ -13,11 +13,13 @@ impl<T> FixedQueue<T> {
         }
     }
 
-    pub fn push(&mut self, item: T) {
+    pub fn push(&mut self, item: T) -> Option<T> {
+        let mut res = None;
         if self.queue.len() == self.limit {
-            self.queue.pop_front();
+            res = self.queue.pop_front();
         }
         self.queue.push_back(item);
+        res
     }
 
     pub fn iter(&self) -> std::collections::vec_deque::Iter<T> {

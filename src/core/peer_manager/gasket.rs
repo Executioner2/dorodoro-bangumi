@@ -1,6 +1,7 @@
 pub mod command;
 mod error;
 
+use crate::collection::FixedQueue;
 use crate::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::emitter::Emitter;
@@ -10,6 +11,7 @@ use crate::peer::Peer;
 use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{Command, StartWaittingAddr};
 use crate::runtime::Runnable;
+use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
 use ahash::HashMap;
@@ -20,12 +22,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
-use tokio_util::sync::WaitForCancellationFuture;
+use tokio::time::Instant;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info, trace};
-use crate::store::Store;
 
 #[derive(PartialEq, Debug)]
 pub enum ExitReason {
@@ -52,8 +55,20 @@ enum PieceStatus {
 }
 
 struct PeerInfo {
+    /// 异步任务句柄
     join_handle: Option<JoinHandle<()>>,
+
+    /// 通信地址
     addr: SocketAddr,
+}
+
+impl PeerInfo {
+    fn new(addr: SocketAddr, join_handle: JoinHandle<()>) -> Self {
+        Self {
+            join_handle: Some(join_handle),
+            addr,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -70,6 +85,7 @@ pub struct GasketContext {
     peer_id: Arc<[u8; 20]>,
     unstart_host: Arc<DashSet<SocketAddr>>,
     gasket_transfer_id: String,
+    peer_transfer_speed: Arc<DashMap<u64, u64>>,
 }
 
 impl GasketContext {
@@ -170,27 +186,21 @@ impl GasketContext {
         }
     }
 
-    /// 上报下载统计信息
-    pub fn report_statistics(
-        &self,
-        peer_no: u64,
-        piece_index: u32,
-        block_offset: u32,
-        block_size: u64,
-        avg_rate: u64,
-        last_rate: u64,
-        is_over: bool,
-    ) {
-        trace!(
-            "peer {} 下载完了第 {} 块的第 {} 个，全部完成了吗? {}。平均速率: {}\t最后一次下载的速率: {}",
-            peer_no, piece_index, block_offset, is_over, avg_rate, last_rate
-        );
-        if is_over {
-            self.underway_bytefield
-                .get_mut(&piece_index)
-                .map(|mut status| *status.value_mut() = PieceStatus::Finished);
-        }
+    /// 上报下载量信息
+    pub fn reported_download(&self, block_size: u64) {
         self.download.fetch_add(block_size, Ordering::Relaxed);
+    }
+    
+    /// 上报分块下载完成
+    pub fn reported_piece_finished(&self, piece_index: u32) {
+        self.underway_bytefield
+            .get_mut(&piece_index)
+            .map(|mut status| *status.value_mut() = PieceStatus::Finished);
+    }
+
+    /// 上报读取到的数据大小
+    pub fn reported_read_size(&self, peer_no: u64, read_size: u64) {
+        *self.peer_transfer_speed.entry(peer_no).or_insert(0) += read_size
     }
 }
 
@@ -240,9 +250,12 @@ pub struct Gasket {
 
     /// 全局配置
     config: Config,
-    
+
     /// 存储处理
     store: Store,
+
+    /// peer 传输速率
+    peer_transfer_speed: Arc<DashMap<u64, u64>>,
 }
 
 impl Gasket {
@@ -256,7 +269,7 @@ impl Gasket {
         uploaded: u64,
         emitter: Emitter,
         config: Config,
-        store: Store
+        store: Store,
     ) -> Self {
         // todo - 计算有哪些分块是下载了的，哪些是还需要下载的
         let min = ((torrent.info.pieces.len() / 20) + 7) / 8;
@@ -268,17 +281,18 @@ impl Gasket {
             peer_id,
             torrent,
             peer_no_count: Arc::new(AtomicU64::new(0)),
-            peers: Arc::new(DashMap::default()),
+            peers: Arc::new(DashMap::new()),
             download_path: Arc::new(download_path),
             download: Arc::new(AtomicU64::new(download)),
             uploaded: Arc::new(AtomicU64::new(uploaded)),
             bytefield,
-            underway_bytefield: Arc::new(DashMap::default()),
-            unstart_host: Arc::new(DashSet::default()),
+            underway_bytefield: Arc::new(DashMap::new()),
+            unstart_host: Arc::new(DashSet::new()),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
             config,
             store,
+            peer_transfer_speed: Arc::new(DashMap::new()),
         }
     }
 
@@ -296,6 +310,7 @@ impl Gasket {
             peer_id: self.peer_id.clone(),
             unstart_host: self.unstart_host.clone(),
             gasket_transfer_id: self.get_transfer_id(),
+            peer_transfer_speed: self.peer_transfer_speed.clone(),
         }
     }
 
@@ -303,18 +318,20 @@ impl Gasket {
         let peer_no = self.peer_no_count.fetch_add(1, Ordering::Acquire);
         let context = self.get_context();
 
-        if let Some(mut peer) = Peer::new(peer_no, addr, context, self.emitter.clone(), self.store.clone()).await {
+        if let Some(mut peer) = Peer::new(
+            peer_no,
+            addr,
+            context,
+            self.emitter.clone(),
+            self.store.clone(),
+        )
+        .await
+        {
             let peers = self.peers.clone();
             match peer.start().await {
                 Ok(_) => {
                     let join_handle = tokio::spawn(peer.run());
-                    peers.insert(
-                        peer_no,
-                        PeerInfo {
-                            join_handle: Some(join_handle),
-                            addr,
-                        },
-                    );
+                    peers.insert(peer_no, PeerInfo::new(addr, join_handle));
                 }
                 Err(_) => {}
             }
@@ -375,18 +392,21 @@ impl Runnable for Gasket {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.config.channel_buffer());
         let transfer_id = self.get_transfer_id();
-        self.emitter
-            .register(transfer_id.clone(), send.clone());
+        self.emitter.register(transfer_id.clone(), send.clone());
 
         trace!("启动 gasket");
         let tracker_handle = self.start_tracker();
+        let speed_handle = tokio::spawn(start_speed_report(
+            self.peer_transfer_speed.clone(),
+            self.context.cancel_token.clone(),
+        ));
 
         loop {
             tokio::select! {
                 _ = self.context.cancel_token.cancelled() => {
                     info!("peer 取消了请求");
                     break;
-                },
+                }
                 cmd = recv.recv() => {
                     if let Some(cmd) = cmd {
                         let cmd: Command = cmd.instance();
@@ -399,7 +419,36 @@ impl Runnable for Gasket {
             }
         }
 
+        speed_handle.await.unwrap();
         tracker_handle.await.unwrap();
         self.shutdown().await;
+    }
+}
+
+/// 启动速率播报
+async fn start_speed_report(
+    peer_transfer_speed: Arc<DashMap<u64, u64>>,
+    cancel_token: CancellationToken,
+) {
+    let start = Instant::now() + Duration::from_secs(1);
+    let mut interval = tokio::time::interval_at(start, Duration::from_secs(1));
+    let mut window = FixedQueue::new(5);
+    let mut sum = 0.0;
+    loop {
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                break;
+            }
+            _ = interval.tick() => {
+                let mut speed: f64 = 0.0;
+                peer_transfer_speed.retain(|_, read_size| {
+                    speed += *read_size as f64;
+                    false
+                });
+                window.push(speed).map(|head| sum -= head);
+                sum += speed;
+                info!("下载速度: {:.2} MB/s", sum / window.len() as f64 / 1024.0 / 1024.0);
+            }
+        }
     }
 }

@@ -55,10 +55,7 @@ impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
                     }
                 }
                 Poll::Ready(Err(e)) => {
-                    error!(
-                        "因神秘力量，和客户端失去了联系\t{}，addr: {}",
-                        e, this.addr
-                    );
+                    error!("因神秘力量，和客户端失去了联系\t{}，addr: {}", e, this.addr);
                     return Poll::Ready(Err(e));
                 }
                 Poll::Pending => return Poll::Pending,
