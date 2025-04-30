@@ -1,4 +1,7 @@
 //! 这个是一些杂项的验证测试
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
@@ -71,4 +74,76 @@ async fn test_oneshot_channel() {
     tx.send("hello").unwrap();
     t1.await.unwrap();
     // tx.send("world").unwrap()
+}
+
+/// 测试在循环的 select! 中新建 future
+#[ignore]
+#[tokio::test]
+async fn test_tokio_select_new_instance() {
+    let (send, mut recv) = channel(100);
+    let t = tokio::spawn(async move {
+        let mut k = 0;
+        let mut test = Test::new(k);
+        for _ in 0..4 {
+            select! {
+                _ = &mut test => {
+                    println!("[{k}] Ready 了");
+                    k += 1;
+                    test = Test::new(k);
+                }
+                res = recv.recv() => {
+                    match res {
+                        Some(res) => println!("接收到了消息\t{}", res),
+                        None => println!("啥都没有"),
+                    }
+                }
+            }
+        }
+    });
+
+    send.send("hello").await.unwrap();
+    send.send("world").await.unwrap();
+    t.await.unwrap();
+}
+
+#[derive(Debug)]
+enum State {
+    Start,
+    End,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct Test {
+    id: usize,
+    state: State,
+}
+
+impl Test {
+    fn new(id: usize) -> Self {
+        println!("新建了Test\tid: {}", id);
+        Self {
+            id,
+            state: State::Start,
+        }
+    }
+}
+
+impl Future for Test {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+        println!("触发了poll\t this: {:?}", this);
+        match this.state {
+            State::Start => {
+                this.state = State::End;
+                let waker = cx.waker().clone();
+                // tokio::time::sleep(Duration::from_secs(5)).await;
+                waker.wake();
+                Poll::Pending
+            }
+            State::End => Poll::Ready(()),
+        }
+    }
 }

@@ -96,11 +96,12 @@ impl TcpServer {
     }
 
     async fn accept(mut socket: TcpStream, context: TcpServerContext) {
+        let mut accept = Accept::new(&mut socket); 
         select! {
             _ = context.cancel_token.cancelled() => {
                 trace!("accpet socket 接收到关机信号");
             },
-            result = Accept::new(&mut socket)  => {
+            result = &mut accept => {
                 match result {
                     Some(protocol) => {
                         Self::protocol_dispatch(context, socket, protocol).await;

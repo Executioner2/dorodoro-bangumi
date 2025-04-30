@@ -4,8 +4,6 @@
 //! `长度（4字节） | 消息类型（1字节） | 数据（长度-5字节）`
 //!
 //! 长度的需要加上消息类型的 1 字节。
-//!
-//! 区块与分片的关系：区块是制作种子文件的单位，而分片是对种子文件进行下载的单位。分片可以有下载器动态控制，分片大小 <= 区块大小。
 
 pub mod command;
 mod error;
@@ -146,8 +144,8 @@ pub struct Peer {
     /// peer 统计信息
     statistics: PeerStatistics,
 
-    /// reader
-    reader: OwnedReadHalf,
+    /// reader，peer actor 启动后会把这个 reader 消费掉
+    reader: Option<OwnedReadHalf>,
 
     /// wrtier
     writer: OwnedWriteHalf,
@@ -199,7 +197,7 @@ impl Peer {
             no,
             context,
             statistics: PeerStatistics::new(),
-            reader,
+            reader: Some(reader),
             writer,
             status: Status::Choke,
             addr,
@@ -230,10 +228,10 @@ impl Peer {
         self.writer.write_all(&bytes).await?;
 
         // 等待握手信息
-        self.reader.readable().await?;
+        self.reader.as_ref().unwrap().readable().await?;
 
         let mut handshake_resp = vec![0u8; bytes.len()];
-        let size = self.reader.read(&mut handshake_resp).await?;
+        let size = self.reader.as_mut().unwrap().read(&mut handshake_resp).await?;
         if size != bytes.len() {
             return Err(HandshakeError);
         }
@@ -557,6 +555,8 @@ impl Runnable for Peer {
 
         trace!("开始监听数据 peer_no:{}\taddr: {}", self.no, self.addr);
         let reason: ExitReason;
+        let mut reader = self.reader.take().unwrap();
+        let mut bt_resp = BtResp::new(&mut reader, self.addr);
         loop {
             tokio::select! {
                 _ = self.context.cancel_token() => {
@@ -564,7 +564,7 @@ impl Runnable for Peer {
                     reason = ExitReason::Normal;
                     break;
                 }
-                result = BtResp::new(&mut self.reader, self.addr) => {
+                result = &mut bt_resp => {
                     match result {
                         Some((msg_type, buf)) => {
                             match self.handle(msg_type, buf).await {
@@ -582,6 +582,7 @@ impl Runnable for Peer {
                             break;
                         }
                     }
+                    bt_resp = BtResp::new(&mut reader, self.addr);
                 }
                 result = recv.recv() => {
                     match result {
