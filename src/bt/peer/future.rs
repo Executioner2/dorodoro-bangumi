@@ -24,7 +24,7 @@ pub struct BtResp<'a> {
 }
 
 impl<'a> BtResp<'a> {
-    pub fn new(read: &'a mut OwnedReadHalf, addr: SocketAddr) -> Self {
+    pub fn new(read: &'a mut OwnedReadHalf, addr: &'a SocketAddr) -> Self {
         Self {
             reader_handle: ReaderHandle::new(read, addr, 4),
             state: State::Length,

@@ -82,6 +82,7 @@ pub struct File {
     _md5sum: Option<String>, // 文件md5值
 }
 
+#[derive(Clone, Debug)]
 pub struct BlockInfo {
     pub filepath: PathBuf,
     pub start: u64,

@@ -96,7 +96,8 @@ impl TcpServer {
     }
 
     async fn accept(mut socket: TcpStream, context: TcpServerContext) {
-        let mut accept = Accept::new(&mut socket); 
+        let addr = socket.peer_addr().unwrap();
+        let mut accept = Accept::new(&mut socket, &addr); 
         select! {
             _ = context.cancel_token.cancelled() => {
                 trace!("accpet socket 接收到关机信号");

@@ -7,7 +7,7 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::time::Duration;
 use crate::buffer::ByteBuffer;
-use crate::fs::OpenOptionsExt;
+use crate::fs::AsyncOpenOptionsExt;
 
 // 包装 File 并记录写入次数
 struct InstrumentedFile {

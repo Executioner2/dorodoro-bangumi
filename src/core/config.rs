@@ -29,6 +29,12 @@ struct ConfigInner {
 
     /// hash 计算的队列长度，队列内的都是并发计算
     hash_concurrency: usize,
+    
+    /// 总的 peer 配额
+    peer_conn_limit: usize,
+ 
+    /// 每个 torrent 的 peer 配额
+    torrent_peer_conn_limit: usize 
 }
 
 impl Clone for Config {
@@ -51,6 +57,8 @@ impl Config {
                 buf_limit: 16 << 20, // 16MB 的写入缓存
                 hash_chunk_size: 512,
                 hash_concurrency: 1, // 默认就一个
+                peer_conn_limit: 500,
+                torrent_peer_conn_limit: 100,
             }),
         }
     }
@@ -111,6 +119,20 @@ impl Config {
         });
         self
     }
+    
+    pub fn set_peer_conn_limit(mut self, limit: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.peer_conn_limit = limit;
+        });
+        self
+    }
+    
+    pub fn set_torrent_peer_conn_limit(mut self, limit: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.torrent_peer_conn_limit = limit;
+        });
+        self
+    }
 
     pub fn channel_buffer(&self) -> usize {
         self.inner.channel_buffer
@@ -142,5 +164,13 @@ impl Config {
 
     pub fn hash_concurrency(&self) -> usize {
         self.inner.hash_concurrency
+    }
+    
+    pub fn peer_conn_limit(&self) -> usize {
+        self.inner.peer_conn_limit
+    }
+    
+    pub fn torrent_peer_conn_limit(&self) -> usize {
+        self.inner.torrent_peer_conn_limit
     }
 }

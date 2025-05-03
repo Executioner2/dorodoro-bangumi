@@ -9,7 +9,7 @@ use crate::peer_manager::command::Command;
 use crate::tracker;
 use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -34,6 +34,7 @@ pub struct PeerManagerContext {
     pub gaskets: Arc<DashMap<u64, GasketInfo>>,
     pub gasket_id: Arc<AtomicU64>,
     pub store: Store,
+    pub peer_conn_num: Arc<AtomicUsize>,
     peer_id_pool: Arc<DashSet<[u8; 20]>>,
 }
 
@@ -61,13 +62,29 @@ impl PeerManagerContext {
 }
 
 pub struct PeerManager {
+    /// 程序终止 token
     cancel_token: CancellationToken,
+    
+    /// 全局配置
     config: Config,
+    
+    /// peer 垫片，相同 torrent 的 peer由一个垫片管理
     gaskets: Arc<DashMap<u64, GasketInfo>>,
+    
+    /// 命令发射器
     emitter: Emitter,
+    
+    /// 垫片 id
     gasket_id: Arc<AtomicU64>,
+    
+    /// peer_id 生成池，一个垫片一个
     peer_id_pool: Arc<DashSet<[u8; 20]>>,
-    store: Store
+    
+    /// 存储器，所有 peer 接收到 piece 后由 store 统一处理持久化事项
+    store: Store,
+    
+    /// 当前 peer 链接数
+    peer_conn_num: Arc<AtomicUsize>,
 }
 
 impl PeerManager {
@@ -80,7 +97,8 @@ impl PeerManager {
             emitter,
             gasket_id: Arc::new(AtomicU64::new(0)),
             peer_id_pool: Arc::new(DashSet::new()),
-            store
+            store,
+            peer_conn_num: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -93,6 +111,7 @@ impl PeerManager {
             gasket_id: self.gasket_id.clone(),
             store: self.store.clone(),
             peer_id_pool: self.peer_id_pool.clone(),
+            peer_conn_num: self.peer_conn_num.clone(),
         }
     }
 

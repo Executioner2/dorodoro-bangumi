@@ -8,21 +8,20 @@ use crate::buffer::ByteBuffer;
 use crate::config::Config;
 use crate::emitter::Emitter;
 use crate::fs::OpenOptionsExt;
+use crate::torrent::BlockInfo;
 use bytes::Bytes;
 use dashmap::DashMap;
 use error::Result;
 use sha1::{Digest, Sha1};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
-use std::io::SeekFrom;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
-use crate::torrent::BlockInfo;
 
 struct Block {
     offset: u64,
@@ -59,9 +58,6 @@ struct FileWriter {
     /// 总缓冲大小
     buf_size: usize,
 
-    /// 缓存大小上限
-    buf_limit: usize,
-
     /// 文件大小，用于预分配
     file_len: u64,
 
@@ -70,53 +66,49 @@ struct FileWriter {
 }
 
 impl FileWriter {
-    pub fn new(path: PathBuf, buf_limit: usize, file_len: u64) -> Self {
+    pub fn new(path: PathBuf, file_len: u64) -> Self {
         Self {
             path,
             blocks: BTreeSet::default(),
             buf_size: 0,
-            buf_limit,
             file_len,
             write_len: 0,
         }
     }
 
-    async fn get_file(&self) -> Result<File> {
-        let mut file = OpenOptions::new()
+    fn get_file(&self) -> Result<File> {
+        let file = OpenOptions::new()
             .write(true)
             .read(true)
             .create(true)
-            .open_with_parent_dirs(&self.path)
-            .await?;
-        if file.metadata().await?.len() == 0 {
-            file.set_len(self.file_len).await?;
+            .open_with_parent_dirs(&self.path)?;
+        if file.metadata()?.len() == 0 {
+            file.set_len(self.file_len)?;
         }
-        file.set_max_buf_size(self.buf_limit);
         Ok(file)
     }
 
     /// 返回 false 表示还没有完结，否则反之
-    async fn flush(&mut self) -> Result<(bool, usize)> {
+    fn flush(&mut self) -> Result<(bool, usize)> {
         if self.blocks.is_empty() {
             return Ok((false, 0));
         }
 
         // 合并连续块，并刷进磁盘
-        let mut buf = BufWriter::with_capacity(self.buf_size, self.get_file().await?);
+        let mut buf = BufWriter::with_capacity(self.buf_size, self.get_file()?);
         let mut prev_offset = 0;
         while let Some(block) = self.blocks.pop_first() {
             if prev_offset != block.offset {
-                buf.seek(SeekFrom::Start(block.offset)).await?;
+                buf.seek(SeekFrom::Start(block.offset))?;
             }
-            buf.write_all(&block.data).await?;
+            buf.write_all(&block.data)?;
             prev_offset = block.offset + block.data.len() as u64;
         }
 
-        buf.flush().await?;
+        buf.flush()?;
         let wrtie_len = self.buf_size;
         self.write_len += wrtie_len as u64;
         self.buf_size = 0;
-
         Ok((self.write_len >= self.file_len, wrtie_len))
     }
 
@@ -157,10 +149,10 @@ impl Store {
         }
     }
 
-    pub async fn flush(&self, path: &PathBuf) -> Result<()> {
+    pub fn flush(&self, path: &PathBuf) -> Result<()> {
         let mut remove = false;
         if let Some(mut writer) = self.file_writer.get_mut(path) {
-            let (r, n) = writer.flush().await?;
+            let (r, n) = writer.flush()?;
             self.buf_size.fetch_sub(n, AtomicOrdering::Relaxed);
             remove = r;
         }
@@ -170,10 +162,10 @@ impl Store {
         Ok(())
     }
 
-    pub async fn flush_all(&self) -> Result<()> {
+    pub fn flush_all(&self) -> Result<()> {
         let mut remove_keys = vec![];
         for mut item in self.file_writer.iter_mut() {
-            if item.flush().await?.0 {
+            if item.flush()?.0 {
                 remove_keys.push(item.path.clone());
             }
         }
@@ -189,15 +181,11 @@ impl Store {
             .fetch_add(block_info.len, AtomicOrdering::Release);
         self.file_writer
             .entry(block_info.filepath.clone())
-            .or_insert(FileWriter::new(
-                block_info.filepath,
-                self.config.buf_limit(),
-                block_info.file_len,
-            ))
+            .or_insert(FileWriter::new(block_info.filepath, block_info.file_len))
             .write(block_info.start, data);
 
         if self.buf_size.load(AtomicOrdering::Acquire) >= self.config.buf_limit() {
-            self.flush_all().await
+            self.flush_all()
         } else {
             Ok(())
         }
@@ -210,15 +198,14 @@ impl Store {
         let mut chunk = ByteBuffer::new(self.config.hash_chunk_size());
 
         for mut block_info in src {
-            self.flush(&block_info.filepath).await?;
+            self.flush(&block_info.filepath)?;
             let mut file = OpenOptions::new()
                 .read(true)
-                .open_with_parent_dirs(block_info.filepath)
-                .await?;
-            file.seek(SeekFrom::Start(block_info.start)).await?;
+                .open_with_parent_dirs(block_info.filepath)?;
+            file.seek(SeekFrom::Start(block_info.start))?;
             while block_info.len > 0 {
                 let end = chunk.capacity().min(block_info.len);
-                let n = file.read(&mut chunk[0..end]).await?;
+                let n = file.read(&mut chunk[0..end])?;
                 hasher.update(&chunk[0..n]);
                 block_info.len -= n;
             }

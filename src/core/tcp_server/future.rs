@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use crate::net::ReaderHandle;
 use crate::protocol;
 use crate::protocol::{Identifier, Protocol};
@@ -23,8 +24,7 @@ enum State {
 }
 
 impl<'a> Accept<'a> {
-    pub fn new(socket: &'a mut TcpStream) -> Self {
-        let addr = socket.peer_addr().unwrap();
+    pub fn new(socket: &'a mut TcpStream, addr: &'a SocketAddr) -> Self {
         Self {
             reader_handle: ReaderHandle::new(socket, addr, 1),
             protocol: None,

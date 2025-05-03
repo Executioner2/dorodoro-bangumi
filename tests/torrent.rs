@@ -123,3 +123,15 @@ fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
     println!("decoded response: {:?}", response);
     Ok(())
 }
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_piece_hash() {
+    let torrent = Torrent::parse_torrent("tests/resources/test6.torrent").unwrap();
+    println!("文件序: {:?}", torrent.info.files);
+    println!("tracker: {}", torrent.announce);
+    for (i, data) in torrent.info.pieces.chunks(20).enumerate() {
+        let x= hex::encode(data);
+        println!("第[{}]个分块的hash: {}", i, x)
+    }
+}

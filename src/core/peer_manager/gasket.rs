@@ -55,19 +55,16 @@ enum PieceStatus {
 }
 
 struct PeerInfo {
+    /// 通信地址
+    addr: Arc<SocketAddr>,
+
     /// 异步任务句柄
     join_handle: Option<JoinHandle<()>>,
-
-    /// 通信地址
-    addr: SocketAddr,
 }
 
 impl PeerInfo {
-    fn new(addr: SocketAddr, join_handle: JoinHandle<()>) -> Self {
-        Self {
-            join_handle: Some(join_handle),
-            addr,
-        }
+    fn new(addr: Arc<SocketAddr>, join_handle: Option<JoinHandle<()>>) -> Self {
+        Self { addr, join_handle }
     }
 }
 
@@ -83,7 +80,7 @@ pub struct GasketContext {
     torrent: TorrentArc,
     download_path: Arc<PathBuf>,
     peer_id: Arc<[u8; 20]>,
-    unstart_host: Arc<DashSet<SocketAddr>>,
+    unstart_host: Arc<DashSet<Arc<SocketAddr>>>,
     gasket_transfer_id: String,
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
 }
@@ -190,7 +187,7 @@ impl GasketContext {
     pub fn reported_download(&self, block_size: u64) {
         self.download.fetch_add(block_size, Ordering::Relaxed);
     }
-    
+
     /// 上报分块下载完成
     pub fn reported_piece_finished(&self, piece_index: u32) {
         self.underway_bytefield
@@ -236,13 +233,13 @@ pub struct Gasket {
     /// 这个是正儿八经下下来了的分块
     bytefield: Arc<BytesMut>,
 
-    /// 这个有部分还在下载中，但是为了避免其它 peer 选择重叠，下载的 peer 会把它下载的那个分块标记为 1
+    /// 正在下载中的分块
     underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
 
-    /// 不可 start peer 的 host
-    unstart_host: Arc<DashSet<SocketAddr>>,
+    /// 存储的是可链接地址，避免 tracker 扫描出相同的然后重复请求链接
+    unstart_host: Arc<DashSet<Arc<SocketAddr>>>,
 
-    /// 可连接，但是没有任务可分配的 peer，
+    /// 可连接，但是没有任务可分配的 peer
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
 
     /// 命令发射器
@@ -314,47 +311,58 @@ impl Gasket {
         }
     }
 
-    async fn start_peer(&self, addr: SocketAddr) {
+    async fn start_peer(&self, addr: Arc<SocketAddr>) {
+        if self.unstart_host.contains(&addr) {
+            return;
+        }
+
+        let torrent_peer_conn_limit = self.config.torrent_peer_conn_limit();
+        let unstart_host = self.unstart_host.clone();
+
+        // 超过配额，加入等待队列中
+        if torrent_peer_conn_limit <= self.peers.len() {
+            unstart_host.insert(addr.clone());
+            self.wait_queue
+                .lock()
+                .await
+                .push_back(PeerInfo::new(addr, None));
+            return;
+        }
+
         let peer_no = self.peer_no_count.fetch_add(1, Ordering::Acquire);
         let context = self.get_context();
 
         if let Some(mut peer) = Peer::new(
             peer_no,
-            addr,
+            addr.clone(),
             context,
             self.emitter.clone(),
             self.store.clone(),
         )
         .await
         {
+            let wait_queue = self.wait_queue.clone();
             let peers = self.peers.clone();
-            match peer.start().await {
-                Ok(_) => {
-                    let join_handle = tokio::spawn(peer.run());
-                    peers.insert(peer_no, PeerInfo::new(addr, join_handle));
-                }
-                Err(_) => {}
-            }
-            // tokio::spawn(async move { // 不开异步的话，可能导致 channel 堆积满了然后崩溃
-            //     match peer.start().await {
-            //         Ok(_) => {
-            //             let join_handle = tokio::spawn(peer.run());
-            //             peers.lock().await.insert(
-            //                 peer_no,
-            //                 PeerInfo {
-            //                     join_handle: Some(join_handle),
-            //                     addr,
-            //                 },
-            //             );
-            //         }
-            //         Err(_) => {}
-            //     }
-            // });
-        }
 
-        // 成功与否都需要加入到 unstart 集合中，避免重复链接
-        // todo - 需要改，避免多个资源同时下载时，有某个 peer 多个资源中都被发现了
-        self.unstart_host.insert(addr);
+            // 不开异步的话，可能导致 channel 堆积满
+            tokio::spawn(async move {
+                if torrent_peer_conn_limit <= peers.len() {
+                    unstart_host.insert(addr.clone());
+                    wait_queue.lock().await.push_back(PeerInfo::new(addr, None));
+                    return;
+                }
+                match peer.start().await {
+                    Ok(_) => {
+                        unstart_host.insert(addr.clone());
+                        let join_handle = tokio::spawn(peer.run());
+                        peers.insert(peer_no, PeerInfo::new(addr, Some(join_handle)));
+                    }
+                    Err(_) => { unstart_host.remove(&addr); }
+                }
+            });
+        } else {
+            unstart_host.remove(&addr);
+        }
     }
 
     async fn shutdown(self) {
@@ -447,7 +455,7 @@ async fn start_speed_report(
                 });
                 window.push(speed).map(|head| sum -= head);
                 sum += speed;
-                info!("下载速度: {:.2} MB/s", sum / window.len() as f64 / 1024.0 / 1024.0);
+                info!("下载速度: {:.2} MiB/s", sum / window.len() as f64 / 1024.0 / 1024.0);
             }
         }
     }

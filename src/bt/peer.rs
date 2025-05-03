@@ -34,6 +34,7 @@ use error::Result;
 use std::cmp::min;
 use std::mem;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -128,7 +129,7 @@ pub struct Peer {
     status: Status,
 
     /// 对端地址
-    addr: SocketAddr,
+    addr: Arc<SocketAddr>,
 
     /// 对端的 peer id
     opposite_peer_id: Option<[u8; 20]>,
@@ -157,12 +158,12 @@ pub struct Peer {
 impl Peer {
     pub async fn new(
         no: u64,
-        addr: SocketAddr,
+        addr: Arc<SocketAddr>,
         context: GasketContext,
         emitter: Emitter,
         store: Store,
     ) -> Option<Self> {
-        let stream = match TcpStream::connect(addr).await {
+        let stream = match TcpStream::connect(&*addr).await {
             Ok(stream) => stream,
             Err(_) => return None,
         };
@@ -211,6 +212,7 @@ impl Peer {
             .read(&mut handshake_resp)
             .await?;
         if size != bytes.len() {
+            error!("响应数据长度于预期不符 [{}]\t[{}]", size, bytes.len());
             return Err(HandshakeError);
         }
 
@@ -288,7 +290,6 @@ impl Peer {
                 &mut req,
                 min(piece_length - *offset, sharding_size),
             )?;
-
             self.writer.write_all(&req).await?;
             *offset += sharding_size;
         } else {
@@ -313,7 +314,7 @@ impl Peer {
     }
 
     /// 尝试寻找可以下载的分块进行下载
-    pub async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
+    async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
         if !self.is_can_be_download() {
             return Ok(false);
         }
@@ -443,7 +444,7 @@ impl Peer {
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
-        self.write_file(piece_index, block_offset, block_data);
+        self.write_file(piece_index, block_offset, block_data).await;
 
         self.secuessed_piece += 1;
 
@@ -465,12 +466,12 @@ impl Peer {
     }
 
     /// 写入文件
-    fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes) {
+    async fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes) {
         let context = self.context.clone();
         let store = self.store.clone();
         let sender = self.emitter.get(&Self::get_transfer_id(self.no)).unwrap();
 
-        tokio::spawn(async move {
+        // tokio::spawn(async move {
             let torrent = context.torrent();
             let path = context.download_path();
 
@@ -487,7 +488,7 @@ impl Peer {
                     sender.send(cmd).await.unwrap();
                 }
             }
-        });
+        // });
     }
 
     /// 校验分块
@@ -504,8 +505,9 @@ impl Peer {
             let hash =
                 &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
             let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
-            match store.checkout(list, hash).await {
+            match store.checkout(list.clone(), hash).await {
                 Ok(false) | Err(_) => {
+                    error!("参与计算的文件: {:?}", list);
                     let cmd = PieceCheckoutFailed { piece_index }.into();
                     sender.send(cmd).await.unwrap();
                 }
@@ -536,7 +538,7 @@ impl Runnable for Peer {
                 no: self.no,
                 reader: self.reader.take(),
                 cancel_token: cancel.clone(),
-                addr: self.addr,
+                addr: self.addr.clone(),
                 sender: send,
             }
             .run(),
@@ -564,7 +566,9 @@ impl Runnable for Peer {
                             }
                         }
                         None => {
-                            unimplemented!()
+                            // 发送通道全部关闭（emitter 已被销毁），buffer 没有消息，peer 退出
+                            reason = ExitReason::Normal;
+                            break;
                         }
                     }
                 }
@@ -585,14 +589,14 @@ struct Recv {
     no: u64,
     reader: Option<OwnedReadHalf>,
     cancel_token: CancellationToken,
-    addr: SocketAddr,
+    addr: Arc<SocketAddr>,
     sender: Sender<TransferPtr>,
 }
 
 impl Runnable for Recv {
     async fn run(mut self) {
         let mut reader = self.reader.take().unwrap();
-        let mut bt_resp = BtResp::new(&mut reader, self.addr);
+        let mut bt_resp = BtResp::new(&mut reader, &self.addr);
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -609,13 +613,13 @@ impl Runnable for Recv {
                             }.into()).await.unwrap()
                         },
                         None => {
-                            warn!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
+                            warn!("断开了链接，终止 {} - {} 的数据监听", self.no, &self.addr);
                             let reason = ExitReason::Exception;
                             self.sender.send(Exit{ reason }.into()).await.unwrap();
                             break;
                         }
                     }
-                    bt_resp = BtResp::new(&mut reader, self.addr);
+                    bt_resp = BtResp::new(&mut reader, &self.addr);
                 }
             }
         }

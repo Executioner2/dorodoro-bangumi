@@ -11,11 +11,11 @@ pub struct ReaderHandle<'a, T: AsyncRead + Unpin> {
     stream: &'a mut T,
     buf: ByteBuffer,
     read_count: usize,
-    addr: SocketAddr,
+    addr: &'a SocketAddr,
 }
 
 impl<'a, T: AsyncRead + Unpin> ReaderHandle<'a, T> {
-    pub fn new(stream: &'a mut T, addr: SocketAddr, read_len: usize) -> Self {
+    pub fn new(stream: &'a mut T, addr: &'a SocketAddr, read_len: usize) -> Self {
         Self {
             stream,
             buf: ByteBuffer::new(read_len),
