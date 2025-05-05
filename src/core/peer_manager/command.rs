@@ -52,7 +52,6 @@ impl<'a> CommandHandler<'a, Result<()>> for NewDownloadTask {
             download,
             uploaded,
             emitter,
-            context.config.clone(),
             context.store.clone(),
         );
 

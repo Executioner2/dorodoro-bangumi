@@ -1,6 +1,6 @@
 //! 接收客户端发来的控制信号
 
-use crate::core::config::Config;
+use crate::core::context::Context;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::{CONTROLLER_PREFIX, SCHEDULER, TCP_SERVER};
 use crate::core::runtime::Runnable;
@@ -14,33 +14,31 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::channel;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, trace, warn};
 
 /// 响应给客户端的内容
 pub struct _RespClient {}
 
 pub struct Controller {
+    /// 控制器id
     id: u64,
+
+    /// 接收控制客户端请求的 tcp stream
     socket: TcpStream,
-    cancel_token: CancellationToken,
-    config: Config,
+
+    /// 全局上下文
+    context: Context,
+
+    /// 指令发射器
     emitter: Emitter,
 }
 
 impl Controller {
-    pub fn new(
-        id: u64,
-        socket: TcpStream,
-        cancel_token: CancellationToken,
-        config: Config,
-        emitter: Emitter,
-    ) -> Self {
+    pub fn new(id: u64, socket: TcpStream, context: Context, emitter: Emitter) -> Self {
         Self {
             id,
             socket,
-            cancel_token,
-            config,
+            context,
             emitter,
         }
     }
@@ -58,14 +56,14 @@ impl Controller {
 
 impl Runnable for Controller {
     async fn run(mut self) {
-        let (send, mut recv) = channel(self.config.channel_buffer());
+        let (send, mut recv) = channel(self.context.get_config().channel_buffer());
         let transfer_id = self.get_transfer_id();
         self.emitter.register(transfer_id, send);
 
         info!("控制器启动");
         loop {
             select! {
-                _ = self.cancel_token.cancelled() => {
+                _ = self.context.cancelled() => {
                     trace!("控制器接收到退出指令");
                     break;
                 },

@@ -20,9 +20,11 @@ time = { version = "0.3.41", features = ["local-offset"] }
 lazy_static = "1.5.0"
 nanoid = "0.4.0"
 hex = "0.4.3"
-serde_qs = "0.14.0"
+serde_qs = "0.15.0"
 ahash = "0.8.11"
 dashmap = "6.1.0"
+rusqlite = { version = "0.35.0", features = ["bundled"] }
+bincode = "2.0.1"
 
 [dev-dependencies]
 criterion = "0.5.1"

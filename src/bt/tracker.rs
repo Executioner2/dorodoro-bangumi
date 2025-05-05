@@ -4,11 +4,11 @@ pub mod http_tracker;
 pub mod udp_tracker;
 
 use crate::bytes::Bytes2Int;
-use crate::config::Config;
 use crate::datetime;
 use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
+use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::DiscoverPeerAddr;
 use crate::runtime::{DelayedTask, Runnable};
 use crate::torrent::TorrentArc;
@@ -327,7 +327,7 @@ pub enum TrackerInstance {
 pub struct Tracker {
     info: AnnounceInfo,
     emitter: Emitter,
-    config: Config,
+    peer_manager_context: PeerManagerContext,
     gasket_transfer_id: String,
     trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>,
     scan_time: u64,
@@ -339,7 +339,7 @@ impl Tracker {
         peer_id: Arc<[u8; 20]>,
         info: AnnounceInfo,
         emitter: Emitter,
-        config: Config,
+        peer_manager_context: PeerManagerContext,
         gasket_transfer_id: String,
     ) -> Self {
         let trackers = instance_tracker(peer_id, torrent);
@@ -347,7 +347,7 @@ impl Tracker {
         Self {
             info,
             emitter,
-            config,
+            peer_manager_context,
             gasket_transfer_id,
             trackers,
             scan_time: datetime::now_secs(),
@@ -479,11 +479,8 @@ impl Tracker {
         &self,
         delay: u64,
     ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
-        let delay = delay + 99999999;
-        let cmd = DiscoverPeerAddr { peers: vec![SocketAddr::from_str("192.168.2.177:3115").unwrap()] }.into();
-        self.emitter.send(&self.gasket_transfer_id, cmd).await.unwrap();
-        trace!("创建 tracker 扫描任务\t{}秒后执行", delay);
-        let send_to_gasket: Sender<TransferPtr> = self.emitter.get(&self.gasket_transfer_id).unwrap();
+        let send_to_gasket: Sender<TransferPtr> =
+            self.emitter.get(&self.gasket_transfer_id).unwrap();
         let task = Tracker::scan_tracker(
             self.trackers.clone(),
             self.scan_time,
@@ -498,7 +495,12 @@ impl Tracker {
 
 impl Runnable for Tracker {
     async fn run(mut self) {
-        let (send, mut recv) = channel(self.config.channel_buffer());
+        let (send, mut recv) = channel(
+            self.peer_manager_context
+                .context
+                .get_config()
+                .channel_buffer(),
+        );
         self.emitter
             .register(Tracker::get_transfer_id(&self.gasket_transfer_id), send);
 

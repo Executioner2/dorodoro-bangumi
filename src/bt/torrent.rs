@@ -11,6 +11,7 @@ use crate::bt::bencoding;
 use crate::bt::bencoding::BEncode;
 use crate::if_else;
 use crate::torrent::error::Error::InvalidTorrent;
+use bincode::{Decode, Encode};
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
@@ -48,7 +49,7 @@ impl Deref for TorrentArc {
 }
 
 /// 种子结构体
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
 pub struct Torrent {
     pub announce: String,                // Tracker地址
     pub announce_list: Vec<Vec<String>>, // Tracker列表
@@ -61,7 +62,7 @@ pub struct Torrent {
 }
 
 /// 种子信息结构体
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
 pub struct Info {
     pub length: u64,             // 文件大小
     pub piece_length: u64,       // 分片大小
@@ -74,7 +75,7 @@ pub struct Info {
 }
 
 /// 文件结构体，适用于多文件种子
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
 pub struct File {
     pub length: u64,         // 文件大小
     pub path: Vec<String>,   // 文件路径
@@ -119,7 +120,8 @@ impl Torrent {
         offset: u32,
         len: usize,
     ) -> Vec<BlockInfo> {
-        self.info.find_file_of_piece_index(path_buf, piece_index, offset, len)
+        self.info
+            .find_file_of_piece_index(path_buf, piece_index, offset, len)
     }
 }
 
@@ -190,19 +192,19 @@ impl Info {
                 let start = if_else!(begin <= lps - file.length, 0, begin - (lps - file.length));
                 let len =
                     if_else!(end <= lps, end - (lps - file.length), file.length - start).min(left);
-                
+
                 let file = &self.files[i];
                 let filepath = path_buf
                     .join(&self.name)
                     .join(file.path.iter().collect::<PathBuf>());
-                
+
                 res.push(BlockInfo {
                     filepath,
                     start,
                     len: len as usize,
                     file_len: file.length,
                 });
-                
+
                 left -= len;
             }
         }

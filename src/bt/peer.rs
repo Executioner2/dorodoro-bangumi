@@ -163,9 +163,10 @@ impl Peer {
         emitter: Emitter,
         store: Store,
     ) -> Option<Self> {
-        let stream = match TcpStream::connect(&*addr).await {
-            Ok(stream) => stream,
-            Err(_) => return None,
+        let timeout = context.config().peer_connection_timeout();
+        let stream = match tokio::time::timeout(timeout, TcpStream::connect(&*addr)).await {
+            Ok(Ok(stream)) => stream,
+            _ => return None,
         };
         let (reader, writer) = stream.into_split();
         Some(Peer {

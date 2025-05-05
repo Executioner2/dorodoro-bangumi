@@ -27,8 +27,8 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
-use tracing::{error, info, trace};
+use tokio_util::sync::WaitForCancellationFuture;
+use tracing::{debug, error, info, trace};
 
 #[derive(PartialEq, Debug)]
 pub enum ExitReason {
@@ -71,7 +71,7 @@ impl PeerInfo {
 #[derive(Clone)]
 pub struct GasketContext {
     peers: Arc<DashMap<u64, PeerInfo>>,
-    context: PeerManagerContext,
+    peer_manager_context: PeerManagerContext,
     bytefield: Arc<BytesMut>,
     underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
@@ -87,7 +87,7 @@ pub struct GasketContext {
 
 impl GasketContext {
     pub fn cancel_token(&self) -> WaitForCancellationFuture {
-        self.context.cancel_token.cancelled()
+        self.peer_manager_context.context.cancelled()
     }
 
     pub fn peer_id(&self) -> &[u8; 20] {
@@ -99,7 +99,7 @@ impl GasketContext {
     }
 
     pub fn config(&self) -> Config {
-        self.context.config.clone()
+        self.peer_manager_context.context.get_config().clone()
     }
 
     pub fn download_path(&self) -> &PathBuf {
@@ -207,7 +207,7 @@ pub struct Gasket {
     id: u64,
 
     /// peer manager context
-    context: PeerManagerContext,
+    peer_manager_context: PeerManagerContext,
 
     /// peer id
     peer_id: Arc<[u8; 20]>,
@@ -245,9 +245,6 @@ pub struct Gasket {
     /// 命令发射器
     emitter: Emitter,
 
-    /// 全局配置
-    config: Config,
-
     /// 存储处理
     store: Store,
 
@@ -265,7 +262,6 @@ impl Gasket {
         download: u64,
         uploaded: u64,
         emitter: Emitter,
-        config: Config,
         store: Store,
     ) -> Self {
         // todo - 计算有哪些分块是下载了的，哪些是还需要下载的
@@ -274,7 +270,7 @@ impl Gasket {
 
         Self {
             id,
-            context,
+            peer_manager_context: context,
             peer_id,
             torrent,
             peer_no_count: Arc::new(AtomicU64::new(0)),
@@ -287,7 +283,6 @@ impl Gasket {
             unstart_host: Arc::new(DashSet::new()),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
-            config,
             store,
             peer_transfer_speed: Arc::new(DashMap::new()),
         }
@@ -296,7 +291,7 @@ impl Gasket {
     fn get_context(&self) -> GasketContext {
         GasketContext {
             peers: self.peers.clone(),
-            context: self.context.clone(),
+            peer_manager_context: self.peer_manager_context.clone(),
             bytefield: self.bytefield.clone(),
             underway_bytefield: self.underway_bytefield.clone(),
             wait_queue: self.wait_queue.clone(),
@@ -312,11 +307,16 @@ impl Gasket {
     }
 
     async fn start_peer(&self, addr: Arc<SocketAddr>) {
+        debug!("启动peer: {}", addr);
         if self.unstart_host.contains(&addr) {
             return;
         }
 
-        let torrent_peer_conn_limit = self.config.torrent_peer_conn_limit();
+        let torrent_peer_conn_limit = self
+            .peer_manager_context
+            .context
+            .get_config()
+            .torrent_peer_conn_limit();
         let unstart_host = self.unstart_host.clone();
 
         // 超过配额，加入等待队列中
@@ -357,10 +357,14 @@ impl Gasket {
                         let join_handle = tokio::spawn(peer.run());
                         peers.insert(peer_no, PeerInfo::new(addr, Some(join_handle)));
                     }
-                    Err(_) => { unstart_host.remove(&addr); }
+                    Err(e) => {
+                        debug!("addr: [{}] 启动失败\t错误信息: {}", addr, e);
+                        unstart_host.remove(&addr);
+                    }
                 }
             });
         } else {
+            debug!("addr: [{}] 启动失败", addr);
             unstart_host.remove(&addr);
         }
     }
@@ -382,14 +386,18 @@ impl Gasket {
             self.download.clone(),
             self.uploaded.clone(),
             self.torrent.info.length,
-            self.config.tcp_server_addr().port(),
+            self.peer_manager_context
+                .context
+                .get_config()
+                .tcp_server_addr()
+                .port(),
         );
         let tracker = Tracker::new(
             self.torrent.clone(),
             self.peer_id.clone(),
             info,
             self.emitter.clone(),
-            self.config.clone(),
+            self.peer_manager_context.clone(),
             transfer_id,
         );
         tokio::spawn(tracker.run())
@@ -398,7 +406,12 @@ impl Gasket {
 
 impl Runnable for Gasket {
     async fn run(mut self) {
-        let (send, mut recv) = channel(self.config.channel_buffer());
+        let (send, mut recv) = channel(
+            self.peer_manager_context
+                .context
+                .get_config()
+                .channel_buffer(),
+        );
         let transfer_id = self.get_transfer_id();
         self.emitter.register(transfer_id.clone(), send.clone());
 
@@ -406,12 +419,12 @@ impl Runnable for Gasket {
         let tracker_handle = self.start_tracker();
         let speed_handle = tokio::spawn(start_speed_report(
             self.peer_transfer_speed.clone(),
-            self.context.cancel_token.clone(),
+            self.peer_manager_context.clone(),
         ));
 
         loop {
             tokio::select! {
-                _ = self.context.cancel_token.cancelled() => {
+                _ = self.peer_manager_context.context.cancelled() => {
                     info!("peer 取消了请求");
                     break;
                 }
@@ -436,7 +449,7 @@ impl Runnable for Gasket {
 /// 启动速率播报
 async fn start_speed_report(
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
-    cancel_token: CancellationToken,
+    peer_manager_context: PeerManagerContext,
 ) {
     let start = Instant::now() + Duration::from_secs(1);
     let mut interval = tokio::time::interval_at(start, Duration::from_secs(1));
@@ -444,7 +457,7 @@ async fn start_speed_report(
     let mut sum = 0.0;
     loop {
         tokio::select! {
-            _ = cancel_token.cancelled() => {
+            _ = peer_manager_context.context.cancelled() => {
                 break;
             }
             _ = interval.tick() => {

@@ -27,8 +27,8 @@ impl<'a> CommandHandler<'a, Result<()>> for Shutdown {
     type Target = &'a Scheduler;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        if !ctx.cancel_token.is_cancelled() {
-            ctx.cancel_token.cancel();
+        if !ctx.context.is_cancelled() {
+            ctx.context.cancel();
         }
         Ok(())
     }

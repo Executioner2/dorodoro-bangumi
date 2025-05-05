@@ -1,5 +1,5 @@
 use crate::core::command::CommandHandler;
-use crate::core::config::Config;
+use crate::core::context::Context;
 use crate::core::controller::Controller;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::TCP_SERVER;
@@ -15,7 +15,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
 
 pub mod command;
@@ -31,10 +30,9 @@ struct ConnInfo {
 
 /// 多线程下的共享数据
 pub struct TcpServerContext {
-    cancel_token: CancellationToken,
     conn_id: Arc<AtomicU64>,
     conns: Arc<DashMap<ConnId, ConnInfo>>,
-    config: Config,
+    context: Context,
     emitter: Emitter,
 }
 
@@ -48,40 +46,35 @@ pub struct TcpServer {
     /// 监听地址
     addr: SocketAddr,
 
-    /// 关机信号
-    cancel_token: CancellationToken,
-
     /// 链接增长 id
     conn_id: Arc<AtomicU64>,
 
     /// 链接
     conns: Arc<DashMap<ConnId, ConnInfo>>,
 
-    /// 配置项
-    config: Config,
+    /// 全局上下文
+    context: Context,
 
     /// 命令发射器
     emitter: Emitter,
 }
 
 impl TcpServer {
-    pub fn new(config: Config, cancel_token: CancellationToken, emitter: Emitter) -> Self {
+    pub fn new(context: Context, emitter: Emitter) -> Self {
         TcpServer {
-            addr: config.tcp_server_addr(),
-            cancel_token,
+            addr: context.get_config().tcp_server_addr(),
             conn_id: Arc::new(AtomicU64::new(0)),
             conns: Arc::new(DashMap::default()),
-            config,
+            context,
             emitter,
         }
     }
 
     fn get_context(&self) -> TcpServerContext {
         TcpServerContext {
-            cancel_token: self.cancel_token.clone(),
             conn_id: self.conn_id.clone(),
             conns: self.conns.clone(),
-            config: self.config.clone(),
+            context: self.context.clone(),
             emitter: self.emitter.clone(),
         }
     }
@@ -95,17 +88,17 @@ impl TcpServer {
         }
     }
 
-    async fn accept(mut socket: TcpStream, context: TcpServerContext) {
+    async fn accept(mut socket: TcpStream, tc: TcpServerContext) {
         let addr = socket.peer_addr().unwrap();
-        let mut accept = Accept::new(&mut socket, &addr); 
+        let mut accept = Accept::new(&mut socket, &addr);
         select! {
-            _ = context.cancel_token.cancelled() => {
+            _ = tc.context.cancelled() => {
                 trace!("accpet socket 接收到关机信号");
             },
             result = &mut accept => {
                 match result {
                     Some(protocol) => {
-                        Self::protocol_dispatch(context, socket, protocol).await;
+                        Self::protocol_dispatch(tc, socket, protocol).await;
                     },
                     None => {
                         trace!("accpet socket 接收到关闭信号");
@@ -117,23 +110,17 @@ impl TcpServer {
 
     /// 协议分发，根据协议 ID 分发到不同的处理函数
     #[inline(always)]
-    async fn protocol_dispatch(context: TcpServerContext, socket: TcpStream, protocol: Protocol) {
+    async fn protocol_dispatch(tc: TcpServerContext, socket: TcpStream, protocol: Protocol) {
         match protocol.id {
             Identifier::BitTorrent => {
                 trace!("接收到 BitTorrent 协议");
             }
             Identifier::RemoteControl => {
                 trace!("接收到 RemoteControl 协议");
-                let id = context
+                let id = tc
                     .conn_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let controller = Controller::new(
-                    id,
-                    socket,
-                    context.cancel_token,
-                    context.config,
-                    context.emitter,
-                );
+                let controller = Controller::new(id, socket, tc.context, tc.emitter);
                 controller.run().await;
             }
         }
@@ -150,18 +137,18 @@ impl Runnable for TcpServer {
             }
             Err(e) => {
                 error!("tcp server 绑定地址失败: {}", e);
-                self.cancel_token.cancel();
+                self.context.cancel();
                 return;
             }
         }
 
         // 注册接收器
-        let (send, mut recv) = channel(self.config.channel_buffer());
+        let (send, mut recv) = channel(self.context.get_config().channel_buffer());
         self.emitter.register(TCP_SERVER, send);
 
         loop {
             select! {
-                _ = self.cancel_token.cancelled() => {
+                _ = self.context.cancelled() => {
                     break;
                 }
                 res = listener.accept() => {

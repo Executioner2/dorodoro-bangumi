@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct Config {
     inner: Arc<ConfigInner>,
@@ -34,7 +35,13 @@ struct ConfigInner {
     peer_conn_limit: usize,
  
     /// 每个 torrent 的 peer 配额
-    torrent_peer_conn_limit: usize 
+    torrent_peer_conn_limit: usize,
+    
+    /// 数据库连接池大小
+    database_conn_limit: usize,
+    
+    /// peer 链接超时设定
+    peer_connection_timeout: Duration,
 }
 
 impl Clone for Config {
@@ -59,6 +66,8 @@ impl Config {
                 hash_concurrency: 1, // 默认就一个
                 peer_conn_limit: 500,
                 torrent_peer_conn_limit: 100,
+                database_conn_limit: 10,
+                peer_connection_timeout: Duration::from_secs(5),
             }),
         }
     }
@@ -133,6 +142,20 @@ impl Config {
         });
         self
     }
+    
+    pub fn set_database_conn_limit(mut self, limit: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.database_conn_limit = limit;
+        });
+        self
+    }
+    
+    pub fn set_peer_connection_timeout(mut self, timeout: Duration) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.peer_connection_timeout = timeout;
+        });
+        self
+    }
 
     pub fn channel_buffer(&self) -> usize {
         self.inner.channel_buffer
@@ -172,5 +195,13 @@ impl Config {
     
     pub fn torrent_peer_conn_limit(&self) -> usize {
         self.inner.torrent_peer_conn_limit
+    }
+    
+    pub fn database_conn_limit(&self) -> usize {
+        self.inner.database_conn_limit
+    }
+    
+    pub fn peer_connection_timeout(&self) -> Duration {
+        self.inner.peer_connection_timeout
     }
 }

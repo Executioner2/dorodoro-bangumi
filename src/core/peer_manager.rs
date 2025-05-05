@@ -1,20 +1,19 @@
 //! Peer Manager
 
 use crate::core::command::CommandHandler;
-use crate::core::config::Config;
+use crate::core::context::Context;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::runtime::Runnable;
 use crate::peer_manager::command::Command;
+use crate::store::Store;
 use crate::tracker;
 use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
-use crate::store::Store;
 
 pub mod command;
 mod error;
@@ -28,8 +27,7 @@ pub struct GasketInfo {
 
 #[derive(Clone)]
 pub struct PeerManagerContext {
-    pub config: Config,
-    pub cancel_token: CancellationToken,
+    pub context: Context,
     pub emitter: Emitter,
     pub gaskets: Arc<DashMap<u64, GasketInfo>>,
     pub gasket_id: Arc<AtomicU64>,
@@ -62,37 +60,33 @@ impl PeerManagerContext {
 }
 
 pub struct PeerManager {
-    /// 程序终止 token
-    cancel_token: CancellationToken,
-    
-    /// 全局配置
-    config: Config,
-    
+    /// 全局上下文
+    context: Context,
+
     /// peer 垫片，相同 torrent 的 peer由一个垫片管理
     gaskets: Arc<DashMap<u64, GasketInfo>>,
-    
+
     /// 命令发射器
     emitter: Emitter,
-    
+
     /// 垫片 id
     gasket_id: Arc<AtomicU64>,
-    
+
     /// peer_id 生成池，一个垫片一个
     peer_id_pool: Arc<DashSet<[u8; 20]>>,
-    
+
     /// 存储器，所有 peer 接收到 piece 后由 store 统一处理持久化事项
     store: Store,
-    
+
     /// 当前 peer 链接数
     peer_conn_num: Arc<AtomicUsize>,
 }
 
 impl PeerManager {
-    pub fn new(config: Config, cancel_token: CancellationToken, emitter: Emitter) -> Self {
-        let store = Store::new(config.clone(), emitter.clone());
+    pub fn new(context: Context, emitter: Emitter) -> Self {
+        let store = Store::new(context.get_config().clone(), emitter.clone());
         Self {
-            cancel_token,
-            config,
+            context,
             gaskets: Arc::new(DashMap::new()),
             emitter,
             gasket_id: Arc::new(AtomicU64::new(0)),
@@ -104,8 +98,7 @@ impl PeerManager {
 
     fn get_context(&self) -> PeerManagerContext {
         PeerManagerContext {
-            config: self.config.clone(),
-            cancel_token: self.cancel_token.clone(),
+            context: self.context.clone(),
             emitter: self.emitter.clone(),
             gaskets: self.gaskets.clone(),
             gasket_id: self.gasket_id.clone(),
@@ -126,13 +119,13 @@ impl PeerManager {
 
 impl Runnable for PeerManager {
     async fn run(mut self) {
-        let (send, mut recv) = channel(self.config.channel_buffer());
+        let (send, mut recv) = channel(self.context.get_config().channel_buffer());
         self.emitter.register(PEER_MANAGER, send);
 
         info!("peer manager 已启动");
         loop {
             tokio::select! {
-                _ = self.cancel_token.cancelled() => {
+                _ = self.context.cancelled() => {
                     break;
                 }
                 recv = recv.recv() => {
