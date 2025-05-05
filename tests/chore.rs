@@ -1,6 +1,8 @@
 //! 这个是一些杂项的验证测试
 
+use dashmap::DashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -46,7 +48,7 @@ async fn test_tokio_select() {
                 match result {
                     Some(msg) => {
                         info!("接收到了消息：{}", msg);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                         true
                     }
                     None => {
@@ -160,4 +162,19 @@ fn test_instant_duration() {
     let end2 = start.elapsed();
     println!("{:?}", end);
     println!("{:?}", end2);
+}
+
+/// 这个会死锁
+#[ignore]
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn test_dashmap_deadlock() {
+    let map = Arc::new(DashMap::new());
+    map.insert(1, "");
+
+    let k = 1;
+    let value = map.get(&k); // 这里获取时，会拿到分段锁
+    let remove = map.remove(&k); // 前面的锁还没释放，这里再次尝试拿锁，拿不到，产生死锁
+    println!("{:?}", value);
+    println!("{:?}", remove);
 }

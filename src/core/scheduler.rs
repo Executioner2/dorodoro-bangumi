@@ -15,6 +15,7 @@ mod error;
 /// 多线程下的共享数据
 pub struct SchedulerContext {
     emitter: Emitter,
+    context: Context,
 }
 
 pub struct Scheduler {
@@ -30,6 +31,7 @@ impl Scheduler {
     pub fn get_context(&self) -> SchedulerContext {
         SchedulerContext {
             emitter: self.emitter.clone(),
+            context: self.context.clone()
         }
     }
 

@@ -127,3 +127,22 @@ async fn test_add_torrent() {
 
     socket.write(&[1u8]).await.unwrap();
 }
+
+/// 发送关机指令
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
+async fn test_shutdown() {
+    let mut socket = TcpStream::connect("127.0.0.1:3300").await.unwrap();
+    let mut bytes = vec![];
+    bytes
+        .write_u8(protocol::REMOTE_CONTROL_PROTOCOL.len() as u8)
+        .await
+        .unwrap();
+    bytes
+        .write(protocol::REMOTE_CONTROL_PROTOCOL)
+        .await
+        .unwrap();
+    socket.write(&bytes).await.unwrap(); // socket 连接上
+
+    socket.write(&[0u8]).await.unwrap();
+}

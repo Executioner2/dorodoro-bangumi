@@ -65,16 +65,9 @@ impl<'a> SocketBuilder<'a> {
 }
 
 /// 套接字的公共封装，便于多线程下，可以共享同一个套接字
+#[derive(Clone)]
 pub struct SocketArc {
     socket: Arc<UdpSocket>,
-}
-
-impl Clone for SocketArc {
-    fn clone(&self) -> Self {
-        Self {
-            socket: self.socket.clone(),
-        }
-    }
 }
 
 impl SocketArc {

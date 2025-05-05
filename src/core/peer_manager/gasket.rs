@@ -6,7 +6,7 @@ use crate::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::GASKET_PREFIX;
-use crate::peer;
+use crate::db::ConnWrapper;
 use crate::peer::Peer;
 use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{Command, StartWaittingAddr};
@@ -14,14 +14,16 @@ use crate::runtime::Runnable;
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
+use crate::{peer, util};
 use ahash::HashMap;
+use bincode::{Decode, Encode, config};
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
@@ -42,8 +44,8 @@ pub enum ExitReason {
     Exception,
 }
 
-#[derive(Eq, PartialEq)]
-enum PieceStatus {
+#[derive(Eq, PartialEq, Decode, Encode, Clone, Debug)]
+pub enum PieceStatus {
     /// 进行中
     Ing,
 
@@ -72,17 +74,18 @@ impl PeerInfo {
 pub struct GasketContext {
     peers: Arc<DashMap<u64, PeerInfo>>,
     peer_manager_context: PeerManagerContext,
-    bytefield: Arc<BytesMut>,
+    bytefield: Arc<Mutex<BytesMut>>,
     underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
     emitter: Emitter,
     download: Arc<AtomicU64>,
     torrent: TorrentArc,
-    download_path: Arc<PathBuf>,
+    save_path: Arc<PathBuf>,
     peer_id: Arc<[u8; 20]>,
     unstart_host: Arc<DashSet<Arc<SocketAddr>>>,
     gasket_transfer_id: String,
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
+    shutdown_lock: Arc<AtomicUsize>,
 }
 
 impl GasketContext {
@@ -102,42 +105,57 @@ impl GasketContext {
         self.peer_manager_context.context.get_config().clone()
     }
 
-    pub fn download_path(&self) -> &PathBuf {
-        &self.download_path
+    pub fn save_path(&self) -> &PathBuf {
+        &self.save_path
     }
 
-    pub fn bytefield(&self) -> Arc<BytesMut> {
-        self.bytefield.clone()
+    pub fn bytefield(&self) -> &Arc<Mutex<BytesMut>> {
+        &self.bytefield
     }
 
     pub async fn peer_exit(&mut self, peer_no: u64, reason: ExitReason) {
-        trace!("peer_no [{}] 退出了，退出原因: {:?}", peer_no, reason);
-        let peer = self.peers.remove(&peer_no);
-        trace!("成功移除 peer_no [{}]", peer_no);
-        if peer.is_none() {
+        debug!("peer_no [{}] 退出了，退出原因: {:?}", peer_no, reason);
+        if self.peer_manager_context.context.is_cancelled() {
             return;
         }
 
-        let mut peer = peer.unwrap().1;
-        if reason == ExitReason::NotHasJob {
-            peer.join_handle = None;
-            self.wait_queue.lock().await.push_back(peer);
-            return;
+        self.shutdown_lock.fetch_add(1, Ordering::SeqCst);
+
+        if let Some((_, mut peer)) = self.peers.remove(&peer_no) {
+            debug!("成功移除 peer_no [{}]", peer_no);
+            if reason == ExitReason::NotHasJob {
+                peer.join_handle = None;
+                self.wait_queue.lock().await.push_back(peer);
+            } else {
+                self.unstart_host.remove(&peer.addr);
+                trace!("将这个地址从不可用host中移除了");
+
+                // 从等待队列中唤醒一个
+                if let Err(e) = self
+                    .emitter
+                    .send(&self.gasket_transfer_id, StartWaittingAddr.into())
+                    .await
+                {
+                    error!("唤醒等待队列中的失败！{}", e);
+                }
+            }
         }
 
-        self.unstart_host.remove(&peer.addr);
-        trace!("将这个地址从不可用host中移除了");
-
-        // 从等待队列中唤醒一个
-        if let Err(e) = self
-            .emitter
-            .send(&self.gasket_transfer_id, StartWaittingAddr.into())
-            .await
-        {
-            error!("唤醒等待队列中的失败！{}", e);
-        }
-
+        self.shutdown_lock.fetch_sub(1, Ordering::Release);
         trace!("发送了唤醒消息");
+    }
+
+    /// 申请下载暂停了的分块
+    pub fn apply_download_pasue_piece(&self) -> Option<(u32, u32)> {
+        debug!("分块情况: {:?}", self.underway_bytefield);
+        for mut item in self.underway_bytefield.iter_mut() {
+            if let PieceStatus::Pause(block_offset) = item.value() {
+                let res = Some((*item.key(), *block_offset));
+                *item.value_mut() = PieceStatus::Ing;
+                return res;
+            }
+        }
+        None
     }
 
     /// 申请下载分块
@@ -161,7 +179,7 @@ impl GasketContext {
 
     /// 归还分块下载
     pub fn give_back_download_piece(&self, peer_no: u64, give_back: HashMap<u32, u32>) {
-        trace!("peer {} 归还下载分块", peer_no);
+        debug!("peer {} 归还下载分块", peer_no);
         for (piece_index, block_offset) in give_back {
             self.underway_bytefield
                 .insert(piece_index, PieceStatus::Pause(block_offset));
@@ -189,10 +207,22 @@ impl GasketContext {
     }
 
     /// 上报分块下载完成
-    pub fn reported_piece_finished(&self, piece_index: u32) {
+    pub async fn reported_piece_finished(&self, piece_index: u32) {
         self.underway_bytefield
             .get_mut(&piece_index)
             .map(|mut status| *status.value_mut() = PieceStatus::Finished);
+
+        let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
+        let mut bytefield = self.bytefield.lock().await;
+        bytefield.get_mut(index).map(|byte| *byte |= offset);
+
+        // 存数据库
+        let conn = self.peer_manager_context.context.get_conn().await.unwrap();
+        let mut stmt = conn
+            .prepare_cached("update torrent set bytefield = ?1 where info_hash = ?2")
+            .unwrap();
+        stmt.execute((bytefield.as_ref(), &self.torrent.info_hash))
+            .unwrap();
     }
 
     /// 上报读取到的数据大小
@@ -215,8 +245,8 @@ pub struct Gasket {
     /// 种子信息
     torrent: TorrentArc,
 
-    /// 下载路径
-    download_path: Arc<PathBuf>,
+    /// 保存路径
+    save_path: Arc<PathBuf>,
 
     /// peer_id 自增计数
     peer_no_count: Arc<AtomicU64>,
@@ -231,7 +261,7 @@ pub struct Gasket {
     uploaded: Arc<AtomicU64>,
 
     /// 这个是正儿八经下下来了的分块
-    bytefield: Arc<BytesMut>,
+    bytefield: Arc<Mutex<BytesMut>>,
 
     /// 正在下载中的分块
     underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
@@ -250,23 +280,24 @@ pub struct Gasket {
 
     /// peer 传输速率
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
+
+    /// 关机锁
+    shutdown_lock: Arc<AtomicUsize>,
 }
 
 impl Gasket {
-    pub fn new(
+    pub async fn new(
         id: u64,
         torrent: TorrentArc,
         context: PeerManagerContext,
         peer_id: Arc<[u8; 20]>,
-        download_path: PathBuf,
-        download: u64,
-        uploaded: u64,
         emitter: Emitter,
         store: Store,
     ) -> Self {
-        // todo - 计算有哪些分块是下载了的，哪些是还需要下载的
-        let min = ((torrent.info.pieces.len() / 20) + 7) / 8;
-        let bytefield = Arc::new(BytesMut::from(vec![0u8; min].as_slice()));
+        let (download, uploaded, path, bytefield, ub) = Self::recover_from_db(
+            context.context.get_conn().await.unwrap(),
+            &torrent.info_hash,
+        );
 
         Self {
             id,
@@ -275,17 +306,46 @@ impl Gasket {
             torrent,
             peer_no_count: Arc::new(AtomicU64::new(0)),
             peers: Arc::new(DashMap::new()),
-            download_path: Arc::new(download_path),
+            save_path: Arc::new(path),
             download: Arc::new(AtomicU64::new(download)),
             uploaded: Arc::new(AtomicU64::new(uploaded)),
-            bytefield,
-            underway_bytefield: Arc::new(DashMap::new()),
+            bytefield: Arc::new(Mutex::new(bytefield)),
+            underway_bytefield: Arc::new(ub),
             unstart_host: Arc::new(DashSet::new()),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
             store,
             peer_transfer_speed: Arc::new(DashMap::new()),
+            shutdown_lock: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// 从数据库中恢复状态
+    fn recover_from_db(
+        conn: ConnWrapper,
+        info_hash: &[u8; 20],
+    ) -> (u64, u64, PathBuf, BytesMut, DashMap<u32, PieceStatus>) {
+        let mut stmt = conn.prepare_cached("select download, uploaded, save_path, bytefield, underway_bytefield from torrent where info_hash = ?1").unwrap();
+        stmt.query_row([&info_hash], |row| {
+            let ub: Vec<(u32, PieceStatus)> = bincode::decode_from_slice(
+                row.get::<_, Vec<u8>>(4)?.as_slice(),
+                config::standard(),
+            )
+            .unwrap()
+            .0;
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, u64>(1)?,
+                PathBuf::from(row.get::<_, String>(2)?),
+                BytesMut::from(row.get::<_, Vec<u8>>(3)?.as_slice()),
+                ub.into_iter()
+                    .fold(DashMap::new(), |acc, item: (u32, PieceStatus)| {
+                        acc.insert(item.0, item.1);
+                        acc
+                    }),
+            ))
+        })
+        .unwrap()
     }
 
     fn get_context(&self) -> GasketContext {
@@ -298,11 +358,12 @@ impl Gasket {
             emitter: self.emitter.clone(),
             download: self.download.clone(),
             torrent: self.torrent.clone(),
-            download_path: self.download_path.clone(),
+            save_path: self.save_path.clone(),
             peer_id: self.peer_id.clone(),
             unstart_host: self.unstart_host.clone(),
             gasket_transfer_id: self.get_transfer_id(),
             peer_transfer_speed: self.peer_transfer_speed.clone(),
+            shutdown_lock: self.shutdown_lock.clone(),
         }
     }
 
@@ -370,9 +431,38 @@ impl Gasket {
     }
 
     async fn shutdown(self) {
+        // 等待 peer_exit 执行完成，避免下面读取 peers 和 peer_exit 中的 remove peer 操作形成死锁
+        while self.shutdown_lock.load(Ordering::Acquire) != 0 {}
+
+        debug!("等待 peers 关闭");
         for mut peer in self.peers.iter_mut() {
-            peer.join_handle.as_mut().map(async |handle| handle.await);
+            if let Some(handle) = peer.join_handle.take() {
+                handle.await.unwrap();
+            }
         }
+
+        debug!("保存下载进度");
+        let conn = self.peer_manager_context.context.get_conn().await.unwrap();
+        let ub = self
+            .underway_bytefield
+            .iter()
+            .map(|item| (item.key().clone(), (*item.value()).clone()))
+            .collect::<Vec<(u32, PieceStatus)>>();
+        let bytefield = self.bytefield.lock().await.clone();
+        let download = self.download.load(Ordering::Relaxed);
+        let uploaded = self.uploaded.load(Ordering::Relaxed);
+        let infohash = self.torrent.info_hash;
+
+        tokio::task::spawn_blocking(move || {
+            let mut stmt = conn.prepare_cached("update torrent set download = ?1, uploaded = ?2, bytefield = ?3, underway_bytefield = ?4 where info_hash = ?5").unwrap();
+            stmt.execute((
+                download,
+                uploaded,
+                bytefield.as_ref(),
+                bincode::encode_to_vec(ub, config::standard()).unwrap(),
+                infohash
+            )).unwrap();
+        }).await.unwrap();
     }
 
     fn get_transfer_id(&self) -> String {
@@ -418,6 +508,8 @@ impl Runnable for Gasket {
         trace!("启动 gasket");
         let tracker_handle = self.start_tracker();
         let speed_handle = tokio::spawn(start_speed_report(
+            self.download.clone(),
+            self.torrent.info.length,
             self.peer_transfer_speed.clone(),
             self.peer_manager_context.clone(),
         ));
@@ -425,7 +517,7 @@ impl Runnable for Gasket {
         loop {
             tokio::select! {
                 _ = self.peer_manager_context.context.cancelled() => {
-                    info!("peer 取消了请求");
+                    info!("gasket 退出");
                     break;
                 }
                 cmd = recv.recv() => {
@@ -443,11 +535,14 @@ impl Runnable for Gasket {
         speed_handle.await.unwrap();
         tracker_handle.await.unwrap();
         self.shutdown().await;
+        debug!("gasket {} 已退出！", transfer_id);
     }
 }
 
 /// 启动速率播报
 async fn start_speed_report(
+    download: Arc<AtomicU64>,
+    length: u64,
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
     peer_manager_context: PeerManagerContext,
 ) {
@@ -468,8 +563,11 @@ async fn start_speed_report(
                 });
                 window.push(speed).map(|head| sum -= head);
                 sum += speed;
-                info!("下载速度: {:.2} MiB/s", sum / window.len() as f64 / 1024.0 / 1024.0);
+                let download = download.load(Ordering::Relaxed);
+                info!("下载速度: {:.2} MiB/s\t当前进度: {:.2}%", sum / window.len() as f64 / 1024.0 / 1024.0, download as f64 / length as f64 * 100.0);
             }
         }
     }
+
+    debug!("速率播报已退出！")
 }

@@ -152,7 +152,7 @@ pub struct Peer {
     /// 当前正在下载的分块
     ///
     /// (分块下标 偏移位置 )
-    pub(crate) downloading_pieces: HashMap<u32, u32>,
+    pub(super) downloading_pieces: HashMap<u32, u32>,
 }
 
 impl Peer {
@@ -229,7 +229,7 @@ impl Peer {
         self.opposite_peer_id = Some(peer_id.try_into().unwrap());
 
         // 告诉对方自己拥有的分块
-        let bitfield = self.context.bytefield();
+        let bitfield = &*self.context.bytefield().lock().await;
         let mut bytes = Vec::with_capacity(5 + bitfield.len());
         WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1 + bitfield.len() as u32)?;
         WriteBytesExt::write_u8(&mut bytes, MsgType::Bitfield as u8)?;
@@ -278,7 +278,7 @@ impl Peer {
 
         let over = *offset >= piece_length;
         if !over {
-            trace!(
+            debug!(
                 "peer_no [{}] 请求下载分块 {} - {}",
                 self.no, piece_index, offset
             );
@@ -292,7 +292,6 @@ impl Peer {
                 min(piece_length - *offset, sharding_size),
             )?;
             self.writer.write_all(&req).await?;
-            *offset += sharding_size;
         } else {
             self.downloading_pieces.remove(&piece_index);
         }
@@ -322,10 +321,18 @@ impl Peer {
 
         let torrent = self.context.torrent();
         let bit_len = torrent.info.pieces.len() / 20;
+        
+        // 先下载暂停的分块
+        if let Some((piece_index, block_offset)) = self.context.apply_download_pasue_piece() {
+            debug!("peer_no [{}] 发现新的可下载分块：{}", self.no, piece_index);
+            self.downloading_pieces.insert(piece_index, block_offset);
+            self.request_block(piece_index).await?;
+            return Ok(true);
+        }
 
         for i in 0..bit_len {
             let (idx, offset) = util::bytes::bitmap_offset(i);
-
+        
             if let Some(true) = self
                 .opposite_peer_bitfield
                 .as_ref()
@@ -334,7 +341,7 @@ impl Peer {
                 let piece_index = i as u32;
                 if let Some(block_offset) = self.context.apply_download_piece(self.no, piece_index)
                 {
-                    trace!("peer_no [{}] 发现新的可下载分块：{}", self.no, i);
+                    debug!("peer_no [{}] 发现新的可下载分块：{}", self.no, i);
                     self.downloading_pieces.insert(piece_index, block_offset);
                     self.request_block(piece_index).await?;
                     return Ok(true);
@@ -447,6 +454,9 @@ impl Peer {
         let block_data_len = block_data.len();
         self.write_file(piece_index, block_offset, block_data).await;
 
+        let sharding_size = self.context.config().sharding_size();
+        let offset = self.downloading_pieces.entry(piece_index).or_insert(0);
+        *offset += sharding_size;
         self.secuessed_piece += 1;
 
         if self.request_block(piece_index).await? {
@@ -474,7 +484,7 @@ impl Peer {
 
         // tokio::spawn(async move {
             let torrent = context.torrent();
-            let path = context.download_path();
+            let path = context.save_path();
 
             for block_info in
                 torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
@@ -502,7 +512,7 @@ impl Peer {
         tokio::spawn(async move {
             trace!("开始校验 {} 个分块", piece_index);
             let torrent = context.torrent();
-            let path = context.download_path();
+            let path = context.save_path();
             let hash =
                 &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
             let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
@@ -514,7 +524,7 @@ impl Peer {
                 }
                 _ => {
                     trace!("第 {} 个分块校验通过", piece_index);
-                    context.reported_piece_finished(piece_index);
+                    context.reported_piece_finished(piece_index).await;
                 }
             }
         });
@@ -576,13 +586,14 @@ impl Runnable for Peer {
             }
         }
 
-        cancel.cancelled().await;
+        cancel.cancel();
         recv_handle.await.unwrap();
 
         // 归还未下完的分块
         self.context
             .give_back_download_piece(self.no, self.downloading_pieces);
         self.context.peer_exit(self.no, reason).await;
+        debug!("peer [{}] 已退出！", self.no);
     }
 }
 
@@ -601,6 +612,7 @@ impl Runnable for Recv {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
+                    debug!("recv [{}] 退出", self.no);
                     break;
                 }
                 result = &mut bt_resp => {
@@ -624,5 +636,7 @@ impl Runnable for Recv {
                 }
             }
         }
+        
+        debug!("recv [{}] 已退出！", self.no);
     }
 }

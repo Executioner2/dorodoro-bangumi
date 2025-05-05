@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct Config {
     inner: Arc<ConfigInner>,
 }
@@ -42,14 +43,6 @@ struct ConfigInner {
     
     /// peer 链接超时设定
     peer_connection_timeout: Duration,
-}
-
-impl Clone for Config {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl Config {

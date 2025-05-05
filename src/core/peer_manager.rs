@@ -2,15 +2,18 @@
 
 use crate::core::command::CommandHandler;
 use crate::core::context::Context;
-use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::PEER_MANAGER;
+use crate::core::emitter::Emitter;
 use crate::core::runtime::Runnable;
 use crate::peer_manager::command::Command;
+use crate::peer_manager::gasket::Gasket;
 use crate::store::Store;
+use crate::torrent::{Torrent, TorrentArc};
 use crate::tracker;
+use bincode::config;
 use dashmap::{DashMap, DashSet};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tracing::{error, info, trace};
@@ -108,11 +111,65 @@ impl PeerManager {
         }
     }
 
+    pub async fn start_gasket(&self, torrent: TorrentArc) {
+        let context = self.get_context();
+
+        let mut emitter = Emitter::new();
+        context.emitter.get(PEER_MANAGER).map(async |send| {
+            emitter.register(PEER_MANAGER, send);
+        });
+
+        let gasket_id = context.gasket_id.fetch_add(1, Ordering::Relaxed);
+        let peer_id = Arc::new(context.get_peer_id().await);
+        let gasket = Gasket::new(
+            gasket_id,
+            torrent,
+            context.clone(),
+            peer_id.clone(),
+            emitter,
+            context.store.clone(),
+        ).await;
+
+        let join_handle = tokio::spawn(gasket.run());
+        let gasket_info = GasketInfo {
+            id: gasket_id,
+            peer_id,
+            join_handle,
+        };
+
+        context.add_gasket(gasket_info).await;
+    }
+
+    /// 从数据库中加载任务
+    async fn load_task_from_db(&self) {
+        let conn = self.context.get_conn().await.unwrap();
+        let torrents = tokio::task::spawn_blocking(move || {
+            let mut stmt = conn.prepare_cached(r#"
+                select serial from torrent
+            "#).unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            let mut list = vec![];
+            while let Some(row) = rows.next().unwrap() {
+                let serial = row.get::<_, Vec<u8>>(0).unwrap();
+                let torrent: Torrent = bincode::decode_from_slice(serial.as_slice(), config::standard()).unwrap().0;
+                list.push(TorrentArc::new(torrent));
+            };
+            list
+        }).await.unwrap();
+        for torrent in torrents {
+            self.start_gasket(torrent).await;
+        }
+    }
+
     async fn shutdown(self) {
         self.emitter.remove(PEER_MANAGER);
         for mut item in self.gaskets.iter_mut() {
             let handle = &mut item.join_handle;
             handle.await.unwrap()
+        }
+        match self.store.flush_all() {
+            Ok(_) => info!("关机前 flush 数据到存储设备成功"),
+            Err(e) => error!("flush 数据到存储设备失败！！！\t{}", e)
         }
     }
 }
@@ -121,6 +178,7 @@ impl Runnable for PeerManager {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.context.get_config().channel_buffer());
         self.emitter.register(PEER_MANAGER, send);
+        self.load_task_from_db().await;
 
         info!("peer manager 已启动");
         loop {

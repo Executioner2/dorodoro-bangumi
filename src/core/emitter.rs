@@ -19,20 +19,13 @@ pub enum EmitterType {
     PeerManager,
 }
 
+#[derive(Clone)]
 pub struct Emitter {
     mpsc_senders: Arc<DashMap<String, Sender<TransferPtr>>>,
 }
 
 unsafe impl Send for Emitter {}
 unsafe impl Sync for Emitter {}
-
-impl Clone for Emitter {
-    fn clone(&self) -> Self {
-        Self {
-            mpsc_senders: self.mpsc_senders.clone(),
-        }
-    }
-}
 
 impl Emitter {
     pub fn new() -> Self {

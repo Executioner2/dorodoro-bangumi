@@ -20,23 +20,42 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// 种子状态
+pub enum TorrentStatus {
+    /// 下载
+    Download,
+    
+    /// 上传
+    Upload,
+
+    /// 暂停
+    Pasue,
+    
+    /// 完成
+    Finished,
+}
+
 /// 种子，多线程共享
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct TorrentArc {
     inner: Arc<Torrent>,
+}
+
+impl TorrentArc {
+    pub fn new(torrent: Torrent) -> Self {
+        Self {
+            inner: Arc::new(torrent)
+        }
+    }
 }
 
 impl TorrentArc {
     pub fn as_ptr(&self) -> *const Torrent {
         self.inner.as_ref() as *const Torrent
     }
-}
-
-impl Clone for TorrentArc {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
+    
+    pub fn inner(&self) -> &Torrent {
+        &*self.inner
     }
 }
 

@@ -19,18 +19,10 @@ enum DelayedTaskState {
     Finished,
 }
 
+#[derive(Clone)]
 pub struct CancelToken {
     cancel: Arc<AtomicBool>,
     waker: Arc<Mutex<Option<Waker>>>,
-}
-
-impl Clone for CancelToken {
-    fn clone(&self) -> Self {
-        Self {
-            cancel: self.cancel.clone(),
-            waker: self.waker.clone()
-        }
-    }
 }
 
 impl CancelToken {

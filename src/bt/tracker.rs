@@ -30,7 +30,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::channel;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 lazy_static! {
     /// 进程 id，发送给 Tracker 的，用于区分多开情况
@@ -132,6 +132,7 @@ impl Display for Event {
     }
 }
 
+#[derive(Clone)]
 pub struct AnnounceInfo {
     download: Arc<AtomicU64>,
     uploaded: Arc<AtomicU64>,
@@ -151,17 +152,6 @@ impl AnnounceInfo {
             uploaded,
             resource_size,
             port,
-        }
-    }
-}
-
-impl Clone for AnnounceInfo {
-    fn clone(&self) -> Self {
-        Self {
-            download: self.download.clone(),
-            uploaded: self.uploaded.clone(),
-            resource_size: self.resource_size,
-            port: self.port,
         }
     }
 }
@@ -414,6 +404,9 @@ impl Runnable for Tracker {
 
         loop {
             tokio::select! {
+                _ = self.peer_manager_context.context.cancelled() => {
+                    break
+                }
                 res = &mut delayed_task_handle => {
                     let interval = match res {
                         Some(interval) => {
@@ -430,5 +423,10 @@ impl Runnable for Tracker {
                 }
             }
         }
+
+        debug!(
+            "tracker {} 已退出！",
+            Tracker::get_transfer_id(&self.gasket_transfer_id)
+        )
     }
 }
