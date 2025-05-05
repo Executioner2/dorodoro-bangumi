@@ -12,17 +12,16 @@ use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::DiscoverPeerAddr;
 use crate::runtime::{DelayedTask, Runnable};
 use crate::torrent::TorrentArc;
-use crate::tracker::error::Error::{InvalidHost, PeerBytesInvalid};
+use crate::tracker::error::Error::PeerBytesInvalid;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
 use ahash::AHashSet;
 use core::fmt::Display;
-use core::str::FromStr;
 use error::Result;
 use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::RngCore;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -31,7 +30,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::channel;
-use tracing::{error, info, trace};
+use tracing::{error, info};
 
 lazy_static! {
     /// 进程 id，发送给 Tracker 的，用于区分多开情况
@@ -76,99 +75,6 @@ pub fn gen_process_key() -> u32 {
 // ===========================================================================
 // Peer Host
 // ===========================================================================
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct HostV4 {
-    ip: [u8; 4],
-    port: u16,
-}
-
-impl HostV4 {
-    pub fn new(ip: [u8; 4], port: u16) -> Self {
-        Self { ip, port }
-    }
-
-    pub fn ip(&self) -> [u8; 4] {
-        self.ip
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-}
-
-impl<T> TryFrom<(&str, T)> for HostV4
-where
-    T: TryInto<u16>,
-{
-    type Error = error::Error;
-
-    fn try_from((ip, port): (&str, T)) -> Result<Self> {
-        let ip = Ipv4Addr::from_str(ip).map_err(|_| InvalidHost)?.octets();
-        let port = port.try_into().map_err(|_| InvalidHost)?;
-        Ok(HostV4::new(ip, port))
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct HostV6 {
-    ip: [u8; 16],
-    port: u16,
-}
-
-impl HostV6 {
-    pub fn new(ip: [u8; 16], port: u16) -> Self {
-        Self { ip, port }
-    }
-
-    pub fn ip(&self) -> [u8; 16] {
-        self.ip
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-}
-
-impl<T> TryFrom<(&str, T)> for HostV6
-where
-    T: TryInto<u16>,
-{
-    type Error = error::Error;
-
-    fn try_from((ip, port): (&str, T)) -> Result<Self> {
-        let ip = Ipv6Addr::from_str(ip).map_err(|_| InvalidHost)?.octets();
-        let port = port.try_into().map_err(|_| InvalidHost)?;
-        Ok(HostV6::new(ip, port))
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum Host {
-    V4(HostV4),
-    V6(HostV6),
-}
-
-impl Into<SocketAddr> for Host {
-    fn into(self) -> SocketAddr {
-        match self {
-            Host::V4(host) => SocketAddr::new(IpAddr::from(host.ip()), host.port()),
-            Host::V6(host) => SocketAddr::new(IpAddr::from(host.ip()), host.port()),
-        }
-    }
-}
-
-impl From<([u8; 4], u16)> for Host {
-    fn from((ip, port): ([u8; 4], u16)) -> Self {
-        Self::V4(HostV4 { ip, port })
-    }
-}
-
-impl From<([u8; 16], u16)> for Host {
-    fn from((ip, port): ([u8; 16], u16)) -> Self {
-        Self::V6(HostV6 { ip, port })
-    }
-}
 
 /// 解析 peer 列表 - IpV4
 pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<SocketAddr>> {

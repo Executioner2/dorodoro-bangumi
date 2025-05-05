@@ -4,8 +4,7 @@ use bytes::Bytes;
 use dorodoro_bangumi::bencoding::{BEncodeHashMap, BEncoder};
 use dorodoro_bangumi::buffer::ByteBuffer;
 use dorodoro_bangumi::bytes::Bytes2Int;
-use dorodoro_bangumi::tracker::Host;
-use dorodoro_bangumi::{bencoding, hashmap, BoxWrapper};
+use dorodoro_bangumi::{BoxWrapper, bencoding, hashmap};
 use hashlink::LinkedHashMap;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -62,7 +61,7 @@ async fn main() {
             "a",
             hashmap!("id" => NODE_ID.to_box() as Box<dyn BEncoder>).to_box(),
         );
-        
+
         // 发送一个 ping
         let data = ping.encode();
         println!("发送一个ping");
@@ -86,7 +85,11 @@ async fn main() {
 
         println!("从{}那里读取ping的数据", addr);
         let mut buff = ByteBuffer::new(5120);
-        let res = tokio::time::timeout(Duration::from_secs(10), socket.recv_from(&mut buff.as_mut())).await;
+        let res = tokio::time::timeout(
+            Duration::from_secs(10),
+            socket.recv_from(&mut buff.as_mut()),
+        )
+        .await;
         if res.is_err() {
             println!("读取ping失败超时");
             continue;
@@ -152,7 +155,7 @@ async fn main() {
                 if min_dist >= dist {
                     let id = hex::encode(&data[..20]);
                     let ip_bytes: [u8; 4] = data[20..24].try_into().unwrap();
-                    let addr = Host::from((ip_bytes, u16::from_be_slice(&data[4..])));
+                    let addr = SocketAddr::from((ip_bytes, u16::from_be_slice(&data[4..])));
                     println!("加入了一个新的node: {}\taddr: {:?}", id, addr);
                     queue.push_back(addr.into());
                     min = min.min(dist);
@@ -162,10 +165,13 @@ async fn main() {
         } else if map.contains_key("peers") {
             println!("卧槽，找到可用的 peers 了");
             let peers = map.get_bytes_conetnt("peers").unwrap();
-            let peers = peers.chunks(6).map(|data| {
-                let ip_bytes: [u8; 4] = data[20..24].try_into().unwrap();
-                Host::from((ip_bytes, u16::from_be_slice(&data[4..])))
-            }).collect::<Vec<Host>>();
+            let peers = peers
+                .chunks(6)
+                .map(|data| {
+                    let ip_bytes: [u8; 4] = data[20..24].try_into().unwrap();
+                    SocketAddr::from((ip_bytes, u16::from_be_slice(&data[4..])))
+                })
+                .collect::<Vec<SocketAddr>>();
             println!("peers: {:?}", peers);
         }
     }
