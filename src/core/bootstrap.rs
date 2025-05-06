@@ -7,31 +7,7 @@ use crate::core::scheduler::Scheduler;
 use crate::core::tcp_server::TcpServer;
 use tracing::{info, trace};
 use crate::db::Db;
-
-static INIT_SQL: &str = r#"
-    CREATE TABLE "torrent" (
-      "id" INTEGER NOT NULL,
-      "info_hash" blob NOT NULL,
-      "serial" blob NOT NULL,
-      "status" INTEGER NOT NULL,
-      "download" INTEGER NOT NULL DEFAULT 0,
-      "uploaded" INTEGER NOT NULL DEFAULT 0,
-      "bytefield" blob NOT NULL,
-      "underway_bytefield" blob NOT NULL,
-      "save_path" text NOT NULL,
-      PRIMARY KEY ("id")
-    );
-    
-    CREATE UNIQUE INDEX "info_hash_idx"
-    ON "torrent" (
-      "info_hash"
-    );
-    
-    CREATE INDEX "status_idx"
-    ON "torrent" (
-      "status"
-    );
-"#;
+use crate::mapper;
 
 pub struct Bootstrap {}
 
@@ -42,7 +18,7 @@ impl Bootstrap {
         // 初始化通用资源
         trace!("初始化全局上下文");
         let config = Config::new();
-        let db = Db::new("db", "dorodoro-bangumi.db", INIT_SQL, config.database_conn_limit()).unwrap();
+        let db = Db::new(mapper::DB_SAVE_PATH, mapper::DB_NAME, mapper::INIT_SQL, config.database_conn_limit()).unwrap();
         let context = Context::new(db, config);
 
         // 命令发射器
