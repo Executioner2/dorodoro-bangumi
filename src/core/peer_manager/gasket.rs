@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
@@ -85,7 +85,6 @@ pub struct GasketContext {
     unstart_host: Arc<DashSet<Arc<SocketAddr>>>,
     gasket_transfer_id: String,
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
-    shutdown_lock: Arc<AtomicUsize>,
 }
 
 impl GasketContext {
@@ -119,8 +118,6 @@ impl GasketContext {
             return;
         }
 
-        self.shutdown_lock.fetch_add(1, Ordering::SeqCst);
-
         if let Some((_, mut peer)) = self.peers.remove(&peer_no) {
             debug!("成功移除 peer_no [{}]", peer_no);
             if reason == ExitReason::NotHasJob {
@@ -141,7 +138,6 @@ impl GasketContext {
             }
         }
 
-        self.shutdown_lock.fetch_sub(1, Ordering::Release);
         trace!("发送了唤醒消息");
     }
 
@@ -280,9 +276,6 @@ pub struct Gasket {
 
     /// peer 传输速率
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
-
-    /// 关机锁
-    shutdown_lock: Arc<AtomicUsize>,
 }
 
 impl Gasket {
@@ -316,7 +309,6 @@ impl Gasket {
             emitter,
             store,
             peer_transfer_speed: Arc::new(DashMap::new()),
-            shutdown_lock: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -363,7 +355,6 @@ impl Gasket {
             unstart_host: self.unstart_host.clone(),
             gasket_transfer_id: self.get_transfer_id(),
             peer_transfer_speed: self.peer_transfer_speed.clone(),
-            shutdown_lock: self.shutdown_lock.clone(),
         }
     }
 
@@ -431,12 +422,15 @@ impl Gasket {
     }
 
     async fn shutdown(self) {
-        // 等待 peer_exit 执行完成，避免下面读取 peers 和 peer_exit 中的 remove peer 操作形成死锁
-        while self.shutdown_lock.load(Ordering::Acquire) != 0 {}
-
+        // 先把任务句柄读取出来，避免在循环中等待任务结束，以免和 peer_exit 中的 remove peer 操作形成死锁
         debug!("等待 peers 关闭");
-        for mut peer in self.peers.iter_mut() {
-            if let Some(handle) = peer.join_handle.take() {
+        let handles = self
+            .peers
+            .iter_mut()
+            .map(|mut item| item.join_handle.take())
+            .collect::<Vec<Option<JoinHandle<()>>>>();
+        for handle in handles {
+            if let Some(handle) = handle {
                 handle.await.unwrap();
             }
         }
