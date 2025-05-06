@@ -321,7 +321,7 @@ impl Peer {
 
         let torrent = self.context.torrent();
         let bit_len = torrent.info.pieces.len() / 20;
-        
+
         // 先下载暂停的分块
         if let Some((piece_index, block_offset)) = self.context.apply_download_pasue_piece() {
             debug!("peer_no [{}] 发现新的可下载分块：{}", self.no, piece_index);
@@ -332,14 +332,17 @@ impl Peer {
 
         for i in 0..bit_len {
             let (idx, offset) = util::bytes::bitmap_offset(i);
-        
+
             if let Some(true) = self
                 .opposite_peer_bitfield
                 .as_ref()
                 .map(|bytes| bytes[idx] & offset != 0)
             {
                 let piece_index = i as u32;
-                if let Some(block_offset) = self.context.apply_download_piece(self.no, piece_index)
+                if let Some(block_offset) = self
+                    .context
+                    .apply_download_piece(self.no, piece_index)
+                    .await
                 {
                     debug!("peer_no [{}] 发现新的可下载分块：{}", self.no, i);
                     self.downloading_pieces.insert(piece_index, block_offset);
@@ -443,7 +446,6 @@ impl Peer {
     /// 对端给我们发来了数据
     async fn handle_piece(&mut self, mut bytes: Bytes) -> Result<()> {
         trace!("peer_no [{}] 收到了对端发来的数据", self.no);
-        // 下载到本地
         if bytes.len() < 8 {
             return Err(ResponseDataIncomplete);
         }
@@ -483,22 +485,22 @@ impl Peer {
         let sender = self.emitter.get(&Self::get_transfer_id(self.no)).unwrap();
 
         // tokio::spawn(async move {
-            let torrent = context.torrent();
-            let path = context.save_path();
+        let torrent = context.torrent();
+        let path = context.save_path();
 
-            for block_info in
-                torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
-            {
-                let data = block_data.split_to(block_info.len);
-                if store.write(block_info, data).await.is_err() {
-                    let cmd = PieceWriteFailed {
-                        piece_index,
-                        block_offset,
-                    }
-                    .into();
-                    sender.send(cmd).await.unwrap();
+        for block_info in
+            torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
+        {
+            let data = block_data.split_to(block_info.len);
+            if store.write(block_info, data).await.is_err() {
+                let cmd = PieceWriteFailed {
+                    piece_index,
+                    block_offset,
                 }
+                .into();
+                sender.send(cmd).await.unwrap();
             }
+        }
         // });
     }
 
@@ -636,7 +638,7 @@ impl Runnable for Recv {
                 }
             }
         }
-        
+
         debug!("recv [{}] 已退出！", self.no);
     }
 }

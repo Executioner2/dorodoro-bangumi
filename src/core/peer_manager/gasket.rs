@@ -51,9 +51,6 @@ pub enum PieceStatus {
 
     /// 暂停，未开始也用这个标记
     Pause(u32),
-
-    /// 已完成
-    Finished,
 }
 
 struct PeerInfo {
@@ -155,21 +152,27 @@ impl GasketContext {
     }
 
     /// 申请下载分块
-    pub fn apply_download_piece(&self, peer_no: u64, piece_index: u32) -> Option<u32> {
+    pub async fn apply_download_piece(&self, peer_no: u64, piece_index: u32) -> Option<u32> {
         trace!("peer {} 申请下载分块: {}", peer_no, piece_index);
         let mut res = None;
-        self.underway_bytefield
-            .entry(piece_index)
-            .and_modify(|value| {
-                if let PieceStatus::Pause(block_offset) = value {
-                    res = Some(*block_offset);
-                    *value = PieceStatus::Ing
-                }
-            })
-            .or_insert_with(|| {
-                res = Some(0);
-                PieceStatus::Ing
-            });
+
+        let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
+        let mut bytefield = self.bytefield.lock().await;
+        if bytefield.get_mut(index).map(|byte| *byte & offset) == Some(0) {
+            self.underway_bytefield
+                .entry(piece_index)
+                .and_modify(|value| {
+                    if let PieceStatus::Pause(block_offset) = value {
+                        res = Some(*block_offset);
+                        *value = PieceStatus::Ing
+                    }
+                })
+                .or_insert_with(|| {
+                    res = Some(0);
+                    PieceStatus::Ing
+                });
+        }
+
         res
     }
 
@@ -204,13 +207,11 @@ impl GasketContext {
 
     /// 上报分块下载完成
     pub async fn reported_piece_finished(&self, piece_index: u32) {
-        self.underway_bytefield
-            .get_mut(&piece_index)
-            .map(|mut status| *status.value_mut() = PieceStatus::Finished);
-
         let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
         let mut bytefield = self.bytefield.lock().await;
         bytefield.get_mut(index).map(|byte| *byte |= offset);
+
+        self.underway_bytefield.remove(&piece_index);
 
         // 存数据库
         let conn = self.peer_manager_context.context.get_conn().await.unwrap();
