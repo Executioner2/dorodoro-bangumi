@@ -20,21 +20,6 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// 种子状态
-pub enum TorrentStatus {
-    /// 下载
-    Download,
-    
-    /// 上传
-    Upload,
-
-    /// 暂停
-    Pasue,
-    
-    /// 完成
-    Finished,
-}
-
 /// 种子，多线程共享
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct TorrentArc {

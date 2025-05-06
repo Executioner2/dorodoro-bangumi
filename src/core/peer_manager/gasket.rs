@@ -6,7 +6,7 @@ use crate::command::CommandHandler;
 use crate::core::config::Config;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::GASKET_PREFIX;
-use crate::db::ConnWrapper;
+use crate::mapper::torrent::{TorrentEntity, TorrentMapper};
 use crate::peer::Peer;
 use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{Command, StartWaittingAddr};
@@ -16,7 +16,7 @@ use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
 use crate::{peer, util};
 use ahash::HashMap;
-use bincode::{Decode, Encode, config};
+use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
 use std::collections::VecDeque;
@@ -214,11 +214,9 @@ impl GasketContext {
 
         // 存数据库
         let conn = self.peer_manager_context.context.get_conn().await.unwrap();
-        let mut stmt = conn
-            .prepare_cached("update torrent set bytefield = ?1 where info_hash = ?2")
-            .unwrap();
-        stmt.execute((bytefield.as_ref(), &self.torrent.info_hash))
-            .unwrap();
+        conn.update_bytefield(bytefield.as_ref(), &self.torrent.info_hash);
+
+        // 异步广播
     }
 
     /// 上报读取到的数据大小
@@ -287,10 +285,8 @@ impl Gasket {
         emitter: Emitter,
         store: Store,
     ) -> Self {
-        let (download, uploaded, path, bytefield, ub) = Self::recover_from_db(
-            context.context.get_conn().await.unwrap(),
-            &torrent.info_hash,
-        );
+        let conn = context.context.get_conn().await.unwrap();
+        let entity = conn.recover_from_db(&torrent.info_hash);
 
         Self {
             id,
@@ -299,45 +295,17 @@ impl Gasket {
             torrent,
             peer_no_count: Arc::new(AtomicU64::new(0)),
             peers: Arc::new(DashMap::new()),
-            save_path: Arc::new(path),
-            download: Arc::new(AtomicU64::new(download)),
-            uploaded: Arc::new(AtomicU64::new(uploaded)),
-            bytefield: Arc::new(Mutex::new(bytefield)),
-            underway_bytefield: Arc::new(ub),
+            save_path: Arc::new(entity.save_path.unwrap()),
+            download: Arc::new(AtomicU64::new(entity.download.unwrap())),
+            uploaded: Arc::new(AtomicU64::new(entity.uploaded.unwrap())),
+            bytefield: Arc::new(Mutex::new(entity.bytefield.unwrap())),
+            underway_bytefield: entity.underway_bytefield.unwrap(),
             unstart_host: Arc::new(DashSet::new()),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
             store,
             peer_transfer_speed: Arc::new(DashMap::new()),
         }
-    }
-
-    /// 从数据库中恢复状态
-    fn recover_from_db(
-        conn: ConnWrapper,
-        info_hash: &[u8; 20],
-    ) -> (u64, u64, PathBuf, BytesMut, DashMap<u32, PieceStatus>) {
-        let mut stmt = conn.prepare_cached("select download, uploaded, save_path, bytefield, underway_bytefield from torrent where info_hash = ?1").unwrap();
-        stmt.query_row([&info_hash], |row| {
-            let ub: Vec<(u32, PieceStatus)> = bincode::decode_from_slice(
-                row.get::<_, Vec<u8>>(4)?.as_slice(),
-                config::standard(),
-            )
-            .unwrap()
-            .0;
-            Ok((
-                row.get::<_, u64>(0)?,
-                row.get::<_, u64>(1)?,
-                PathBuf::from(row.get::<_, String>(2)?),
-                BytesMut::from(row.get::<_, Vec<u8>>(3)?.as_slice()),
-                ub.into_iter()
-                    .fold(DashMap::new(), |acc, item: (u32, PieceStatus)| {
-                        acc.insert(item.0, item.1);
-                        acc
-                    }),
-            ))
-        })
-        .unwrap()
     }
 
     fn get_context(&self) -> GasketContext {
@@ -437,26 +405,15 @@ impl Gasket {
 
         debug!("保存下载进度");
         let conn = self.peer_manager_context.context.get_conn().await.unwrap();
-        let ub = self
-            .underway_bytefield
-            .iter()
-            .map(|item| (item.key().clone(), (*item.value()).clone()))
-            .collect::<Vec<(u32, PieceStatus)>>();
-        let bytefield = self.bytefield.lock().await.clone();
-        let download = self.download.load(Ordering::Relaxed);
-        let uploaded = self.uploaded.load(Ordering::Relaxed);
-        let infohash = self.torrent.info_hash;
-
-        tokio::task::spawn_blocking(move || {
-            let mut stmt = conn.prepare_cached("update torrent set download = ?1, uploaded = ?2, bytefield = ?3, underway_bytefield = ?4 where info_hash = ?5").unwrap();
-            stmt.execute((
-                download,
-                uploaded,
-                bytefield.as_ref(),
-                bincode::encode_to_vec(ub, config::standard()).unwrap(),
-                infohash
-            )).unwrap();
-        }).await.unwrap();
+        let entity = TorrentEntity {
+            underway_bytefield: Some(self.underway_bytefield.clone()),
+            info_hash: Some(self.torrent.info_hash.to_vec()),
+            bytefield: Some(self.bytefield.lock().await.clone()),
+            download: Some(self.download.load(Ordering::Relaxed)),
+            uploaded: Some(self.uploaded.load(Ordering::Relaxed)),
+            ..Default::default()
+        };
+        conn.save_progress(entity);
     }
 
     fn get_transfer_id(&self) -> String {
