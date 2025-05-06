@@ -12,48 +12,25 @@ use crate::torrent::BlockInfo;
 use bytes::Bytes;
 use dashmap::DashMap;
 use error::Result;
+use memmap2::MmapMut;
 use sha1::{Digest, Sha1};
-use std::cmp::Ordering;
-use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use tokio::sync::Semaphore;
-
-struct Block {
-    offset: u64,
-    data: Bytes,
-}
-
-impl PartialEq for Block {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset
-    }
-}
-
-impl Eq for Block {}
-
-impl PartialOrd for Block {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.offset.cmp(&other.offset))
-    }
-}
-
-impl Ord for Block {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.offset.cmp(&other.offset)
-    }
-}
+use crate::store::error::Error::FileLengthError;
 
 struct FileWriter {
     /// 文件路径
     path: PathBuf,
 
     /// 写入缓冲区
-    blocks: BTreeSet<Block>,
+    mmap: Option<MmapMut>,
 
     /// 总缓冲大小
     buf_size: usize,
@@ -69,7 +46,7 @@ impl FileWriter {
     pub fn new(path: PathBuf, file_len: u64) -> Self {
         Self {
             path,
-            blocks: BTreeSet::default(),
+            mmap: None,
             buf_size: 0,
             file_len,
             write_len: 0,
@@ -82,7 +59,7 @@ impl FileWriter {
             .read(true)
             .create(true)
             .open_with_parent_dirs(&self.path)?;
-        if file.metadata()?.len() == 0 {
+        if file.metadata()?.len() < self.file_len {
             file.set_len(self.file_len)?;
         }
         Ok(file)
@@ -90,32 +67,38 @@ impl FileWriter {
 
     /// 返回 false 表示还没有完结，否则反之
     fn flush(&mut self) -> Result<(bool, usize)> {
-        if self.blocks.is_empty() {
+        if self.mmap.is_none() {
             return Ok((false, 0));
         }
 
-        // 合并连续块，并刷进磁盘
-        let mut buf = BufWriter::with_capacity(self.buf_size, self.get_file()?);
-        let mut prev_offset = 0;
-        while let Some(block) = self.blocks.pop_first() {
-            if prev_offset != block.offset {
-                buf.seek(SeekFrom::Start(block.offset))?;
-            }
-            buf.write_all(&block.data)?;
-            prev_offset = block.offset + block.data.len() as u64;
-        }
+        let mmap = self.mmap.as_ref().unwrap();
+        mmap.flush()?;
 
-        buf.flush()?;
         let wrtie_len = self.buf_size;
         self.write_len += wrtie_len as u64;
         self.buf_size = 0;
+
         Ok((self.write_len >= self.file_len, wrtie_len))
     }
 
-    fn write(&mut self, offset: u64, data: Bytes) {
+    fn write(&mut self, offset: u64, data: Bytes) -> Result<()> {
         self.buf_size += data.len();
-        let block = Block { offset, data };
-        self.blocks.insert(block);
+        if self.mmap.is_none() {
+            self.mmap = Some(unsafe { MmapMut::map_mut(&self.get_file()?)? })
+        }
+        let end = (offset + data.len() as u64) as usize;
+        if end as u64 > self.file_len {
+            return Err(FileLengthError(self.file_len, end as u64));
+        }
+        self.mmap.as_mut().map(|mmap| {
+            mmap[offset as usize..end].copy_from_slice(&data);
+        });
+        let mmap = match self.mmap.take() {
+            None => unsafe { MmapMut::map_mut(&self.get_file()?)? },
+            Some(mmap) => mmap,
+        };
+        self.mmap = Some(mmap);
+        Ok(())
     }
 }
 
@@ -182,7 +165,7 @@ impl Store {
         self.file_writer
             .entry(block_info.filepath.clone())
             .or_insert(FileWriter::new(block_info.filepath, block_info.file_len))
-            .write(block_info.start, data);
+            .write(block_info.start, data)?;
 
         if self.buf_size.load(AtomicOrdering::Acquire) >= self.config.buf_limit() {
             self.flush_all()

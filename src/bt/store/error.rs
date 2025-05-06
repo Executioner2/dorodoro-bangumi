@@ -5,6 +5,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     IoError(std::io::Error),
     AcquireError(tokio::sync::AcquireError),
+    FileLengthError(u64, u64),
 }
 
 impl std::fmt::Display for Error {
@@ -12,6 +13,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::IoError(e) => write!(f, "IO error: {}", e),
             Error::AcquireError(e) => write!(f, "acquire error: {}", e),
+            Error::FileLengthError(a, b) => write!(f, "file length error: 期望值: {}\t实际值: {}", a, b),
         }
     }
 }
@@ -33,6 +35,7 @@ impl std::error::Error for Error {
         match self {
             Error::IoError(e) => Some(e),
             Error::AcquireError(e) => Some(e),
+            _ => None
         }
     }
 }

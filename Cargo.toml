@@ -25,6 +25,7 @@ ahash = "0.8.11"
 dashmap = "6.1.0"
 rusqlite = { version = "0.35.0", features = ["bundled"] }
 bincode = "2.0.1"
+memmap2 = "0.9.5"
 
 [dev-dependencies]
 criterion = "0.5.1"

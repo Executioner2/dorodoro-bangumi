@@ -3,11 +3,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use dashmap::DashMap;
+use memmap2::MmapMut;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::time::Duration;
 use crate::buffer::ByteBuffer;
-use crate::fs::AsyncOpenOptionsExt;
+use crate::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
 
 // 包装 File 并记录写入次数
 struct InstrumentedFile {
@@ -156,4 +157,22 @@ fn test_iter_remove() {
     // }
     
     println!("{:?}", map);
+}
+
+/// 尝试使用 mmap 落盘
+#[test]
+fn test_mmap() {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create(true)
+        .open_with_parent_dirs("./tests/resources/test_mmap.txt")
+        .unwrap();
+    file.set_len(10).unwrap();
+    
+    let mut mmap = unsafe { MmapMut::map_mut(&file) }.unwrap();
+    mmap[0..5].copy_from_slice(b"hello");
+    // thread::sleep(Duration::from_secs(5));
+    mmap[5..10].copy_from_slice(b"world");
+    mmap.flush().unwrap()
 }
