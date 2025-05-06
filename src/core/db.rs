@@ -13,13 +13,14 @@ use std::fs::DirBuilder;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 type Pool = Arc<Mutex<VecDeque<Connection>>>;
 
 pub struct ConnWrapper {
     connection: Option<Connection>,
     pool: Pool,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl Deref for ConnWrapper {
@@ -34,15 +35,18 @@ impl Deref for ConnWrapper {
 
 impl DerefMut for ConnWrapper {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.connection.as_mut().expect("Connection always exists when in use")
+        self.connection
+            .as_mut()
+            .expect("Connection always exists when in use")
     }
 }
 
 impl ConnWrapper {
-    fn new(connection: Connection, pool: Pool) -> Self {
+    fn new(connection: Connection, pool: Pool, _permit: OwnedSemaphorePermit) -> Self {
         Self {
             connection: Some(connection),
             pool,
+            _permit,
         }
     }
 }
@@ -96,7 +100,6 @@ impl Db {
             None => Connection::open(&*self.filepath)?,
             Some(conn) => conn,
         };
-        drop(permit);
-        Ok(ConnWrapper::new(conn, self.pool.clone()))
+        Ok(ConnWrapper::new(conn, self.pool.clone(), permit))
     }
 }

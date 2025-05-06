@@ -2,6 +2,8 @@ use super::error::Result;
 use crate::core::db::Db;
 use crate::torrent::{Parse, Torrent};
 use bincode::config;
+use std::sync::Arc;
+use std::time::Duration;
 
 static INIT_SQL: &str = r#"
 CREATE TABLE "torrent" (
@@ -28,7 +30,7 @@ ON "torrent" (
 /// 测试创建 db
 #[tokio::test]
 async fn test_create_db() -> Result<()> {
-    let db = Db::new("db", "dorodoro-bangumi.db", INIT_SQL, 10)?;
+    let db = Db::new("db", "test.db", INIT_SQL, 10)?;
     let conn = db.get_conn().await?;
     let mut stmt = conn.prepare("select count(*) from torrent")?;
     let res: u32 = stmt.query_row([], |row| row.get(0))?;
@@ -39,7 +41,7 @@ async fn test_create_db() -> Result<()> {
 /// 测试插入一条 torrent 记录
 #[tokio::test]
 async fn test_insert_and_query_torrent() -> Result<()> {
-    let db = Db::new("db", "dorodoro-bangumi.db", INIT_SQL, 10)?;
+    let db = Db::new("db", "test.db", INIT_SQL, 10)?;
     let conn = db.get_conn().await?;
 
     let torrent = Torrent::parse_torrent("./tests/resources/test6.torrent").unwrap();
@@ -57,5 +59,35 @@ async fn test_insert_and_query_torrent() -> Result<()> {
 
     assert_eq!(res, torrent);
 
+    Ok(())
+}
+
+/// 多线程下，获取链接
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_get_conn() -> Result<()> {
+    let db = Arc::new(Db::new("db", "test.db", INIT_SQL, 10)?);
+    let mut handles = Vec::with_capacity(15);
+    for i in 0..15 {
+        let d = db.clone();
+        handles.push(tokio::spawn(async move {
+            let conn = d.get_conn().await.unwrap();
+            println!("第 {i} 个 task 获得了链接");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let mut stmt = conn.prepare_cached("select count(*) from torrent").unwrap();
+            let res: u32 = stmt.query_row([], |row| {
+                row.get(0)
+            }).unwrap();
+            println!("第 {i} 个 task 的查询结果: {res}");
+        }))
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    
+    println!("当前连接池的长度: {}", db.pool.lock().unwrap().len());
+    assert_eq!(db.pool.lock().unwrap().len(), 10);
+    
     Ok(())
 }
