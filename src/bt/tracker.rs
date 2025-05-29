@@ -375,6 +375,17 @@ impl Tracker {
         &self,
         delay: u64,
     ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
+        use std::str::FromStr;
+        let delay = delay + 99999999;
+        let cmd = DiscoverPeerAddr {
+            peers: vec![SocketAddr::from_str("192.168.2.177:3115").unwrap()],
+            // peers: vec![SocketAddr::from_str("192.168.2.242:3115").unwrap()],
+        }
+            .into();
+        self.emitter
+            .send(&self.gasket_transfer_id, cmd)
+            .await
+            .unwrap();
         let send_to_gasket: Sender<TransferPtr> =
             self.emitter.get(&self.gasket_transfer_id).unwrap();
         let task = Tracker::scan_tracker(

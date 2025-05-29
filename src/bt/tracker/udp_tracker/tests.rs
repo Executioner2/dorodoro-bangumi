@@ -291,7 +291,7 @@ async fn request_download() {
             )
             .unwrap();
             // if i == piece_num - 1 {
-            //     println!("分片偏移: {}\t下载分片大小: {}", sharding_offset, min(piece_length - sharding_offset, sharding_size))
+            //     println!("分片偏移: {}\t下载分片大小: {}", sharding_offset, min(piece_length - sharding_offset, block_size))
             // }
             let len = req.len() as u32 - 4;
             req[0..4].copy_from_slice(&len.to_be_bytes());

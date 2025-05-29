@@ -1,5 +1,4 @@
-use crate::buffer::ByteBuffer;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -9,8 +8,7 @@ use tracing::{error, trace};
 
 pub struct ReaderHandle<'a, T: AsyncRead + Unpin> {
     stream: &'a mut T,
-    buf: ByteBuffer,
-    read_count: usize,
+    buf: BytesMut,
     addr: &'a SocketAddr,
 }
 
@@ -18,15 +16,13 @@ impl<'a, T: AsyncRead + Unpin> ReaderHandle<'a, T> {
     pub fn new(stream: &'a mut T, addr: &'a SocketAddr, read_len: usize) -> Self {
         Self {
             stream,
-            buf: ByteBuffer::new(read_len),
-            read_count: 0,
+            buf: BytesMut::with_capacity(read_len),
             addr,
         }
     }
 
     pub fn reset(&mut self, read_len: usize) {
-        self.buf = ByteBuffer::new(read_len);
-        self.read_count = 0;
+        self.buf = BytesMut::with_capacity(read_len);
     }
 }
 
@@ -35,12 +31,12 @@ impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        if this.buf.len() == 0 {
+        if this.buf.capacity() == 0 {
             return Poll::Ready(Ok(Bytes::new()));
         }
-
         loop {
-            let mut read_buf = ReadBuf::new(&mut this.buf[this.read_count..]);
+            let spare = this.buf.spare_capacity_mut();
+            let mut read_buf = ReadBuf::uninit(spare);
             match Pin::new(&mut this.stream).poll_read(cx, &mut read_buf) {
                 Poll::Ready(Ok(())) => {
                     let filled = read_buf.filled().len();
@@ -48,10 +44,9 @@ impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
                         trace!("客户端主动说bye-bye");
                         return Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()));
                     }
-                    this.read_count += filled;
-                    if this.read_count >= this.buf.capacity() {
-                        let buf = this.buf.take();
-                        return Poll::Ready(Ok(buf));
+                    unsafe { this.buf.advance_mut(filled); }
+                    if this.buf.len() >= this.buf.capacity() {
+                        return Poll::Ready(Ok(this.buf.split().freeze()));
                     }
                 }
                 Poll::Ready(Err(e)) => {

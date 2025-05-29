@@ -14,8 +14,8 @@ struct ConfigInner {
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
 
-    /// 分片大小
-    sharding_size: u32,
+    /// 块大小
+    block_size: u32,
 
     /// 单个 peer 同时请求下载的分片的数量
     con_req_piece_limit: usize,
@@ -51,8 +51,8 @@ impl Config {
             inner: Arc::new(ConfigInner {
                 channel_buffer: 100,
                 tcp_server_addr: "127.0.0.1:3300".parse().unwrap(),
-                sharding_size: 1 << 14,
-                con_req_piece_limit: 5,
+                block_size: 1 << 14,
+                con_req_piece_limit: 100,
                 sucessed_recv_piece: 64, // 按照一次响应 16384 个字节，64 次响应成功，即为响应了 1MB 的数据
                 buf_limit: 16 << 20, // 16MB 的写入缓存
                 hash_chunk_size: 512,
@@ -80,9 +80,9 @@ impl Config {
         self
     }
     
-    pub fn set_sharding_size(mut self, sharding_size: u32) -> Self {
+    pub fn set_block_size(mut self, block_size: u32) -> Self {
         Arc::get_mut(&mut self.inner).map(|inner| {
-            inner.sharding_size = sharding_size;
+            inner.block_size = block_size;
         });
         self
     }
@@ -158,8 +158,8 @@ impl Config {
         self.inner.tcp_server_addr
     }
     
-    pub fn sharding_size(&self) -> u32 {
-        self.inner.sharding_size
+    pub fn block_size(&self) -> u32 {
+        self.inner.block_size
     }
 
     pub fn con_req_piece_limit(&self) -> usize {

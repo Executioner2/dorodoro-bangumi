@@ -21,6 +21,10 @@ impl<T> FixedQueue<T> {
         self.queue.push_back(item);
         res
     }
+    
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
 
     pub fn iter(&self) -> std::collections::vec_deque::Iter<T> {
         self.queue.iter()
@@ -28,5 +32,13 @@ impl<T> FixedQueue<T> {
 
     pub fn len(&self) -> usize {
         self.queue.len()
+    }
+    
+    pub fn clear(&mut self) {
+        self.queue.clear();
+    }
+    
+    pub fn back(&self) -> Option<&T> {
+        self.queue.back()
     }
 }

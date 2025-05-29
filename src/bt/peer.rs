@@ -7,10 +7,13 @@
 
 pub mod command;
 mod error;
-mod future;
+pub mod future;
+mod listener;
+mod rate_control;
 
 use crate::bytes::Bytes2Int;
 use crate::command::CommandHandler;
+use crate::config::Config;
 use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
 };
@@ -18,32 +21,41 @@ use crate::core::runtime::Runnable;
 use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
 use crate::emitter::transfer::TransferPtr;
-use crate::peer::command::{Exit, PeerTransfer, PieceCheckoutFailed, PieceWriteFailed};
+use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::error::Error;
 use crate::peer::error::Error::{
     BitfieldError, HandshakeError, ResponseDataIncomplete, TryFromError,
 };
-use crate::peer::future::BtResp;
+use crate::peer::listener::{ReadFuture, WriteFuture};
+use crate::peer::rate_control::probe::{Dashbord, Probe};
+use crate::peer::rate_control::{PacketSend, RateControl};
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use crate::store::Store;
+use crate::timer::CountdownTimer;
+use crate::torrent::TorrentArc;
 use crate::util;
-use ahash::HashMap;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
 use error::Result;
+use fnv::FnvHashMap;
 use std::cmp::min;
 use std::mem;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
+
+const MSS: u32 = 17;
 
 /// Peer 通信的消息类型
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum MsgType {
     /// 我现在还不想接收你的请求
     ///
@@ -93,6 +105,9 @@ pub enum MsgType {
     Cancel,
 }
 
+unsafe impl Send for MsgType {}
+unsafe impl Sync for MsgType {}
+
 impl TryFrom<u8> for MsgType {
     type Error = Error;
 
@@ -112,21 +127,175 @@ enum Status {
     _Wait, // 等待新的分块下载
 }
 
-pub struct Peer {
+#[derive(Debug)]
+pub struct Piece {
+    /// 完成的偏移，如果重新开启任务，下一次从这个地方开始请求
+    block_offset: u32,
+
+    /// 分片位图，完成了的 block 置为 1
+    bitmap: Vec<u8>,
+
+    // 位图的实际长度，即去除填充 0 的部分
+    // len: usize,
+    /// 分块大小
+    block_size: u32,
+
+    /// 分片大小
+    piece_size: u32,
+
+    /// 是否完成
+    finish: bool,
+}
+
+impl Piece {
+    fn new(piece_size: u32, block_size: u32) -> Self {
+        let share = Self::block_offset_idx(piece_size, block_size);
+        let len = (share + 7) >> 3;
+        let bitmap = vec![0u8; len as usize];
+        Self {
+            block_offset: 0,
+            bitmap,
+            // len: ((len * 8) - (share & 7)) as usize,
+            block_size,
+            piece_size,
+            finish: false,
+        }
+    }
+    
+    fn block_offset_idx(block_offset: u32, block_size: u32) -> u32 {
+        (block_offset + block_size - 1) / block_size
+    }
+
+    /// 新增完成的分块
+    fn add_finish(&mut self, block_offset: u32) {
+        if self.finish {
+            return;
+        }
+        let bo_idx = Self::block_offset_idx(block_offset, self.block_size);
+        let (idx, offset) = util::bytes::bitmap_offset(bo_idx as usize);
+        self.bitmap.get_mut(idx).map(|val| *val |= offset);
+
+        // 更新连续块偏移
+        let bo_idx = Self::block_offset_idx(self.block_offset, self.block_size);
+        let (idx, mut offset) = util::bytes::bitmap_offset(bo_idx as usize);
+        'first_loop: for i in idx..self.bitmap.len() {
+            let mut k = offset;
+            while k != 0 {
+                if self.bitmap[i] & k == 0 {
+                    break 'first_loop;
+                }
+                self.block_offset += self.block_size;
+                k >>= 1;
+            }
+            offset = 1 << 7
+        }
+
+        self.finish = self.block_offset >= self.piece_size;
+    }
+
+    pub fn is_finish(&self) -> bool {
+        self.finish
+    }
+
+    pub fn block_offset(&self) -> u32 {
+        self.block_offset
+    }
+}
+
+#[derive(Clone)]
+struct Writer {
+    inner: Option<Sender<Vec<u8>>>,
+}
+
+impl Writer {
+    fn new() -> Self {
+        Self { inner: None }
+    }
+
+    fn set_sender(&mut self, sender: Sender<Vec<u8>>) {
+        self.inner = Some(sender)
+    }
+}
+
+impl Deref for Writer {
+    type Target = Sender<Vec<u8>>;
+
+    fn deref(&self) -> &Self::Target {
+        // 安全：因为内部保证在使用 writer 时，
+        // inner 已经有值了
+        self.inner.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for Writer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // 安全：因为内部保证在使用 writer 时，
+        // inner 已经有值了
+        self.inner.as_mut().unwrap()
+    }
+}
+
+#[derive(Clone)]
+pub struct PeerContext {
     /// 编号
     no: u64,
 
     /// gasket 共享上下文
-    context: GasketContext,
-
-    /// reader，peer actor 启动后会把这个 reader 消费掉
-    reader: Option<OwnedReadHalf>,
-
-    /// wrtier
-    writer: OwnedWriteHalf,
+    gc: GasketContext,
 
     /// 当前 peer 的状态
-    status: Status,
+    status: Arc<Mutex<Status>>,
+
+    /// wrtier
+    writer: Writer,
+
+    /// 下载速率仪表盘
+    dashbord: Option<Dashbord>,
+}
+
+impl PeerContext {
+    fn new(no: u64, context: GasketContext) -> Self {
+        Self {
+            no,
+            gc: context,
+            status: Arc::new(Mutex::new(Status::Choke)),
+            writer: Writer::new(),
+            dashbord: None,
+        }
+    }
+
+    fn torrent(&self) -> TorrentArc {
+        self.gc.torrent()
+    }
+
+    fn config(&self) -> Config {
+        self.gc.config()
+    }
+
+    fn peer_id(&self) -> &[u8; 20] {
+        self.gc.peer_id()
+    }
+
+    pub fn save_path(&self) -> &PathBuf {
+        self.gc.save_path()
+    }
+
+    pub fn bytefield(&self) -> &Arc<tokio::sync::Mutex<BytesMut>> {
+        self.gc.bytefield()
+    }
+
+    pub fn recv_bytes(&self) -> u64 {
+        self.dashbord.as_ref().unwrap().acked_bytes()
+    }
+
+    pub fn bw(&self) -> u64 {
+        self.dashbord.as_ref().unwrap().bw()
+    }
+}
+
+pub struct Peer {
+    /// peer context
+    ctx: PeerContext,
 
     /// 对端地址
     addr: Arc<SocketAddr>,
@@ -137,81 +306,79 @@ pub struct Peer {
     /// 对端的状态
     opposite_peer_status: Status,
 
-    /// 对端拥有的分块
-    opposite_peer_bitfield: Option<BytesMut>,
-
     /// 指令发射器
     emitter: Emitter,
 
     /// 存储处理
     store: Store,
 
-    /// 成功收到的 piece 的响应次数
-    secuessed_piece: u64,
+    /// 对端拥有的分块
+    opposite_peer_bitfield: Option<BytesMut>,
 
-    /// 当前正在下载的分块
+    /// 收到响应的分块数据，收到的块（block）可能是乱序的
+    /// 因此只有在前面的块（block）都收到后，才会更新这个
+    /// 分片（piece）的 block offset
     ///
-    /// (分块下标 偏移位置 )
-    pub(super) downloading_pieces: HashMap<u32, u32>,
+    /// (分块下标 偏移位置)
+    response_pieces: FnvHashMap<u32, Piece>,
+
+    /// 请求的分块
+    request_pieces: FnvHashMap<u32, u32>,
+
+    /// 下载速率仪表盘
+    dashbord: Option<Dashbord>,
+
+    /// 发送倒计时
+    ct: CountdownTimer,
 }
 
 impl Peer {
-    pub async fn new(
+    pub fn new(
         no: u64,
         addr: Arc<SocketAddr>,
         context: GasketContext,
         emitter: Emitter,
         store: Store,
-    ) -> Option<Self> {
-        let timeout = context.config().peer_connection_timeout();
-        let stream = match tokio::time::timeout(timeout, TcpStream::connect(&*addr)).await {
-            Ok(Ok(stream)) => stream,
-            _ => return None,
-        };
-        let (reader, writer) = stream.into_split();
-        Some(Peer {
-            no,
-            context,
-            reader: Some(reader),
-            writer,
-            status: Status::Choke,
+    ) -> Self {
+        let context = PeerContext::new(no, context);
+
+        Peer {
+            ctx: context,
             addr,
             opposite_peer_id: None,
             opposite_peer_status: Status::Choke,
-            opposite_peer_bitfield: None,
             emitter,
             store,
-            secuessed_piece: 0,
-            downloading_pieces: HashMap::default(),
-        })
+            opposite_peer_bitfield: None,
+            response_pieces: FnvHashMap::default(),
+            request_pieces: FnvHashMap::default(),
+            dashbord: None,
+            ct: CountdownTimer::new(Duration::from_secs(0)),
+        }
     }
 
-    /// 握手，然后询问对方有哪些分块是可以下载的
-    pub async fn start(&mut self) -> Result<()> {
-        // 握手信息
-        trace!("发送握手信息 peer_no:{}", self.no);
+    fn no(&self) -> u64 {
+        self.ctx.no
+    }
+
+    /// 握手
+    async fn handshake(&mut self, stream: &mut TcpStream) -> Result<()> {
+        trace!("发送握手信息 peer_no: {}", self.no());
         let mut bytes =
             Vec::with_capacity(1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN);
-        let info_hash = &self.context.torrent().info_hash;
+        let info_hash = &self.ctx.torrent().info_hash;
         WriteBytesExt::write_u8(&mut bytes, BIT_TORRENT_PROTOCOL_LEN)?;
         std::io::Write::write(&mut bytes, BIT_TORRENT_PROTOCOL)?;
         WriteBytesExt::write_u64::<BigEndian>(&mut bytes, 0u64)?;
         std::io::Write::write(&mut bytes, info_hash)?;
-        std::io::Write::write(&mut bytes, self.context.peer_id())?;
-
-        // 发送握手信息
-        self.writer.write_all(&bytes).await?;
+        std::io::Write::write(&mut bytes, self.ctx.peer_id())?;
+        stream.write_all(&bytes).await?;
 
         // 等待握手信息
-        self.reader.as_ref().unwrap().readable().await?;
+        stream.readable().await?;
 
         let mut handshake_resp = vec![0u8; bytes.len()];
-        let size = self
-            .reader
-            .as_mut()
-            .unwrap()
-            .read(&mut handshake_resp)
-            .await?;
+        let size = stream.read(&mut handshake_resp).await?;
         if size != bytes.len() {
             error!("响应数据长度于预期不符 [{}]\t[{}]", size, bytes.len());
             return Err(HandshakeError);
@@ -228,29 +395,40 @@ impl Peer {
 
         self.opposite_peer_id = Some(peer_id.try_into().unwrap());
 
-        // 告诉对方自己拥有的分块
-        let bitfield = &*self.context.bytefield().lock().await;
+        Ok(())
+    }
+
+    /// 告诉对方，自己拥有的分片
+    async fn bitfield(&self) -> Result<()> {
+        let bitfield = &*self.ctx.bytefield().lock().await;
         let mut bytes = Vec::with_capacity(5 + bitfield.len());
         WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1 + bitfield.len() as u32)?;
         WriteBytesExt::write_u8(&mut bytes, MsgType::Bitfield as u8)?;
         std::io::Write::write(&mut bytes, &bitfield[..])?;
-        self.writer.write_all(&bytes).await?;
-
-        // 告诉对方，允许发起请求
-        let mut req = Vec::with_capacity(5);
-        WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
-        WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8)?;
-        self.writer.write_all(&bytes).await?;
-
-        // 告诉对方，对他拥有的资源很感兴趣
-        let mut bytes = Vec::with_capacity(5);
-        WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1)?;
-        WriteBytesExt::write_u8(&mut bytes, MsgType::Interested as u8)?;
-        self.writer.write_all(&bytes).await?;
-
+        self.ctx.writer.send(bytes).await?;
         Ok(())
     }
 
+    /// 告诉对方，允许发起请求
+    #[allow(dead_code)]
+    async fn unchoke(&self) -> Result<()> {
+        let mut bytes = Vec::with_capacity(5);
+        WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1)?;
+        WriteBytesExt::write_u8(&mut bytes, MsgType::UnChoke as u8)?;
+        self.ctx.writer.send(bytes).await?;
+        Ok(())
+    }
+
+    /// 告诉对方，对他拥有的资源很感兴趣
+    async fn interested(&self) -> Result<()> {
+        let mut bytes = Vec::with_capacity(5);
+        WriteBytesExt::write_u32::<BigEndian>(&mut bytes, 1)?;
+        WriteBytesExt::write_u8(&mut bytes, MsgType::Interested as u8)?;
+        self.ctx.writer.send(bytes).await?;
+        Ok(())
+    }
+
+    /// 响应事件处理
     async fn handle(&mut self, msg_type: MsgType, bytes: Bytes) -> Result<()> {
         let res = match msg_type {
             MsgType::Choke => self.handle_choke().await?,
@@ -266,111 +444,152 @@ impl Peer {
         Ok(res)
     }
 
-    pub fn set_downloading_pieces(&mut self, piece_index: u32, block_offset: u32) {
-        self.downloading_pieces.insert(piece_index, block_offset);
-    }
+    /// 请求块
+    async fn request_block(&mut self, piece_index: u32) -> Result<()> {
+        let block_size = self.ctx.config().block_size();
+        let piece_length = Self::get_piece_length(&self.ctx.torrent(), piece_index);
+        let offset = *self.request_pieces.get(&piece_index).unwrap_or(&0);
 
-    /// 顺序请求分块
-    async fn request_block(&mut self, piece_index: u32) -> Result<bool> {
-        let sharding_size = self.context.config().sharding_size();
-        let piece_length = self.get_piece_length(piece_index);
-        let offset = self.downloading_pieces.entry(piece_index).or_insert(0);
-
-        let over = *offset >= piece_length;
-        if !over {
-            debug!(
+        if offset < piece_length {
+            trace!(
                 "peer_no [{}] 请求下载分块 {} - {}",
-                self.no, piece_index, offset
+                self.ctx.no, piece_index, offset
             );
             let mut req = Vec::with_capacity(13);
             WriteBytesExt::write_u32::<BigEndian>(&mut req, 13)?;
             WriteBytesExt::write_u8(&mut req, MsgType::Request as u8)?;
             WriteBytesExt::write_u32::<BigEndian>(&mut req, piece_index)?;
-            WriteBytesExt::write_u32::<BigEndian>(&mut req, *offset)?;
+            WriteBytesExt::write_u32::<BigEndian>(&mut req, offset)?;
             WriteBytesExt::write_u32::<BigEndian>(
                 &mut req,
-                min(piece_length - *offset, sharding_size),
+                min(piece_length - offset, block_size),
             )?;
-            self.writer.write_all(&req).await?;
+            self.send_mark(MSS);
+            self.ctx.writer.send(req).await?;
+            self.request_pieces.insert(piece_index, offset + block_size);
         } else {
-            self.downloading_pieces.remove(&piece_index);
+            self.request_pieces.remove(&piece_index);
         }
 
-        Ok(over)
+        Ok(())
     }
 
-    fn get_piece_length(&self, piece_index: u32) -> u32 {
-        let torrent = self.context.torrent();
+    /// 获取发送窗口
+    #[inline]
+    fn cwnd(&self) -> u32 {
+        self.dashbord.as_ref().unwrap().cwnd()
+    }
+
+    /// 获取流动数据量
+    #[inline]
+    fn inflight(&self) -> u32 {
+        self.dashbord.as_ref().unwrap().inflight()
+    }
+
+    /// 发送标记
+    #[inline]
+    fn send_mark(&mut self, packet_size: u32) {
+        self.dashbord.as_ref().unwrap().send(packet_size);
+    }
+
+    /// 请求分片
+    async fn request_piece(&mut self) -> Result<()> {
+        while self.inflight() <= self.cwnd() {
+            if let Some(idx) = self.try_find_downloadable_pices().await? {
+                self.ct.tokio_wait_reamining().await;
+                self.request_block(idx).await?;
+            } else {
+                info!("没有了，那么等待响应的分片都响应完成");
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_can_be_download(&self) -> bool {
+        match self.ctx.status.lock() {
+            Ok(status) => *status == Status::UnChoke,
+            Err(e) => **e.get_ref() == Status::UnChoke,
+        }
+    }
+
+    /// 尝试寻找可以下载的分块进行下载
+    async fn try_find_downloadable_pices(&mut self) -> Result<Option<u32>> {
+        if !self.is_can_be_download() {
+            return Ok(None);
+        }
+
+        // 先拿未请求完成的
+        if let Some(idx) = self.request_pieces.keys().take(1).next() {
+            return Ok(Some(*idx));
+        }
+
+        // 下载暂停的分块
+        if let Some((idx, offset)) = self.ctx.gc.apply_download_pasue_piece() {
+            self.request_pieces.insert(idx, offset);
+            return Ok(Some(idx));
+        }
+
+        while let Some((piece_index, block_offset)) =
+            self.ctx.gc.apply_download_piece(self.ctx.no).await
+        {
+            let (idx, offset) = util::bytes::bitmap_offset(piece_index as usize);
+            if let Some(true) = self
+                .opposite_peer_bitfield
+                .as_ref()
+                .map(|bytes| (bytes[idx] & offset) != 0)
+            {
+                self.request_pieces.insert(piece_index, block_offset);
+                return Ok(Some(piece_index));
+            }
+        }
+
+        // 没有分块可以下载了，告诉 gasket
+        if self.response_pieces.is_empty() {
+            self.ctx.gc.report_no_downloadable_piece(self.ctx.no).await;
+        }
+        Ok(None)
+    }
+
+    fn update_response_pieces(&mut self, piece_index: u32, block_offset: u32) -> (bool, u32) {
+        let block_size = self.ctx.config().block_size();
+        let piece_length = Self::get_piece_length(&self.ctx.torrent(), piece_index);
+        let piece = self
+            .response_pieces
+            .entry(piece_index)
+            .or_insert(Piece::new(piece_length, block_size));
+        piece.add_finish(block_offset);
+        (piece.is_finish(), piece.block_offset)
+    }
+
+    fn get_piece_length(torrent: &TorrentArc, piece_index: u32) -> u32 {
         let piece_length = torrent.info.piece_length;
         let resource_length = torrent.info.length;
         piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length)) as u32
     }
 
-    fn is_can_be_download(&self) -> bool {
-        let config = self.context.config();
-        self.status == Status::UnChoke
-            && self.downloading_pieces.len() < config.con_req_piece_limit()
-            && self.secuessed_piece % config.sucessed_recv_piece() as u64 == 0
-    }
-
-    /// 尝试寻找可以下载的分块进行下载
-    async fn try_find_downloadable_pices(&mut self) -> Result<bool> {
-        if !self.is_can_be_download() {
-            return Ok(false);
-        }
-
-        let torrent = self.context.torrent();
-        let bit_len = torrent.info.pieces.len() / 20;
-
-        // 先下载暂停的分块
-        if let Some((piece_index, block_offset)) = self.context.apply_download_pasue_piece() {
-            debug!("peer_no [{}] 发现新的可下载分块：{}", self.no, piece_index);
-            self.downloading_pieces.insert(piece_index, block_offset);
-            self.request_block(piece_index).await?;
-            return Ok(true);
-        }
-
-        for i in 0..bit_len {
-            let (idx, offset) = util::bytes::bitmap_offset(i);
-
-            if let Some(true) = self
-                .opposite_peer_bitfield
-                .as_ref()
-                .map(|bytes| bytes[idx] & offset != 0)
-            {
-                let piece_index = i as u32;
-                if let Some(block_offset) = self
-                    .context
-                    .apply_download_piece(self.no, piece_index)
-                    .await
-                {
-                    debug!("peer_no [{}] 发现新的可下载分块：{}", self.no, i);
-                    self.downloading_pieces.insert(piece_index, block_offset);
-                    self.request_block(piece_index).await?;
-                    return Ok(true);
-                }
-            }
-        }
-
-        // 没有分块可以下载了，告诉 gasket
-        if self.downloading_pieces.is_empty() {
-            self.context.report_no_downloadable_piece(self.no).await;
-        }
-        Ok(false)
+    pub fn get_transfer_id(no: u64) -> String {
+        format!("{}{}", PEER_PREFIX, no)
     }
 
     /// 不让我们请求数据了
     async fn handle_choke(&mut self) -> Result<()> {
-        trace!("peer_no [{}] 对端不让我们请求下载数据", self.no);
-        self.status = Status::Choke;
+        info!("peer_no [{}] 对端不让我们请求下载数据", self.no());
+        match self.ctx.status.lock().as_mut() {
+            Ok(status) => **status = Status::Choke,
+            Err(e) => **e.get_mut() = Status::Choke,
+        }
         Ok(())
     }
 
     /// 告知可以交换数据了
     async fn handle_un_choke(&mut self) -> Result<()> {
-        trace!("peer_no [{}] 对端告诉我们可以下载数据", self.no);
-        self.status = Status::UnChoke;
-        self.try_find_downloadable_pices().await?;
+        info!("peer_no [{}] 对端告诉我们可以下载数据", self.no());
+        match self.ctx.status.lock().as_mut() {
+            Ok(status) => **status = Status::UnChoke,
+            Err(e) => **e.get_mut() = Status::UnChoke,
+        }
+        self.request_piece().await?;
         Ok(())
     }
 
@@ -381,7 +600,7 @@ impl Peer {
         let mut req = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
         WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8)?;
-        self.writer.write_all(&req).await?;
+        self.ctx.writer.send(req).await?;
         Ok(())
     }
 
@@ -392,7 +611,7 @@ impl Peer {
         let mut req = Vec::with_capacity(5);
         WriteBytesExt::write_u32::<BigEndian>(&mut req, 1)?;
         WriteBytesExt::write_u8(&mut req, MsgType::Choke as u8)?;
-        self.writer.write_all(&req).await?;
+        self.ctx.writer.send(req).await?;
         Ok(())
     }
 
@@ -408,8 +627,7 @@ impl Peer {
         self.opposite_peer_bitfield
             .as_mut()
             .map(|bytes| bytes[idx] |= offset);
-
-        self.try_find_downloadable_pices().await?;
+        self.request_piece().await?;
 
         Ok(())
     }
@@ -417,7 +635,7 @@ impl Peer {
     /// 对端告诉我们他有哪些分块可以下载
     async fn handle_bitfield(&mut self, bytes: Bytes) -> Result<()> {
         trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
-        let torrent = self.context.torrent();
+        let torrent = self.ctx.torrent();
         let bit_len = (torrent.info.pieces.len() / 20 + 7) >> 3;
         if bytes.len() != bit_len {
             warn!(
@@ -429,7 +647,7 @@ impl Peer {
         }
 
         self.opposite_peer_bitfield = Some(BytesMut::from(bytes));
-        self.try_find_downloadable_pices().await?;
+        self.request_piece().await?;
 
         Ok(())
     }
@@ -445,7 +663,7 @@ impl Peer {
 
     /// 对端给我们发来了数据
     async fn handle_piece(&mut self, mut bytes: Bytes) -> Result<()> {
-        trace!("peer_no [{}] 收到了对端发来的数据", self.no);
+        trace!("peer_no [{}] 收到了对端发来的数据", self.ctx.no);
         if bytes.len() < 8 {
             return Err(ResponseDataIncomplete);
         }
@@ -454,19 +672,14 @@ impl Peer {
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
-        self.write_file(piece_index, block_offset, block_data).await;
 
-        let sharding_size = self.context.config().sharding_size();
-        let offset = self.downloading_pieces.entry(piece_index).or_insert(0);
-        *offset += sharding_size;
-        self.secuessed_piece += 1;
+        self.request_piece().await?;
+        let (over, cts_bo) = self.update_response_pieces(piece_index, block_offset);
 
-        if self.request_block(piece_index).await? {
-            self.checkout(piece_index); // 校验分块 hash
-        }
+        self.write_file(piece_index, block_offset, block_data, over);
 
         // 上报给 gasket
-        self.context.reported_download(block_data_len as u64);
+        self.ctx.gc.reported_download(piece_index, cts_bo, block_data_len as u64);
         self.try_find_downloadable_pices().await?;
 
         Ok(())
@@ -479,88 +692,158 @@ impl Peer {
     }
 
     /// 写入文件
-    async fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes) {
-        let context = self.context.clone();
+    fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes, over: bool) {
+        let context = self.ctx.gc.clone();
         let store = self.store.clone();
-        let sender = self.emitter.get(&Self::get_transfer_id(self.no)).unwrap();
-
-        // tokio::spawn(async move {
-        let torrent = context.torrent();
-        let path = context.save_path();
-
-        for block_info in
-            torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
-        {
-            let data = block_data.split_to(block_info.len);
-            if store.write(block_info, data).await.is_err() {
-                let cmd = PieceWriteFailed {
-                    piece_index,
-                    block_offset,
-                }
-                .into();
-                sender.send(cmd).await.unwrap();
-            }
-        }
-        // });
-    }
-
-    /// 校验分块
-    fn checkout(&self, piece_index: u32) {
-        let context = self.context.clone();
-        let read_length = self.get_piece_length(piece_index);
-        let sender = self.emitter.get(&Self::get_transfer_id(self.no)).unwrap();
-        let store = self.store.clone();
+        let sender = self
+            .emitter
+            .get(&Self::get_transfer_id(self.ctx.no))
+            .unwrap();
 
         tokio::spawn(async move {
-            trace!("开始校验 {} 个分块", piece_index);
             let torrent = context.torrent();
             let path = context.save_path();
-            let hash =
-                &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
-            let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
-            match store.checkout(list.clone(), hash).await {
-                Ok(false) | Err(_) => {
-                    error!("参与计算的文件: {:?}", list);
-                    let cmd = PieceCheckoutFailed { piece_index }.into();
-                    sender.send(cmd).await.unwrap();
+
+            for block_info in
+                torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
+            {
+                let data = block_data.split_to(block_info.len);
+                if store.write(block_info, data).await.is_err() {
+                    let cmd = PieceWriteFailed {
+                        piece_index,
+                        block_offset,
+                    }
+                    .into();
+                    let _ = sender.send(cmd).await;
                 }
-                _ => {
-                    trace!("第 {} 个分块校验通过", piece_index);
-                    context.reported_piece_finished(piece_index).await;
-                }
+            }
+
+            // 校验分块 hash
+            if over {
+                Self::checkout(context, piece_index, sender, store).await;
             }
         });
     }
 
-    pub fn get_transfer_id(no: u64) -> String {
-        format!("{}{}", PEER_PREFIX, no)
+    /// 校验分块
+    async fn checkout(
+        context: GasketContext,
+        piece_index: u32,
+        sender: Sender<TransferPtr>,
+        store: Store,
+    ) {
+        let read_length = Self::get_piece_length(&context.torrent(), piece_index);
+
+        trace!("开始校验 {} 个分块", piece_index);
+        let torrent = context.torrent();
+        let path = context.save_path();
+        let hash = &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
+        let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
+        match store.checkout(list.clone(), hash).await {
+            Ok(false) | Err(_) => {
+                error!("就是false了，参与计算的文件: {:?}", list);
+                let cmd = PieceCheckoutFailed { piece_index }.into();
+                let _ = sender.send(cmd).await; // 有可能第一次发送错误就关闭了 peer，所以不必理会发送错误
+            }
+            _ => {
+                debug!("第 {} 个分块校验通过", piece_index);
+                context.reported_piece_finished(piece_index).await;
+            }
+        }
+    }
+
+    /// 连接对端 peer
+    async fn connection(&self) -> Result<TcpStream> {
+        let timeout = self.ctx.config().peer_connection_timeout();
+        match tokio::time::timeout(timeout, TcpStream::connect(&*self.addr)).await {
+            Ok(Ok(stream)) => Ok(stream),
+            _ => Err(Error::TimeoutError),
+        }
+    }
+
+    /// 启动套接字监听
+    fn start_listener(
+        &mut self,
+        stream: TcpStream,
+        peer_send: Sender<TransferPtr>,
+        cancel: CancellationToken,
+    ) -> (JoinHandle<()>, JoinHandle<()>) {
+        let (reader, writer) = stream.into_split();
+        let (send, recv) = channel(self.ctx.config().channel_buffer());
+        let probe = Probe::new();
+
+        self.dashbord = Some(probe.dashbord());
+
+        let write_future_handle = tokio::spawn(
+            WriteFuture {
+                no: self.ctx.no,
+                writer,
+                cancel_token: cancel.clone(),
+                addr: self.addr.clone(),
+                peer_sender: peer_send.clone(),
+                recv,
+            }
+            .run(),
+        );
+
+        let read_future_handle = tokio::spawn(
+            ReadFuture {
+                no: self.ctx.no,
+                reader,
+                cancel_token: cancel,
+                addr: self.addr.clone(),
+                peer_sender: peer_send.clone(),
+                rc: probe,
+            }
+            .run(),
+        );
+
+        self.ctx.writer.set_sender(send);
+
+        (write_future_handle, read_future_handle)
+    }
+
+    /// 启动 peer
+    async fn start(
+        &mut self,
+        send: Sender<TransferPtr>,
+    ) -> Result<(CancellationToken, Vec<JoinHandle<()>>)> {
+        let mut stream = self.connection().await?;
+
+        self.handshake(&mut stream).await?;
+        let cancel = CancellationToken::new();
+
+        let res = self.start_listener(stream, send.clone(), cancel.clone());
+
+        self.bitfield().await?;
+        self.interested().await?;
+
+        Ok((cancel, vec![res.0, res.1]))
     }
 }
 
 impl Runnable for Peer {
     async fn run(mut self) {
-        let (send, mut recv) = channel(self.context.config().channel_buffer());
-        let transfer_id = Self::get_transfer_id(self.no);
+        let (send, mut recv) = channel(self.ctx.config().channel_buffer());
+        let transfer_id = Self::get_transfer_id(self.ctx.no);
         self.emitter.register(transfer_id, send.clone());
 
-        trace!("开始监听数据 peer_no:{}\taddr: {}", self.no, self.addr);
-        let reason: ExitReason;
-        let cancel = CancellationToken::new();
-        let recv_handle = tokio::spawn(
-            Recv {
-                no: self.no,
-                reader: self.reader.take(),
-                cancel_token: cancel.clone(),
-                addr: self.addr.clone(),
-                sender: send,
+        let future_token = match self.start(send).await {
+            Ok(future_token) => future_token,
+            Err(_) => {
+                self.ctx
+                    .gc
+                    .peer_exit(self.ctx.no, ExitReason::Exception)
+                    .await;
+                return;
             }
-            .run(),
-        ); // 让 recv 独立一个异步任务，保证读取不会被任务处理阻塞
+        };
 
+        let reason: ExitReason;
         loop {
             tokio::select! {
-                _ = self.context.cancel_token() => {
-                    debug!("peer {} cancelled", self.no);
+                _ = self.ctx.gc.cancel_token() => {
+                    debug!("peer {} cancelled", self.ctx.no);
                     reason = ExitReason::Normal;
                     break;
                 }
@@ -588,57 +871,17 @@ impl Runnable for Peer {
             }
         }
 
-        cancel.cancel();
-        recv_handle.await.unwrap();
-
-        // 归还未下完的分块
-        self.context
-            .give_back_download_piece(self.no, self.downloading_pieces);
-        self.context.peer_exit(self.no, reason).await;
-        debug!("peer [{}] 已退出！", self.no);
-    }
-}
-
-struct Recv {
-    no: u64,
-    reader: Option<OwnedReadHalf>,
-    cancel_token: CancellationToken,
-    addr: Arc<SocketAddr>,
-    sender: Sender<TransferPtr>,
-}
-
-impl Runnable for Recv {
-    async fn run(mut self) {
-        let mut reader = self.reader.take().unwrap();
-        let mut bt_resp = BtResp::new(&mut reader, &self.addr);
-        loop {
-            tokio::select! {
-                _ = self.cancel_token.cancelled() => {
-                    debug!("recv [{}] 退出", self.no);
-                    break;
-                }
-                result = &mut bt_resp => {
-                    match result {
-                        Some((msg_type, buf)) => {
-                            let buf_len = buf.len() as u64;
-                            self.sender.send(PeerTransfer {
-                                msg_type,
-                                buf,
-                                read_size: 5 + buf_len
-                            }.into()).await.unwrap()
-                        },
-                        None => {
-                            warn!("断开了链接，终止 {} - {} 的数据监听", self.no, &self.addr);
-                            let reason = ExitReason::Exception;
-                            self.sender.send(Exit{ reason }.into()).await.unwrap();
-                            break;
-                        }
-                    }
-                    bt_resp = BtResp::new(&mut reader, &self.addr);
-                }
-            }
+        future_token.0.cancel();
+        for handle in future_token.1 {
+            handle.await.unwrap();
         }
 
-        debug!("recv [{}] 已退出！", self.no);
+        // 归还未下完的分块
+        self.ctx
+            .gc
+            .give_back_download_piece(self.ctx.no, self.response_pieces);
+        self.emitter.remove(&Self::get_transfer_id(self.ctx.no));
+        self.ctx.gc.peer_exit(self.ctx.no, reason).await;
+        debug!("peer [{}] 已退出！", self.ctx.no);
     }
 }

@@ -9,8 +9,7 @@ use tokio::net::tcp::OwnedReadHalf;
 use tracing::{error, trace};
 
 enum State {
-    Length,   // 等待长度数据
-    MsgType,  // 等待消息类型
+    Head,     // Length + MsgType 的长度
     Content,  // 等待内容数据
     Finished, // Future 已完成
 }
@@ -20,16 +19,14 @@ pub struct BtResp<'a> {
     reader_handle: ReaderHandle<'a, OwnedReadHalf>,
     state: State,
     msg_type: Option<MsgType>,
-    length: Option<u32>,
 }
 
 impl<'a> BtResp<'a> {
     pub fn new(read: &'a mut OwnedReadHalf, addr: &'a SocketAddr) -> Self {
         Self {
-            reader_handle: ReaderHandle::new(read, addr, 4),
-            state: State::Length,
+            reader_handle: ReaderHandle::new(read, addr, 5),
+            state: State::Head,
             msg_type: None,
-            length: None,
         }
     }
 }
@@ -47,19 +44,12 @@ impl Future for BtResp<'_> {
         };
 
         match this.state {
-            State::Length => {
+            State::Head => {
                 let length = u32::from_be_slice(&buf[..4]);
-                if length > 1 {
-                    this.length = Some(length - 1);
-                }
-                this.reader_handle.reset(1);
-                this.state = State::MsgType;
-            }
-            State::MsgType => {
-                if let Ok(msg_type) = MsgType::try_from(buf[0]) {
+                if let Ok(msg_type) = MsgType::try_from(buf[4]) {
                     trace!("取得消息类型: {:?}", msg_type);
-                    if let Some(length) = this.length {
-                        this.reader_handle.reset(length as usize);
+                    if length > 1 {
+                        this.reader_handle.reset(length as usize - 1);
                         this.msg_type = Some(msg_type);
                         this.state = State::Content;
                     } else {

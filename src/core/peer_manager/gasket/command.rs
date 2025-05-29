@@ -13,6 +13,7 @@ command_system! {
     Command {
         DiscoverPeerAddr,
         StartWaittingAddr,
+        SaveProgress,
     }
 }
 
@@ -44,12 +45,25 @@ impl<'a> CommandHandler<'a, Result<()>> for StartWaittingAddr {
         trace!("从等待队列中唤醒一个");
         // 有个副作用，原本应该先唤醒的 addr，如果遇到当前没有可用的 peer 配额时，会被移
         // 动到最后。
-        if let Some(peer) = ctx.wait_queue.lock().await.pop_front() {
+        if let Some(peer) = ctx.pop_wait_peer().await {
             trace!("尝试唤醒 [{}]", peer.addr);
             ctx.start_peer(peer.addr).await
         } else {
             info!("没有 peer 可以用了")
         }
+        Ok(())
+    }
+}
+
+/// 保存进度
+#[derive(Debug)]
+pub struct SaveProgress;
+
+impl<'a> CommandHandler<'a, Result<()>> for SaveProgress {
+    type Target = &'a mut Gasket;
+
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
+        ctx.save_progress().await;
         Ok(())
     }
 }

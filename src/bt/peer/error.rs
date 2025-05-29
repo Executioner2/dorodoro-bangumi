@@ -6,6 +6,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub enum Error {
     IoError(std::io::Error),
+    TimeoutError,
     HandshakeError,
     TryFromError,
     HandleError(String),
@@ -13,13 +14,15 @@ pub enum Error {
     BitfieldError,
     PieceCheckoutError(u32),
     PieceWriteError(u32, u32),
-    StoreError(store::error::Error)
+    StoreError(store::error::Error),
+    SendError(tokio::sync::mpsc::error::SendError<Vec<u8>>)
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Error::IoError(e) => write!(f, "IO error: {}", e),
+            Error::TimeoutError => write!(f, "timeout error"),
             Error::HandshakeError => write!(f, "handshake error"),
             Error::TryFromError => write!(f, "try from error"),
             Error::HandleError(s) => write!(f, "handle error: {}", s),
@@ -28,6 +31,7 @@ impl std::fmt::Display for Error {
             Error::PieceCheckoutError(index) => write!(f, "第 {} 个分块校验有问题", index),
             Error::PieceWriteError(index, offset) => write!(f, "piece: {}\toffset: {} 写入失败", index, offset),
             Error::StoreError(e) => write!(f, "store error: {}", e),
+            Error::SendError(e) => write!(f, "send error: {}", e),
         }
     }
 }
@@ -44,11 +48,18 @@ impl From<store::error::Error> for Error {
     }
 }
 
+impl From<tokio::sync::mpsc::error::SendError<Vec<u8>>> for Error {
+    fn from(e: tokio::sync::mpsc::error::SendError<Vec<u8>>) -> Self {
+        Error::SendError(e)
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::IoError(e) => Some(e),
             Error::StoreError(e) => Some(e),
+            Error::SendError(e) => Some(e),
             _ => None,
         }
     }
