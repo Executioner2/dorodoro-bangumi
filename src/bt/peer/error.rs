@@ -6,12 +6,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub enum Error {
     IoError(std::io::Error),
+    ConnectionError,
     TimeoutError,
     HandshakeError,
     TryFromError,
     HandleError(String),
     ResponseDataIncomplete,
     BitfieldError,
+    ResponsePieceError,
     PieceCheckoutError(u32),
     PieceWriteError(u32, u32),
     StoreError(store::error::Error),
@@ -22,12 +24,14 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Error::IoError(e) => write!(f, "IO error: {}", e),
+            Error::ConnectionError => write!(f, "connection error"),
             Error::TimeoutError => write!(f, "timeout error"),
             Error::HandshakeError => write!(f, "handshake error"),
             Error::TryFromError => write!(f, "try from error"),
             Error::HandleError(s) => write!(f, "handle error: {}", s),
             Error::ResponseDataIncomplete => write!(f, "response data incomplete - 响应数据不完整"),
             Error::BitfieldError => write!(f, "bitfield 有问题"),
+            Error::ResponsePieceError => write!(f, "response piece error - 响应分块错误"),
             Error::PieceCheckoutError(index) => write!(f, "第 {} 个分块校验有问题", index),
             Error::PieceWriteError(index, offset) => write!(f, "piece: {}\toffset: {} 写入失败", index, offset),
             Error::StoreError(e) => write!(f, "store error: {}", e),

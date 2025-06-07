@@ -127,6 +127,16 @@ impl Torrent {
         self.info
             .find_file_of_piece_index(path_buf, piece_index, offset, len)
     }
+    
+    /// 分片数量
+    pub fn piece_num(&self) -> usize {
+        self.info.pieces.len() / 20
+    }
+    
+    /// bitfield 数组的长度
+    pub fn bitfield_len(&self) -> usize {
+        (self.piece_num() + 7) >> 3
+    }
 }
 
 impl Info {

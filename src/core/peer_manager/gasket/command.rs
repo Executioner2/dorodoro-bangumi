@@ -2,10 +2,11 @@ use crate::command::CommandHandler;
 use crate::command_system;
 use crate::emitter::transfer::CommandEnum;
 use crate::emitter::transfer::TransferPtr;
-use crate::peer_manager::gasket::Gasket;
+use crate::peer_manager::gasket::{Gasket, PeerInfo};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
+use crate::mapper::torrent::TorrentStatus;
 use super::error::Result;
 
 command_system! {
@@ -14,6 +15,7 @@ command_system! {
         DiscoverPeerAddr,
         StartWaittingAddr,
         SaveProgress,
+        StartTempPeer,
     }
 }
 
@@ -46,8 +48,8 @@ impl<'a> CommandHandler<'a, Result<()>> for StartWaittingAddr {
         // 有个副作用，原本应该先唤醒的 addr，如果遇到当前没有可用的 peer 配额时，会被移
         // 动到最后。
         if let Some(peer) = ctx.pop_wait_peer().await {
-            trace!("尝试唤醒 [{}]", peer.addr);
-            ctx.start_peer(peer.addr).await
+            debug!("尝试唤醒 [{}]", peer.addr);
+            ctx.start_wait_peer(peer).await
         } else {
             info!("没有 peer 可以用了")
         }
@@ -57,13 +59,31 @@ impl<'a> CommandHandler<'a, Result<()>> for StartWaittingAddr {
 
 /// 保存进度
 #[derive(Debug)]
-pub struct SaveProgress;
+pub struct SaveProgress {
+    pub(super) status: Option<TorrentStatus>
+}
 
 impl<'a> CommandHandler<'a, Result<()>> for SaveProgress {
     type Target = &'a mut Gasket;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.save_progress().await;
+        ctx.save_progress(self.status).await;
+        Ok(())
+    }
+}
+
+/// 启动一个临时 peer
+#[derive(Debug)]
+pub struct StartTempPeer {
+    pub peer_info: PeerInfo,
+}
+
+impl<'a> CommandHandler<'a, Result<()>> for StartTempPeer {
+    type Target = &'a mut Gasket;
+
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
+        trace!("启动临时 peer [{}]", self.peer_info.addr);
+        ctx.start_temp_peer(self.peer_info).await;
         Ok(())
     }
 }

@@ -8,31 +8,45 @@
 //! - cwnd: 拥塞窗口大小。
 //! - rate: 发送速率。
 //! - inflight: 传输中的包。
+//!
+//! todo - 大体来说是可以用，但有一些小细节需要完善。例如：
+//!      - 上下浮动相对来说有延迟，不平滑，会受到毛刺影响
+//!      - 暂时无法进行速率估算，因为需要测量 rtt
 
-use crate::{datetime, if_else};
+use crate::collection::FixedQueue;
 use crate::peer::rate_control::{PacketAck, PacketSend, RateControl};
 use crate::win_minmax::Minmax;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::{datetime, if_else, util};
 use std::sync::Arc;
-use tracing::debug;
-use crate::collection::FixedQueue;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use tracing::{level_enabled, trace, Level};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct Dashbord {
     /// 拥塞窗口大小
     cwnd: Arc<AtomicU32>,
 
     /// 传输中的包
     inflight: Arc<AtomicU32>,
-    
+
     /// 累计确认的字节数
     acked_bytes: Arc<AtomicU64>,
-    
+
     /// 近期平均带宽
     bw: Arc<AtomicU64>,
-    
     // 发送速率
     // rate: Arc<AtomicU32>,
+}
+
+impl Dashbord {
+    pub fn new() -> Self {
+        Self {
+            cwnd: Arc::new(AtomicU32::new(MIN_CWND)),
+            inflight: Arc::new(AtomicU32::new(0)),
+            acked_bytes: Arc::new(AtomicU64::new(0)),
+            bw: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 impl RateControl for Dashbord {
@@ -50,6 +64,11 @@ impl RateControl for Dashbord {
 
     fn bw(&self) -> u64 {
         self.bw.load(Ordering::Relaxed)
+    }
+
+    fn clear_ing(&self) {
+        self.inflight.store(0, Ordering::Relaxed);
+        self.cwnd.store(MIN_CWND, Ordering::Relaxed);
     }
 }
 
@@ -72,6 +91,9 @@ const CWND_LOW_GAIN: u32 = UNIT * 4 / 5;
 /// 带宽速率浮动门限
 const BW_UP_THRESH: u64 = UNIT as u64 * 5 / 4;
 
+/// 高增益探索保持门限
+const BW_UP_KEEP_THRESH: u64 = UNIT as u64 * 11 / 10;
+
 /// 带宽速率浮动门限
 const BW_DOWN_THRESH: u64 = UNIT as u64 * 4 / 5;
 
@@ -87,8 +109,8 @@ const MAX_BW_CWND: u32 = 3;
 /// 高增益持续时长，三个样本更新周期
 const HIGHT_GAIN_CYCLE: u32 = 3;
 
-/// 低增益持续时长，五个样本更新周期
-const LOW_GAIN_CYCLE: u32 = 5;
+/// 低增益持续时长，三个样本更新周期
+const LOW_GAIN_CYCLE: u32 = 3;
 
 /// 普通增益持续时长，三个样本更新周期
 const NORMAL_GAIN_CYCLE: u32 = 3;
@@ -96,14 +118,23 @@ const NORMAL_GAIN_CYCLE: u32 = 3;
 /// 最小拥塞窗口大小
 const MIN_CWND: u32 = 4;
 
+/// 最大拥塞窗口大小
+const MAX_CWND: u32 = 100;
+
 /// 连续 3 轮没有增长，则判定为带宽受限
 const FULL_BW_CNT: u32 = 3;
 
 /// Startup 阶段，快速增益值。
-const STARTUP_GAIN: u32 = UNIT * 2;
+const STARTUP_GAIN: u32 = UNIT * 3 / 2;
 
 /// 带宽受限阈值
 const FULL_BW_THRESH: u32 = UNIT * 1 / 2;
+
+/// 高增益探索保持率
+const MAX_GAIN_KEEP_RATE: u32 = UNIT * 2 / 3;
+
+/// full bw 保持周期
+const FULL_BW_KEEP_CYCLE: u32 = 3;
 
 /// 暴力探测
 pub struct Probe {
@@ -130,33 +161,43 @@ pub struct Probe {
 
     /// 高增益试探
     cwnd_high_gain: bool,
-    
+
     /// 窗口低增益计数
     cwnd_low_gain_cnt: u32,
-    
+
     /// 普通增益计数
     cwnd_normal_gain_cnt: u32,
-    
+
     /// 最大带宽
     full_bw: u32,
 
     /// 最大带宽连续无增长计数
     full_bw_cnt: u32,
 
+    /// 最大带宽保持计数
+    full_bw_keep_cnt: u32,
+
     /// 是否进入带宽受限
     full_bw_reached: bool,
-    
+
     /// 平均带宽队列
     avg_bw_fq: FixedQueue<u32>,
-    
+
     /// 平均带宽之和
     avg_bw_sum: u64,
+
+    /// 最近一次高带宽
+    last_high_bw: u64,
+
+    /// 高增长期间，超过原来速率低次数
+    high_gain_valid_cnt: u32,
+
+    /// 是否使用 start up 增益
+    starup_gain: bool,
 }
 
 impl Probe {
-    pub fn new() -> Self {
-        let dashbord = Dashbord::default();
-        dashbord.cwnd.store(MIN_CWND, Ordering::Relaxed);
+    pub fn new(dashbord: Dashbord) -> Self {
         Self {
             dashbord,
             bw: Minmax::new(),
@@ -170,9 +211,13 @@ impl Probe {
             cwnd_normal_gain_cnt: 0,
             full_bw: 0,
             full_bw_cnt: 0,
+            full_bw_keep_cnt: 0,
             full_bw_reached: false,
             avg_bw_fq: FixedQueue::new(10),
             avg_bw_sum: 0,
+            last_high_bw: 0,
+            high_gain_valid_cnt: 0,
+            starup_gain: false,
         }
     }
 
@@ -190,27 +235,33 @@ impl Probe {
         self.sample_update_cnt += 1;
 
         RateSample {
-            bw: (interval_bytes * MILLIS_PER_SEC + interval_ms - 1) / interval_ms
+            bw: (interval_bytes * MILLIS_PER_SEC + interval_ms - 1) / interval_ms,
         }
     }
-    
+
     fn update_avg_bw(&mut self, rs: &RateSample) {
         self.avg_bw_sum += rs.bw;
         self.avg_bw_fq.push(rs.bw as u32).map(|x| {
             self.avg_bw_sum -= x as u64;
         });
-        self.dashbord.bw.store(self.avg_bw_sum / self.avg_bw_fq.len() as u64, Ordering::Relaxed);
+        self.dashbord.bw.store(
+            self.avg_bw_sum / self.avg_bw_fq.len() as u64,
+            Ordering::Relaxed,
+        );
     }
 
     fn update_bw(&mut self, rs: &RateSample) -> u32 {
         let origin_bw = self.bw.minmax_get();
-        self.bw.minmax_running_max(MAX_BW_CWND, self.sample_update_cnt, rs.bw as u32);
+        self.bw
+            .minmax_running_max(MAX_BW_CWND, self.sample_update_cnt, rs.bw as u32);
         origin_bw
     }
-    
+
     fn check_full_bw(&mut self) {
         if self.full_bw_reached {
-            if self.dashbord.cwnd() <= MIN_CWND || self.bw.minmax_get() < self.full_bw * FULL_BW_THRESH >> SCALE {
+            if self.dashbord.cwnd() <= MIN_CWND
+                || self.bw.minmax_get() < self.full_bw * FULL_BW_THRESH >> SCALE
+            {
                 self.full_bw = 0;
                 self.full_bw_reached = false;
             } else {
@@ -218,9 +269,19 @@ impl Probe {
             }
         }
 
+        // 等待增益把链路充满
+        if self.full_bw_keep_cnt > 0 {
+            self.full_bw_keep_cnt -= 1;
+            self.full_bw = self.full_bw.max(self.bw.minmax_get());
+            self.starup_gain = self.full_bw_keep_cnt == 0;
+            return;
+        }
+
+        self.starup_gain = false;
         let bw_thresh = (self.full_bw as u64 * BW_UP_THRESH >> SCALE) as u32;
-        
+
         if self.bw.minmax_get() > bw_thresh {
+            self.full_bw_keep_cnt = FULL_BW_KEEP_CYCLE;
             self.full_bw_cnt = 0;
             self.full_bw = self.bw.minmax_get();
         } else {
@@ -231,49 +292,74 @@ impl Probe {
 
     fn update_gain(&mut self, bw: u64, origin_bw: u64) {
         if !self.full_bw_reached {
-            self.cwnd_gain = if_else!(self.full_bw_cnt == 0, STARTUP_GAIN, UNIT);
+            self.cwnd_gain = if_else!(self.starup_gain, STARTUP_GAIN, UNIT);
             return;
         }
 
         if self.cwnd_high_gain_cnt > 0 {
             self.cwnd_high_gain_cnt -= 1;
-            self.cwnd_high_gain = self.cwnd_high_gain_cnt == 0;
-        }
-        
-        if bw <= origin_bw * BW_DOWN_THRESH >> SCALE {
-            self.cwnd_low_gain_cnt += 1;
             self.cwnd_gain = UNIT;
-            return;
+
+            if bw * UNIT as u64 >= self.last_high_bw * BW_UP_KEEP_THRESH {
+                // 在 HIGHT_GAIN_CYCLE 个周期内，保持住了增长，说明这
+                // 次探索的增益是有效的那么将探索的临时增益更新为长期增益
+                self.high_gain_valid_cnt += 1;
+                trace!(
+                    "增益计数 +1！bw: {}\tb: {}",
+                    self.high_gain_valid_cnt * UNIT,
+                    HIGHT_GAIN_CYCLE * MAX_GAIN_KEEP_RATE
+                );
+            }
+
+            if self.high_gain_valid_cnt * UNIT >= HIGHT_GAIN_CYCLE * MAX_GAIN_KEEP_RATE {
+                self.cwnd_high_gain_cnt = 0;
+            } else {
+                self.cwnd_high_gain = self.cwnd_high_gain_cnt == 0;
+            }
         }
 
-        if self.cwnd_normal_gain_cnt >= NORMAL_GAIN_CYCLE || bw >= origin_bw * BW_UP_THRESH >> SCALE {
+        // 增益探索阶段也要进行低增益检查，如果探索阶段也是处于低增益
+        // 状态，根据设置的周期，有可能提前退出增益探索阶段，转而进入
+        // 低增益状态。
+        if bw * UNIT as u64 <= origin_bw * BW_DOWN_THRESH {
+            self.cwnd_low_gain_cnt += 1;
+            self.cwnd_gain = UNIT;
+        }
+
+        if self.cwnd_normal_gain_cnt >= NORMAL_GAIN_CYCLE {
+            trace!("进行高增益");
+            self.cwnd_low_gain_cnt = 0;
             self.cwnd_normal_gain_cnt = 0;
+            self.high_gain_valid_cnt = 0;
             self.cwnd_gain = CWND_HIGHT_GAIN;
             self.cwnd_high_gain_cnt = HIGHT_GAIN_CYCLE;
+            self.last_high_bw = origin_bw;
         } else if self.cwnd_high_gain || self.cwnd_low_gain_cnt >= LOW_GAIN_CYCLE {
+            trace!("进行低增益");
+            self.cwnd_low_gain_cnt = 0;
             self.cwnd_normal_gain_cnt = 0;
             self.cwnd_high_gain = false;
             self.cwnd_gain = CWND_LOW_GAIN;
-        } else {
+        } else if self.cwnd_high_gain_cnt == 0 {
             // 当连续 n 个样本没有增长，则尝试进行增长
             self.cwnd_normal_gain_cnt += 1;
             self.cwnd_gain = UNIT;
         }
-
-        self.cwnd_low_gain_cnt = 0;
     }
 
     fn update_cwnd(&mut self, gain: u32) {
         let mut cwnd = self.dashbord.cwnd.load(Ordering::Acquire);
-        
+
         if gain == CWND_HIGHT_GAIN || gain == STARTUP_GAIN {
             cwnd += 2; // 防止小窗口增益过小
+        } else if gain == CWND_LOW_GAIN {
+            cwnd -= 1;
         }
-        
+
         cwnd = ((cwnd as u64 * gain as u64) >> SCALE) as u32;
         self.dashbord
             .cwnd
-            .store(cwnd.max(MIN_CWND), Ordering::Release);
+            .store(cwnd.max(MIN_CWND).min(MAX_CWND), Ordering::Release);
     }
 
     pub fn dashbord(&self) -> Dashbord {
@@ -284,7 +370,9 @@ impl Probe {
 impl PacketAck for Probe {
     fn ack(&mut self, read_size: u32) {
         self.inflight_dec();
-        self.dashbord.acked_bytes.fetch_add(read_size as u64, Ordering::Relaxed);
+        self.dashbord
+            .acked_bytes
+            .fetch_add(read_size as u64, Ordering::Relaxed);
 
         if self.last_ack_stamp + UPDATE_INTERVAL > datetime::now_millis() as u64 {
             return;
@@ -296,18 +384,23 @@ impl PacketAck for Probe {
         self.check_full_bw();
         self.update_gain(rs.bw, origin_bw as u64);
         self.update_cwnd(self.cwnd_gain);
-        
-        debug!(
-            "\ncwnd: {}\tmax bw: {}Mib/s\tnew bw: {}Mib/s\tcwnd_gain: {}\t\
-            down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}",
-            self.dashbord.cwnd(),
-            origin_bw / 1024 / 1024,
-            rs.bw / 1024 / 1024,
-            self.cwnd_gain,
-            origin_bw as u64 * BW_DOWN_THRESH >> SCALE,
-            rs.bw,
-            rs.bw <= origin_bw as u64 * BW_DOWN_THRESH >> SCALE, 
-        );
+
+        if level_enabled!(Level::TRACE) {
+            let (rate1, unit1) = util::net::rate_formatting(origin_bw);
+            let (rate2, unit2) = util::net::rate_formatting(rs.bw);
+            trace!(
+                "\ncwnd: {}\tmax bw: {:.2}{}\tnew bw: {:.2}{}\tcwnd_gain: {}\t\
+                down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}\tfbr: {}",
+                self.dashbord.cwnd(),
+                rate1, unit1,
+                rate2, unit2,
+                self.cwnd_gain,
+                origin_bw as u64 * BW_DOWN_THRESH >> SCALE,
+                rs.bw,
+                rs.bw <= origin_bw as u64 * BW_DOWN_THRESH >> SCALE,
+                self.full_bw_reached
+            );   
+        }
     }
 }
 

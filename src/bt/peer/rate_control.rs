@@ -22,6 +22,9 @@ pub trait RateControl {
     /// 
     /// returns: u64 近期的传输速度
     fn bw(&self) -> u64;
+
+    /// 清理进行中的数据
+    fn clear_ing(&self);
 }
 
 /// 数据包发送 trait 定义

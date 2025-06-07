@@ -7,9 +7,9 @@
 
 pub mod command;
 mod error;
-pub mod future;
+pub mod peer_resp;
 mod listener;
-mod rate_control;
+pub mod rate_control;
 
 use crate::bytes::Bytes2Int;
 use crate::command::CommandHandler;
@@ -23,15 +23,12 @@ use crate::emitter::constant::PEER_PREFIX;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::error::Error;
-use crate::peer::error::Error::{
-    BitfieldError, HandshakeError, ResponseDataIncomplete, TryFromError,
-};
+use crate::peer::error::Error::{BitfieldError, HandshakeError, ResponseDataIncomplete, ResponsePieceError, TryFromError};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use crate::store::Store;
-use crate::timer::CountdownTimer;
 use crate::torrent::TorrentArc;
 use crate::util;
 use byteorder::{BigEndian, WriteBytesExt};
@@ -43,16 +40,21 @@ use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Sender, channel};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time::{Instant, Interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 const MSS: u32 = 17;
+
+/// 每隔 1 分钟发送一次心跳包
+const KEEP_ALIVE: Duration = Duration::from_secs(60);
 
 /// Peer 通信的消息类型
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -135,29 +137,26 @@ pub struct Piece {
     /// 分片位图，完成了的 block 置为 1
     bitmap: Vec<u8>,
 
-    // 位图的实际长度，即去除填充 0 的部分
-    // len: usize,
     /// 分块大小
     block_size: u32,
 
     /// 分片大小
-    piece_size: u32,
+    piece_length: u32,
 
     /// 是否完成
     finish: bool,
 }
 
 impl Piece {
-    fn new(piece_size: u32, block_size: u32) -> Self {
-        let share = Self::block_offset_idx(piece_size, block_size);
+    fn new(block_offset: u32, piece_length: u32, block_size: u32) -> Self {
+        let share = Self::block_offset_idx(piece_length, block_size);
         let len = (share + 7) >> 3;
         let bitmap = vec![0u8; len as usize];
         Self {
-            block_offset: 0,
+            block_offset, // 不需要把 block_offset 之前到填充上 1，之后的判断都是从 block_offset 开始
             bitmap,
-            // len: ((len * 8) - (share & 7)) as usize,
             block_size,
-            piece_size,
+            piece_length,
             finish: false,
         }
     }
@@ -190,7 +189,7 @@ impl Piece {
             offset = 1 << 7
         }
 
-        self.finish = self.block_offset >= self.piece_size;
+        self.finish = self.block_offset >= self.piece_length;
     }
 
     pub fn is_finish(&self) -> bool {
@@ -242,25 +241,21 @@ pub struct PeerContext {
 
     /// gasket 共享上下文
     gc: GasketContext,
-
-    /// 当前 peer 的状态
-    status: Arc<Mutex<Status>>,
-
+    
     /// wrtier
     writer: Writer,
 
     /// 下载速率仪表盘
-    dashbord: Option<Dashbord>,
+    dashbord: Dashbord,
 }
 
 impl PeerContext {
-    fn new(no: u64, context: GasketContext) -> Self {
+    fn new(no: u64, context: GasketContext, dashbord: Dashbord) -> Self {
         Self {
             no,
             gc: context,
-            status: Arc::new(Mutex::new(Status::Choke)),
             writer: Writer::new(),
-            dashbord: None,
+            dashbord,
         }
     }
 
@@ -280,22 +275,25 @@ impl PeerContext {
         self.gc.save_path()
     }
 
-    pub fn bytefield(&self) -> &Arc<tokio::sync::Mutex<BytesMut>> {
+    pub fn bytefield(&self) -> &Arc<Mutex<BytesMut>> {
         self.gc.bytefield()
     }
 
     pub fn recv_bytes(&self) -> u64 {
-        self.dashbord.as_ref().unwrap().acked_bytes()
+        self.dashbord.acked_bytes()
     }
 
     pub fn bw(&self) -> u64 {
-        self.dashbord.as_ref().unwrap().bw()
+        self.dashbord.bw()
     }
 }
 
 pub struct Peer {
     /// peer context
     ctx: PeerContext,
+
+    /// 状态
+    status: Status,
 
     /// 对端地址
     addr: Arc<SocketAddr>,
@@ -313,7 +311,7 @@ pub struct Peer {
     store: Store,
 
     /// 对端拥有的分块
-    opposite_peer_bitfield: Option<BytesMut>,
+    opposite_peer_bitfield: Arc<Mutex<BytesMut>>,
 
     /// 收到响应的分块数据，收到的块（block）可能是乱序的
     /// 因此只有在前面的块（block）都收到后，才会更新这个
@@ -324,12 +322,12 @@ pub struct Peer {
 
     /// 请求的分块
     request_pieces: FnvHashMap<u32, u32>,
-
+    
     /// 下载速率仪表盘
-    dashbord: Option<Dashbord>,
+    dashbord: Dashbord,
 
-    /// 发送倒计时
-    ct: CountdownTimer,
+    /// 心跳包间隔
+    keep_alive_interval: Interval,
 }
 
 impl Peer {
@@ -339,22 +337,30 @@ impl Peer {
         context: GasketContext,
         emitter: Emitter,
         store: Store,
+        dashbord: Dashbord,
     ) -> Self {
-        let context = PeerContext::new(no, context);
+        let context = PeerContext::new(no, context, dashbord.clone());
+        let start = Instant::now() + KEEP_ALIVE;
+        let keep_alive_interval = tokio::time::interval_at(start, KEEP_ALIVE);
 
         Peer {
             ctx: context,
+            status: Status::Choke,
             addr,
             opposite_peer_id: None,
             opposite_peer_status: Status::Choke,
             emitter,
             store,
-            opposite_peer_bitfield: None,
+            opposite_peer_bitfield: Arc::new(Mutex::new(BytesMut::new())),
             response_pieces: FnvHashMap::default(),
             request_pieces: FnvHashMap::default(),
-            dashbord: None,
-            ct: CountdownTimer::new(Duration::from_secs(0)),
+            dashbord,
+            keep_alive_interval
         }
+    }
+    
+    pub fn dashbord(&self) -> Dashbord {
+        self.dashbord.clone()
     }
 
     fn no(&self) -> u64 {
@@ -380,7 +386,7 @@ impl Peer {
         let mut handshake_resp = vec![0u8; bytes.len()];
         let size = stream.read(&mut handshake_resp).await?;
         if size != bytes.len() {
-            error!("响应数据长度于预期不符 [{}]\t[{}]", size, bytes.len());
+            error!("响应数据长度与预期不符 [{}]\t[{}]", size, bytes.len());
             return Err(HandshakeError);
         }
 
@@ -428,22 +434,6 @@ impl Peer {
         Ok(())
     }
 
-    /// 响应事件处理
-    async fn handle(&mut self, msg_type: MsgType, bytes: Bytes) -> Result<()> {
-        let res = match msg_type {
-            MsgType::Choke => self.handle_choke().await?,
-            MsgType::UnChoke => self.handle_un_choke().await?,
-            MsgType::Interested => self.handle_interested().await?,
-            MsgType::NotInterested => self.handle_not_interested().await?,
-            MsgType::Have => self.handle_have(bytes).await?,
-            MsgType::Bitfield => self.handle_bitfield(bytes).await?,
-            MsgType::Request => self.handle_request(bytes).await?,
-            MsgType::Piece => self.handle_piece(bytes).await?,
-            MsgType::Cancel => self.handle_cancel(bytes).await?,
-        };
-        Ok(res)
-    }
-
     /// 请求块
     async fn request_block(&mut self, piece_index: u32) -> Result<()> {
         let block_size = self.ctx.config().block_size();
@@ -477,29 +467,28 @@ impl Peer {
     /// 获取发送窗口
     #[inline]
     fn cwnd(&self) -> u32 {
-        self.dashbord.as_ref().unwrap().cwnd()
+        self.dashbord.cwnd()
     }
 
     /// 获取流动数据量
     #[inline]
     fn inflight(&self) -> u32 {
-        self.dashbord.as_ref().unwrap().inflight()
+        self.dashbord.inflight()
     }
 
     /// 发送标记
     #[inline]
     fn send_mark(&mut self, packet_size: u32) {
-        self.dashbord.as_ref().unwrap().send(packet_size);
+        self.dashbord.send(packet_size);
     }
 
     /// 请求分片
     async fn request_piece(&mut self) -> Result<()> {
         while self.inflight() <= self.cwnd() {
             if let Some(idx) = self.try_find_downloadable_pices().await? {
-                self.ct.tokio_wait_reamining().await;
                 self.request_block(idx).await?;
             } else {
-                info!("没有了，那么等待响应的分片都响应完成");
+                trace!("没有了，那么等待响应的分片都响应完成");
                 break;
             }
         }
@@ -507,10 +496,7 @@ impl Peer {
     }
 
     fn is_can_be_download(&self) -> bool {
-        match self.ctx.status.lock() {
-            Ok(status) => *status == Status::UnChoke,
-            Err(e) => **e.get_ref() == Status::UnChoke,
-        }
+        self.status == Status::UnChoke
     }
 
     /// 尝试寻找可以下载的分块进行下载
@@ -524,21 +510,20 @@ impl Peer {
             return Ok(Some(*idx));
         }
 
-        // 下载暂停的分块
-        if let Some((idx, offset)) = self.ctx.gc.apply_download_pasue_piece() {
-            self.request_pieces.insert(idx, offset);
-            return Ok(Some(idx));
-        }
+        for piece_index in 0..self.ctx.torrent().piece_num() {
+            let (idx, offset) = util::bytes::bitmap_offset(piece_index);
+            
+            let item = self.opposite_peer_bitfield
+                .lock().await.get(idx) 
+                .map(|value| value & offset != 0);
+            if !matches!(item, Some(true))  {
+                continue;
+            }
 
-        while let Some((piece_index, block_offset)) =
-            self.ctx.gc.apply_download_piece(self.ctx.no).await
-        {
-            let (idx, offset) = util::bytes::bitmap_offset(piece_index as usize);
-            if let Some(true) = self
-                .opposite_peer_bitfield
-                .as_ref()
-                .map(|bytes| (bytes[idx] & offset) != 0)
-            {
+            if let Some((piece_index, block_offset)) = 
+                self.ctx.gc.apply_download_piece(self.ctx.no, piece_index as u32).await {
+                
+                self.insert_response_pieces(piece_index, block_offset);
                 self.request_pieces.insert(piece_index, block_offset);
                 return Ok(Some(piece_index));
             }
@@ -551,15 +536,19 @@ impl Peer {
         Ok(None)
     }
 
-    fn update_response_pieces(&mut self, piece_index: u32, block_offset: u32) -> (bool, u32) {
-        let block_size = self.ctx.config().block_size();
-        let piece_length = Self::get_piece_length(&self.ctx.torrent(), piece_index);
-        let piece = self
-            .response_pieces
-            .entry(piece_index)
-            .or_insert(Piece::new(piece_length, block_size));
+    fn insert_response_pieces(&mut self, piece_index: u32, block_offset: u32) {
+        let bs = self.ctx.config().block_size();
+        let pl = Self::get_piece_length(&self.ctx.torrent(), piece_index);
+        self.response_pieces.insert(piece_index, Piece::new(block_offset, pl, bs));
+    }
+
+    fn update_response_pieces(&mut self, piece_index: u32, block_offset: u32) -> Result<(bool, u32)> {
+        let piece = self.response_pieces.get_mut(&piece_index)
+            .ok_or(ResponsePieceError)?;
         piece.add_finish(block_offset);
-        (piece.is_finish(), piece.block_offset)
+        let res = (piece.is_finish(), piece.block_offset);
+        if res.0 { self.response_pieces.remove(&piece_index); }
+        Ok(res)
     }
 
     fn get_piece_length(torrent: &TorrentArc, piece_index: u32) -> u32 {
@@ -571,24 +560,61 @@ impl Peer {
     pub fn get_transfer_id(no: u64) -> String {
         format!("{}{}", PEER_PREFIX, no)
     }
+    
+    /// 释放正在下载的分片
+    async fn free_download_piece(&mut self, pieces: &Vec<u32>) {
+        for piece_index in pieces {
+            self.request_pieces.remove(piece_index);
+            if let Some(peer) = self.response_pieces.remove(piece_index) {
+                self.ctx.gc.give_back_download_pieces(self.no(), vec![(*piece_index, peer)]);
+            }
+        }
+        if self.response_pieces.is_empty() {
+            self.ctx.gc.report_no_downloadable_piece(self.no()).await;
+        }
+    }
+
+    /// 发送心跳包
+    async fn send_heartbeat(&self) -> Result<()> {
+        // 一般来说不是很管用
+        // let bytes = vec![0u8];
+        // self.ctx.writer.send(bytes).await?;
+        Ok(())
+    }
+
+    /// 收到心跳包，处理心跳包
+    async fn handle_heartbeat(&self) -> Result<()> {
+        // 暂时是啥也不做
+        Ok(())
+    }
+
+    /// 响应事件处理
+    async fn handle(&mut self, msg_type: MsgType, bytes: Bytes) -> Result<()> {
+        let res = match msg_type {
+            MsgType::Choke => self.handle_choke().await?,
+            MsgType::UnChoke => self.handle_un_choke().await?,
+            MsgType::Interested => self.handle_interested().await?,
+            MsgType::NotInterested => self.handle_not_interested().await?,
+            MsgType::Have => self.handle_have(bytes).await?,
+            MsgType::Bitfield => self.handle_bitfield(bytes).await?,
+            MsgType::Request => self.handle_request(bytes).await?,
+            MsgType::Piece => self.handle_piece(bytes).await?,
+            MsgType::Cancel => self.handle_cancel(bytes).await?,
+        };
+        Ok(res)
+    }
 
     /// 不让我们请求数据了
     async fn handle_choke(&mut self) -> Result<()> {
         info!("peer_no [{}] 对端不让我们请求下载数据", self.no());
-        match self.ctx.status.lock().as_mut() {
-            Ok(status) => **status = Status::Choke,
-            Err(e) => **e.get_mut() = Status::Choke,
-        }
+        self.status = Status::Choke;
         Ok(())
     }
 
     /// 告知可以交换数据了
     async fn handle_un_choke(&mut self) -> Result<()> {
-        info!("peer_no [{}] 对端告诉我们可以下载数据", self.no());
-        match self.ctx.status.lock().as_mut() {
-            Ok(status) => **status = Status::UnChoke,
-            Err(e) => **e.get_mut() = Status::UnChoke,
-        }
+        trace!("peer_no [{}] 对端告诉我们可以下载数据", self.no());
+        self.status = Status::UnChoke;
         self.request_piece().await?;
         Ok(())
     }
@@ -624,9 +650,9 @@ impl Peer {
         let bit = u32::from_be_slice(&bytes[..4]);
         let (idx, offset) = util::bytes::bitmap_offset(bit as usize);
 
-        self.opposite_peer_bitfield
-            .as_mut()
-            .map(|bytes| bytes[idx] |= offset);
+        self.opposite_peer_bitfield.
+            lock().await.get_mut(idx)
+            .map(|bytes| *bytes |= offset);
         self.request_piece().await?;
 
         Ok(())
@@ -636,7 +662,7 @@ impl Peer {
     async fn handle_bitfield(&mut self, bytes: Bytes) -> Result<()> {
         trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
         let torrent = self.ctx.torrent();
-        let bit_len = (torrent.info.pieces.len() / 20 + 7) >> 3;
+        let bit_len = torrent.bitfield_len();
         if bytes.len() != bit_len {
             warn!(
                 "远端给到的 bitfield 长度和期望的不一致，期望的: {}\t实际的bytes: {:?}",
@@ -646,7 +672,9 @@ impl Peer {
             return Err(BitfieldError);
         }
 
-        self.opposite_peer_bitfield = Some(BytesMut::from(bytes));
+        let bitfield = Arc::new(Mutex::new(BytesMut::from(bytes)));
+        self.opposite_peer_bitfield = bitfield.clone();
+        self.ctx.gc.reported_bitfield(self.no(), bitfield);
         self.request_piece().await?;
 
         Ok(())
@@ -669,18 +697,27 @@ impl Peer {
         }
 
         let piece_index = u32::from_be_slice(&bytes[0..4]);
+        
+        // 交给了其他 peer 下载这个 piece。见 free_download_piece
+        if !self.response_pieces.contains_key(&piece_index) {
+            return Ok(());
+        }
+        
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
 
         self.request_piece().await?;
-        let (over, cts_bo) = self.update_response_pieces(piece_index, block_offset);
+        let (over, cts_bo) = self.update_response_pieces(piece_index, block_offset)?;
 
+        if over {
+            self.ctx.gc.reported_piece_finished(self.no(), piece_index).await;
+        }
+        
         self.write_file(piece_index, block_offset, block_data, over);
 
         // 上报给 gasket
         self.ctx.gc.reported_download(piece_index, cts_bo, block_data_len as u64);
-        self.try_find_downloadable_pices().await?;
 
         Ok(())
     }
@@ -695,6 +732,7 @@ impl Peer {
     fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes, over: bool) {
         let context = self.ctx.gc.clone();
         let store = self.store.clone();
+        let peer_no = self.no();
         let sender = self
             .emitter
             .get(&Self::get_transfer_id(self.ctx.no))
@@ -720,13 +758,15 @@ impl Peer {
 
             // 校验分块 hash
             if over {
-                Self::checkout(context, piece_index, sender, store).await;
+                // context.reported_piece_finished(peer_no, piece_index).await;
+                Self::checkout(peer_no, context, piece_index, sender, store).await;
             }
         });
     }
 
     /// 校验分块
     async fn checkout(
+        peer_no: u64,
         context: GasketContext,
         piece_index: u32,
         sender: Sender<TransferPtr>,
@@ -746,8 +786,8 @@ impl Peer {
                 let _ = sender.send(cmd).await; // 有可能第一次发送错误就关闭了 peer，所以不必理会发送错误
             }
             _ => {
-                debug!("第 {} 个分块校验通过", piece_index);
-                context.reported_piece_finished(piece_index).await;
+                trace!("第 {} 个分块校验通过", piece_index);
+                context.reported_piece_finished(peer_no, piece_index).await;
             }
         }
     }
@@ -757,7 +797,13 @@ impl Peer {
         let timeout = self.ctx.config().peer_connection_timeout();
         match tokio::time::timeout(timeout, TcpStream::connect(&*self.addr)).await {
             Ok(Ok(stream)) => Ok(stream),
-            _ => Err(Error::TimeoutError),
+            Ok(Err(e)) => {
+                error!("连接对端 peer 失败: {:?}", e);
+                Err(Error::ConnectionError)
+            },
+            Err(_) => {
+                Err(Error::TimeoutError)
+            }
         }
     }
 
@@ -770,9 +816,7 @@ impl Peer {
     ) -> (JoinHandle<()>, JoinHandle<()>) {
         let (reader, writer) = stream.into_split();
         let (send, recv) = channel(self.ctx.config().channel_buffer());
-        let probe = Probe::new();
-
-        self.dashbord = Some(probe.dashbord());
+        let probe = Probe::new(self.dashbord.clone());
 
         let write_future_handle = tokio::spawn(
             WriteFuture {
@@ -830,7 +874,8 @@ impl Runnable for Peer {
 
         let future_token = match self.start(send).await {
             Ok(future_token) => future_token,
-            Err(_) => {
+            Err(e) => {
+                debug!("启动 future token 失败: {}", e);
                 self.ctx
                     .gc
                     .peer_exit(self.ctx.no, ExitReason::Exception)
@@ -868,6 +913,13 @@ impl Runnable for Peer {
                         }
                     }
                 }
+                _ = self.keep_alive_interval.tick() => {
+                    if self.send_heartbeat().await.is_err() {
+                        // 失败了就失败，这个不是很重要，因为大部分
+                        // 端都不会理会心跳包的
+                        warn!("发送心跳包失败");
+                    }
+                }
             }
         }
 
@@ -879,7 +931,8 @@ impl Runnable for Peer {
         // 归还未下完的分块
         self.ctx
             .gc
-            .give_back_download_piece(self.ctx.no, self.response_pieces);
+            .give_back_download_pieces(self.ctx.no, self.response_pieces.into_iter().collect());
+        self.dashbord.clear_ing();
         self.emitter.remove(&Self::get_transfer_id(self.ctx.no));
         self.ctx.gc.peer_exit(self.ctx.no, reason).await;
         debug!("peer [{}] 已退出！", self.ctx.no);

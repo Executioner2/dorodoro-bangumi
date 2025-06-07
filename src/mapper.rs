@@ -1,4 +1,5 @@
 pub mod torrent;
+mod error;
 
 /// db 保存路径
 pub static DB_SAVE_PATH: &str = "db";

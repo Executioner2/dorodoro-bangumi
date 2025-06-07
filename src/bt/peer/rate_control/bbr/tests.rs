@@ -2,7 +2,7 @@ use crate::bt::peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Thro
 use crate::bytes::Bytes2Int;
 use crate::collection::FixedQueue;
 use crate::log;
-use crate::peer::future::BtResp;
+use crate::peer::peer_resp::PeerResp;
 use crate::timer::CountdownTimer;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
@@ -30,6 +30,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
 use tracing::Level;
+use crate::peer::peer_resp::RespType::*;
 
 const BLOCK_SIZE: u32 = 1 << 14;
 const MSS: u32 = 17;
@@ -128,13 +129,13 @@ async fn do_async_read(
 ) {
     let fd = read.as_ref().as_raw_fd();
     let addr = read.peer_addr().unwrap();
-    let mut bt_resp = BtResp::new(&mut read, &addr);
+    let mut bt_resp = PeerResp::new(&mut read, &addr);
     loop {
         tokio::select! {
             res = &mut bt_resp => {
                 // let i = Instant::now();
                 match res {
-                    Some((_msg_type, buf)) => {
+                    Normal(_msg_type, buf) => {
                         let packet_size = buf.len() as u32 + 13;
                         // if let Some(key) = get_packet_id(&buf) {
                             // if let Some((_, instant)) = inflight.remove(&key) {
@@ -151,12 +152,15 @@ async fn do_async_read(
                         rc.ack(packet_size as u64, fd);
                         tx.send(packet_size).await.unwrap();
                     },
-                    None => {
+                    Heartbeat => {
+                        println!("心跳包");
+                    }
+                    Unoknown => {
                         eprintln!("断开了链接");
                         break;
                     }
                 }
-                bt_resp = BtResp::new(&mut read, &addr);
+                bt_resp = PeerResp::new(&mut read, &addr);
             }
         }
     }
@@ -286,23 +290,26 @@ async fn do_normal_async_read(
     tx: Sender<u64>,
 ) {
     let addr = read.peer_addr().unwrap();
-    let mut bt_resp = BtResp::new(&mut read, &addr);
+    let mut bt_resp = PeerResp::new(&mut read, &addr);
     loop {
         tokio::select! {
             res = &mut bt_resp => {
                 match res {
-                    Some((_msg_type, buf)) => {
+                    Normal(_msg_type, buf) => {
                         let size = buf.len() as u64 + 13;
                         inflight.fetch_sub(1, Ordering::Relaxed);
                         read_size.fetch_add(size, Ordering::Relaxed);
                         tx.send(size).await.unwrap();
                     },
-                    None => {
+                    Heartbeat => {
+                        println!("心跳包");
+                    }
+                    Unoknown => {
                         eprintln!("断开了链接");
                         break;
                     }
                 }
-                bt_resp = BtResp::new(&mut read, &addr);
+                bt_resp = PeerResp::new(&mut read, &addr);
             }
         }
     }
@@ -440,7 +447,7 @@ async fn test_get_tcp_socket_tcp_info() {
     );
 
     let addr = read.peer_addr().unwrap();
-    let x = BtResp::new(&mut read, &addr).await.unwrap();
+    let x = PeerResp::new(&mut read, &addr).await;
     // let mut buffer = vec![0u8; 5 + 13];
     // loop {
     //     read.readable().await.unwrap();
@@ -502,7 +509,10 @@ async fn test_get_tcp_socket_tcp_info() {
         info.tcpi_options,
         info.tcpi_snd_sbbytes
     );
-    println!("msg_type: {:?}", x.0);
+    
+    if let Normal(msg_type, buf) = x {
+        println!("msg_type: {:?}", msg_type);
+    }
 }
 
 #[cfg(target_os = "macos")]

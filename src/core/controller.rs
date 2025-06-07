@@ -76,7 +76,8 @@ impl Runnable for Controller {
                         },
                         Ok(1) => {
                             trace!("接收到了添加种子文件的指令");
-                            let data = fs::read("tests/resources/test6.torrent").unwrap();
+                            // let data = fs::read("tests/resources/test6.torrent").unwrap(); // test6 是 17GB 多文件的
+                            let data = fs::read("tests/resources/test7.torrent").unwrap();
                             let path = PathBuf::from("./download/");
                             let torrent = TorrentArc::parse_torrent(data).unwrap();
                             let cmd = command::TorrentAdd {

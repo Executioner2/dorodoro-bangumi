@@ -911,7 +911,7 @@ pub mod rd {
     use dorodoro_bangumi::bytes::Bytes2Int;
     use dorodoro_bangumi::collection::FixedQueue;
     use dorodoro_bangumi::peer::MsgType;
-    use dorodoro_bangumi::peer::future::BtResp;
+    use dorodoro_bangumi::peer::peer_resp::PeerResp;
     use futures::future::BoxFuture;
     use std::net::SocketAddr;
     use std::ops::{Deref, DerefMut};
@@ -919,6 +919,7 @@ pub mod rd {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
     use tokio::net::tcp::OwnedReadHalf;
+    use dorodoro_bangumi::peer::peer_resp::RespType::Normal;
 
     pub struct ReqDataFactory {
         pub tick: Instant,
@@ -1035,8 +1036,11 @@ pub mod rd {
             addr: &'a SocketAddr,
         ) -> BoxFuture<'a, (MsgType, BytesWrapper)> {
             Box::pin(async move {
-                let res = BtResp::new(read, addr).await.unwrap();
-                (res.0, BytesWrapper { inner: res.1 })
+                if let Normal(msg_type, data) = PeerResp::new(read, addr).await {
+                    (msg_type, BytesWrapper { inner: data })
+                } else {
+                    panic!("不是正常的响应")
+                }
             })
         }
 

@@ -1,38 +1,38 @@
 pub mod command;
+mod coordinator;
 mod error;
 
-use crate::collection::FixedQueue;
 use crate::command::CommandHandler;
 use crate::core::config::Config;
-use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::GASKET_PREFIX;
-use crate::mapper::torrent::{TorrentEntity, TorrentMapper};
+use crate::core::emitter::Emitter;
+use crate::db::ConnWrapper;
+use crate::mapper::torrent::{TorrentEntity, TorrentMapper, TorrentStatus};
+use crate::peer::rate_control::probe::Dashbord;
+use crate::peer::rate_control::RateControl;
 use crate::peer::{Peer, Piece};
-use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{Command, SaveProgress, StartWaittingAddr};
+use crate::peer_manager::gasket::coordinator::Coordinator;
+use crate::peer_manager::PeerManagerContext;
 use crate::runtime::Runnable;
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
-use crate::{peer, util};
+use crate::{if_else, net, peer, util};
 use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
-use fnv::FnvHashMap;
-use rand::Rng;
+use fnv::FnvHashSet;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::sync::Mutex;
+use std::sync::Arc;
 use tokio::sync::mpsc::channel;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use tokio_util::sync::WaitForCancellationFuture;
-use tracing::{debug, error, info, trace};
-use crate::db::ConnWrapper;
+use tracing::{debug, error, info, level_enabled, trace, Level};
 
 #[derive(PartialEq, Debug)]
 pub enum ExitReason {
@@ -41,6 +41,9 @@ pub enum ExitReason {
 
     /// 没有任务的退出
     NotHasJob,
+
+    /// 周期性的临时 peer 替换
+    PeriodicPeerReplace,
 
     /// 异常退出
     Exception,
@@ -55,17 +58,54 @@ pub enum PieceStatus {
     Pause(u32),
 }
 
-struct PeerInfo {
+#[derive(Debug)]
+pub struct PeerInfo {
+    /// peer 的编号
+    no: u64,
+
     /// 通信地址
     addr: Arc<SocketAddr>,
+
+    /// 速率仪表盘
+    dashbord: Dashbord,
+
+    /// 是否长期运行
+    lt_running: bool,
+
+    /// 是否正在等待有可用分片
+    wait_piece: bool,
+
+    /// 正在下载的分片
+    download_piece: FnvHashSet<u32>,
+
+    /// 对端拥有的分片
+    bitfield: Arc<Mutex<BytesMut>>,
 
     /// 异步任务句柄
     join_handle: Option<JoinHandle<()>>,
 }
 
 impl PeerInfo {
-    fn new(addr: Arc<SocketAddr>, join_handle: Option<JoinHandle<()>>) -> Self {
-        Self { addr, join_handle }
+    fn new(
+        no: u64,
+        addr: Arc<SocketAddr>,
+        dashbord: Dashbord,
+        join_handle: Option<JoinHandle<()>>,
+    ) -> Self {
+        Self {
+            no,
+            addr,
+            dashbord,
+            lt_running: true,
+            join_handle,
+            download_piece: FnvHashSet::default(),
+            bitfield: Arc::new(Mutex::new(BytesMut::new())),
+            wait_piece: false,
+        }
+    }
+
+    pub fn is_lt(&self) -> bool {
+        self.lt_running
     }
 }
 
@@ -116,8 +156,8 @@ pub struct GasketContext {
     /// peer 传输速率
     peer_transfer_speed: Arc<DashMap<u64, u64>>,
 
-    /// 等待下载的分片
-    wait_download_piece: Arc<Mutex<VecDeque<u32>>>,
+    /// 是否下载完成
+    status: Arc<Mutex<TorrentStatus>>,
 }
 
 impl GasketContext {
@@ -129,19 +169,9 @@ impl GasketContext {
         entity: TorrentEntity,
         emitter: Emitter,
     ) -> Self {
-        let mut wait_download_piece = VecDeque::new();
         let ub: DashMap<u32, PieceStatus> =
             entity.underway_bytefield.unwrap().into_iter().collect();
-        for i in 0..(torrent.info.pieces.len() / 20) {
-            let (idx, offset) = util::bytes::bitmap_offset(i);
-            if let Some(val) = entity.bytefield.as_ref().unwrap().get(idx) {
-                if val & offset == 0 && !ub.contains_key(&(idx as u32)) {
-                    wait_download_piece.push_back(i as u32);
-                }
-            }
-        }
-
-        shuffle_vecdeque(&mut wait_download_piece);
+        let status = entity.status.unwrap();
 
         Self {
             gtid,
@@ -159,7 +189,7 @@ impl GasketContext {
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
             emitter,
             peer_transfer_speed: Arc::new(DashMap::new()),
-            wait_download_piece: Arc::new(Mutex::new(wait_download_piece)),
+            status: Arc::new(Mutex::from(status)),
         }
     }
 
@@ -195,9 +225,10 @@ impl GasketContext {
 
         if let Some((_, mut peer)) = self.peers.remove(&peer_no) {
             debug!("成功移除 peer_no [{}]", peer_no);
-            if reason == ExitReason::NotHasJob {
+            if reason == ExitReason::NotHasJob || reason == ExitReason::PeriodicPeerReplace {
                 peer.join_handle = None;
                 self.wait_queue.lock().await.push_back(peer);
+                self.try_notify_wait_piece().await;
             } else {
                 self.unstart_host.remove(&peer.addr);
                 trace!("将这个地址从不可用host中移除了");
@@ -216,49 +247,64 @@ impl GasketContext {
         trace!("发送了唤醒消息");
     }
 
-    /// 申请下载暂停了的分块
-    pub fn apply_download_pasue_piece(&self) -> Option<(u32, u32)> {
-        trace!("分块情况: {:?}", self.underway_bytefield);
-        for mut item in self.underway_bytefield.iter_mut() {
-            if let PieceStatus::Pause(block_offset) = item.value() {
-                let res = Some((*item.key(), *block_offset));
-                *item.value_mut() = PieceStatus::Ing(*block_offset);
-                return res;
-            }
+    /// 尝试唤醒一个等待 piece 的，下载速率相对来说还不错的 peer
+    async fn try_notify_wait_piece(&self) -> Option<()> {
+        let peer_no = *self.peers.iter_mut().find(|item| item.wait_piece)?.key();
+        self.assign_peer_handle(peer_no).await;
+        Some(())
+    }
+
+    /// 尝试分配任务
+    pub async fn assign_peer_handle(&self, peer_no: u64) {
+        if let Some(mut item) = self.peers.get_mut(&peer_no) {
+            trace!("唤醒了等待任务的 peer [{}]，ip addr: {}", item.no, item.addr);
+            let tid = Peer::get_transfer_id(peer_no);
+            let cmd = peer::command::TryRequestPiece.into();
+            item.wait_piece = false;
+            let _ = self.emitter.send(&tid, cmd).await;
         }
-        None
+    }
+
+    /// 上报 bitfield
+    pub fn reported_bitfield(&self, peer_no: u64, bitfield: Arc<Mutex<BytesMut>>) {
+        self.peers
+            .get_mut(&peer_no)
+            .map(|mut item| item.bitfield = bitfield);
     }
 
     /// 申请下载分块
-    pub async fn apply_download_piece(&self, peer_no: u64) -> Option<(u32, u32)> {
+    pub async fn apply_download_piece(&self, peer_no: u64, piece_index: u32) -> Option<(u32, u32)> {
         trace!("peer {} 申请下载分块", peer_no);
         let mut res = None;
 
-        // 这里保证 wait_download_piece 中的一定是未开始的分块
-        if let Some(piece_index) = self.wait_download_piece.lock().await.pop_front() {
-            let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
-            let mut bytefield = self.bytefield.lock().await;
-            if bytefield.get_mut(index).map(|byte| *byte & offset) == Some(0) {
-                self.underway_bytefield
-                    .entry(piece_index)
-                    .and_modify(|value| {
-                        if let PieceStatus::Pause(block_offset) = value {
-                            res = Some((piece_index, *block_offset));
-                            *value = PieceStatus::Ing(*block_offset)
-                        }
-                    })
-                    .or_insert_with(|| {
-                        res = Some((piece_index, 0));
-                        PieceStatus::Ing(0)
-                    });
-            }
+        let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
+        let mut bytefield = self.bytefield.lock().await;
+        if *bytefield.get_mut(index)? & offset == 0 {
+            self.underway_bytefield
+                .entry(piece_index)
+                .and_modify(|value| {
+                    if let PieceStatus::Pause(block_offset) = value {
+                        res = Some((piece_index, *block_offset));
+                        *value = PieceStatus::Ing(*block_offset)
+                    }
+                })
+                .or_insert_with(|| {
+                    res = Some((piece_index, 0));
+                    PieceStatus::Ing(0)
+                });
+        }
+
+        if let Some((pi, _)) = res.as_ref() {
+            self.peers.get_mut(&peer_no).map(|mut item| {
+                item.download_piece.insert(*pi);
+            });
         }
 
         res
     }
 
     /// 归还分块下载
-    pub fn give_back_download_piece(&self, peer_no: u64, give_back: FnvHashMap<u32, Piece>) {
+    pub fn give_back_download_pieces(&self, peer_no: u64, give_back: Vec<(u32, Piece)>) {
         debug!("peer {} 归还下载分块", peer_no);
         for (piece_index, piece) in give_back {
             if !piece.is_finish() {
@@ -271,15 +317,123 @@ impl GasketContext {
     /// 有 peer 告诉我们没有分块可以下载了。在这里根据下载情况，决定是否让这个 peer 去抢占别人的任务
     pub async fn report_no_downloadable_piece(&self, peer_no: u64) {
         trace!("peer {} 没有可下载的分块了", peer_no);
-
-        // 通知 peer 结束运行
-        if let Some(_) = self.peers.get(&peer_no) {
-            let tid = Peer::get_transfer_id(peer_no);
-            let cmd = peer::command::Exit {
-                reason: ExitReason::NotHasJob,
+        if self.check_finished().await {
+            self.store_progress().await;
+            self.download_finished_after_handle().await;
+        } else {
+            if level_enabled!(Level::DEBUG) {
+                let mut str = String::new();
+                self.peers.iter().for_each(|item| {
+                    let (bw, unit) = net::rate_formatting(item.dashbord.bw());
+                    str.push_str(&format!("{}-{}: {}{} {:?}\n",
+                                      item.no, item.addr.port(), bw, unit, 
+                                      item.download_piece.clone())
+                    );
+                });
+                debug!("peer_no: {} 没有任务了\t当前运行中的 peer: \n{}", peer_no, str);    
             }
-            .into();
-            self.emitter.send(&tid, cmd).await.unwrap();
+
+            // 判断当前 peer no 的地位，如果是超快 peer，那么就从最慢
+            // 的 peer 开始，寻找当前 peer 可以抢过来下载的 piece
+            if self.try_free_slow_piece(peer_no).await != Some(true) {
+                self.notify_peer_stop(peer_no, ExitReason::NotHasJob).await;
+                info!("没有可下载的分块了，停掉peer: {}", peer_no);
+            } else {
+                self.peers.get_mut(&peer_no).map(|mut item| item.wait_piece = true);
+            }
+        }
+    }
+
+    /// 释放下得慢点 piece
+    async fn try_free_slow_piece(&self, peer_no: u64) -> Option<bool> {
+        let mut flag = false;
+        let peer = self
+            .peers
+            .get(&peer_no)
+            .map(|item| (item.no, item.dashbord.bw(), item.bitfield.clone()))?;
+
+        let mut peers = self
+            .peers
+            .iter()
+            .filter(|item| *item.key() != peer.0)
+            .map(|item| (item.no, item.dashbord.bw()))
+            .collect::<Vec<_>>();
+        peers.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+
+        // 寻找速率比这个慢，同时正在进行要停掉 peer 可以下载的 piece。
+        // 那么就告诉这个 peer，放弃下载这个 piece
+        for p in peers.iter() {
+            if coordinator::faster(peer.1, p.1) {
+                let item = self.peers.get_mut(&p.0);
+                let mut item = if_else!(item.is_none(), continue, item.unwrap());
+
+                let peer_bitmap = peer.2.lock().await;
+
+                let mut free_piece = vec![];
+                item.download_piece.retain(|piece_index| {
+                    let (idx, ost) = util::bytes::bitmap_offset(*piece_index as usize);
+                    let res = peer_bitmap.get(idx).map(|val| val & ost != 0).unwrap_or(false);
+                    if res { free_piece.push(*piece_index); }
+                    !res
+                });
+
+                if !free_piece.is_empty() {
+                    let tid = Peer::get_transfer_id(p.0);
+                    let cmd = peer::command::FreePiece {
+                        peer_no: peer.0,
+                        pieces: free_piece,
+                    }.into();
+                    let _ = self.emitter.send(&tid, cmd).await;
+                    flag = true;
+                    break;
+                }
+            }
+        }
+
+        Some(flag)
+    }
+
+    /// 通知 peer 停止运行
+    pub async fn notify_peer_stop(&self, peer_no: u64, reason: ExitReason) {
+        let tid = Peer::get_transfer_id(peer_no);
+        let cmd = peer::command::Exit { reason }.into();
+        let _ = self.emitter.send(&tid, cmd).await; // 可能在通知退出前就已经退出了，所以忽略错误
+    }
+
+    /// 升级为 lt peer
+    pub fn upgrage_lt_peer(&self, tmp_peer: u64) -> Option<()> {
+        self.peers.get_mut(&tmp_peer)?.lt_running = true;
+        Some(())
+    }
+
+    /// 替换 peer，用一个临时 peer 替换一个 lt peer，并把这个临时 peer 升级为 lt peer
+    pub async fn replace_peer(&self, tmp_peer: u64, lt_peer: u64) -> Option<()> {
+        // 将 tmp_peer 升级为 lt_peer
+        self.upgrage_lt_peer(tmp_peer)?;
+
+        // 通知 lt_peer 停止运行
+        self.notify_peer_stop(lt_peer, ExitReason::PeriodicPeerReplace)
+            .await;
+
+        Some(())
+    }
+
+    /// 开启一个临时 peer
+    pub async fn start_temp_peer(&self) {
+        // gasket 通知关闭 peer 关闭，此过程是异步的，因此可能有 1 个 peer 的延迟
+        if self.config().torrent_peer_conn_limit() < self.peers.len() {
+            info!(
+                "无法启动临时 peer，因为当前 peer 数量已达上限，当前 peers 数量: {}",
+                self.peers.len()
+            );
+            return;
+        }
+
+        // 统一由 gasket 启动 peer，避免数量更新不一致导致多启动 peer
+        if let Some(peer_info) = self.wait_queue.lock().await.pop_front() {
+            info!("启动一个新的 temp peer, addr: {}", peer_info.addr);
+            let cmd = command::StartTempPeer { peer_info }.into();
+            self.emitter.send(&self.gtid, cmd).await.unwrap();
         }
     }
 
@@ -299,20 +453,70 @@ impl GasketContext {
     }
 
     /// 上报分块下载完成
-    pub async fn reported_piece_finished(&self, piece_index: u32) {
+    pub async fn reported_piece_finished(&self, peer_no: u64, piece_index: u32) {
         let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
-        let mut bytefield = self.bytefield.lock().await;
-        bytefield.get_mut(index).map(|byte| *byte |= offset);
+        self.bytefield
+            .lock()
+            .await
+            .get_mut(index)
+            .map(|byte| *byte |= offset);
 
         self.underway_bytefield.remove(&piece_index);
+        self.peers.get_mut(&peer_no).map(|mut item| {
+            item.download_piece.remove(&piece_index);
+        });
 
+        self.check_finished().await;
+        self.store_progress().await;
+
+        self.download_finished_after_handle().await;
+    }
+
+    ///　保存进度
+    async fn store_progress(&self) {
+        let status = self.status.lock().await.clone();
         // 存数据库，通过通道信号传递给 gasket 执行存储动作，避免阻塞 peer 线程
-        self.emitter
-            .send(&self.gtid, SaveProgress.into())
-            .await
-            .unwrap();
+        let cmd = SaveProgress {
+            status: Some(status),
+        }
+        .into();
+        self.emitter.send(&self.gtid, cmd).await.unwrap();
+    }
 
-        // 异步广播
+    /// 下载完成后的后置处理
+    async fn download_finished_after_handle(&self) {
+        // 通知各个 peer 退出
+        if *self.status.lock().await == TorrentStatus::Finished {
+            info!("下载完成，通知 peer 退出");
+            let peers = self
+                .peers
+                .iter()
+                .map(|item| *item.key())
+                .collect::<Vec<_>>();
+            for peer_no in peers.iter() {
+                self.notify_peer_stop(*peer_no, ExitReason::Normal).await;
+            }
+        }
+    }
+
+    /// 检查是否下载完成
+    async fn check_finished(&self) -> bool {
+        if *self.status.lock().await == TorrentStatus::Finished {
+            return true;
+        }
+
+        let pn = self.torrent.piece_num() - 1; // 分片下标从 0 开始
+        let (_, mut last_v) = util::bytes::bitmap_offset(pn);
+        let bytefield = self.bytefield.lock().await;
+        for v in bytefield.iter().rev() {
+            if *v != last_v {
+                return false;
+            }
+            last_v = u8::MAX;
+        }
+
+        *self.status.lock().await = TorrentStatus::Finished;
+        true
     }
 
     /// 上报读取到的数据大小
@@ -331,17 +535,6 @@ pub struct Gasket {
 
     /// 存储处理
     store: Store,
-}
-
-pub fn shuffle_vecdeque<T>(deque: &mut VecDeque<T>) {
-    let mut rng = rand::rng();
-    let len = deque.len();
-
-    // Fisher-Yates 洗牌算法
-    for i in (1..len).rev() {
-        let j = rng.random_range(0..=i);
-        deque.swap(i, j);
-    }
 }
 
 impl Gasket {
@@ -366,36 +559,65 @@ impl Gasket {
 
         Self { id, ctx, store }
     }
-    
+
     fn get_config(&self) -> Config {
         self.ctx.config()
     }
-    
+
     async fn get_conn(&self) -> ConnWrapper {
         self.ctx.pm_ctx.context.get_conn().await.unwrap()
     }
     
     async fn start_peer(&self, addr: Arc<SocketAddr>) {
         debug!("启动peer: {}", addr);
-        if self.ctx.unstart_host.contains(&addr) {
+        if self.ctx.unstart_host.contains(&addr) || self.ctx.check_finished().await {
             return;
         }
 
-        let torrent_peer_conn_limit = self
-            .get_config()
-            .torrent_peer_conn_limit();
-        let unstart_host = self.ctx.unstart_host.clone();
+        let limit = self.get_config().torrent_lt_peer_conn_limit();
+        let unstart_host = &self.ctx.unstart_host;
+        unstart_host.insert(addr.clone());
 
         // 超过配额，加入等待队列中
-        if torrent_peer_conn_limit <= self.ctx.peers.len() {
-            unstart_host.insert(addr.clone());
-            self.ctx.wait_queue
-                .lock()
-                .await
-                .push_back(PeerInfo::new(addr, None));
+        let dashbord = Dashbord::new();
+        if limit <= self.ctx.peers.len() {
+            debug!("peer 数量已超过额定限制");
+            let pi = PeerInfo::new(0, addr, dashbord, None);
+            self.ctx.wait_queue.lock().await.push_back(pi);
             return;
         }
 
+        self.do_start_peer(addr, dashbord, true);
+    }
+    
+    async fn start_wait_peer(&self, pi: PeerInfo) {
+        // 超过配额，加入等待队列中
+        let limit = self.get_config().torrent_peer_conn_limit();
+        if limit < self.ctx.peers.len() {
+            self.ctx.wait_queue.lock().await.push_back(pi);
+            return;
+        }
+
+        let addr = pi.addr.clone();
+        let dashbord = pi.dashbord.clone();
+        self.do_start_peer(addr, dashbord, true);
+    }
+
+    async fn start_temp_peer(&self, pi: PeerInfo) {
+        // 超过配额，加入等待队列中
+        // gasket 通知关闭 peer 关闭，此过程是异步的，因此可能有 1 个 peer 的延迟
+        let limit = self.get_config().torrent_peer_conn_limit();
+        if limit < self.ctx.peers.len() {
+            self.ctx.wait_queue.lock().await.push_back(pi);
+            return;
+        }
+
+        let addr = pi.addr.clone();
+        let dashbord = pi.dashbord.clone();
+        self.do_start_peer(addr, dashbord, false);
+    }
+
+    fn do_start_peer(&self, addr: Arc<SocketAddr>, dashbord: Dashbord, lt: bool) {
         let peer_no = self.ctx.peer_no_count.fetch_add(1, Ordering::Acquire);
         let peer = Peer::new(
             peer_no,
@@ -403,11 +625,13 @@ impl Gasket {
             self.ctx.clone(),
             self.ctx.emitter.clone(),
             self.store.clone(),
+            dashbord.clone(),
         );
-        unstart_host.insert(addr.clone());
+
         let join_handle = tokio::spawn(peer.run());
-        self.ctx.peers
-            .insert(peer_no, PeerInfo::new(addr, Some(join_handle)));
+        let mut peer = PeerInfo::new(peer_no, addr, dashbord, Some(join_handle));
+        peer.lt_running = lt;
+        self.ctx.peers.insert(peer_no, peer);
     }
 
     async fn shutdown(self) {
@@ -424,11 +648,11 @@ impl Gasket {
                 handle.await.unwrap();
             }
         }
-        self.save_progress().await;
+        self.save_progress(None).await;
     }
 
-    async fn save_progress(&self) {
-        debug!("保存下载进度");
+    async fn save_progress(&self, status: Option<TorrentStatus>) {
+        trace!("保存下载进度");
         let conn = self.get_conn().await;
 
         // 将 ub 转换为 Vec，将 Ing 改为 Pause
@@ -448,6 +672,7 @@ impl Gasket {
             bytefield: Some(self.ctx.bytefield.lock().await.clone()),
             download: Some(self.ctx.download.load(Ordering::Relaxed)),
             uploaded: Some(self.ctx.uploaded.load(Ordering::Relaxed)),
+            status,
             ..Default::default()
         };
         conn.save_progress(entity);
@@ -465,9 +690,7 @@ impl Gasket {
             self.ctx.download.clone(),
             self.ctx.uploaded.clone(),
             self.ctx.torrent.info.length,
-            self.get_config()
-                .tcp_server_addr()
-                .port(),
+            self.get_config().tcp_server_addr().port(),
         );
         let tracker = Tracker::new(
             self.ctx.torrent.clone(),
@@ -479,7 +702,7 @@ impl Gasket {
         );
         tokio::spawn(tracker.run())
     }
-    
+
     #[inline]
     async fn pop_wait_peer(&self) -> Option<PeerInfo> {
         self.ctx.wait_queue.lock().await.pop_front()
@@ -488,20 +711,13 @@ impl Gasket {
 
 impl Runnable for Gasket {
     async fn run(mut self) {
-        let (send, mut recv) = channel(
-            self.get_config().channel_buffer(),
-        );
+        let (send, mut recv) = channel(self.get_config().channel_buffer());
         let transfer_id = Self::get_transfer_id(self.id);
         self.ctx.emitter.register(transfer_id.clone(), send.clone());
 
         trace!("启动 gasket");
         let tracker_handle = self.start_tracker();
-        let speed_handle = tokio::spawn(start_speed_report(
-            self.ctx.download.clone(),
-            self.ctx.torrent.info.length,
-            self.ctx.peer_transfer_speed.clone(),
-            self.ctx.pm_ctx.clone(),
-        ));
+        let coordinator_handle = tokio::spawn(Coordinator::new(self.ctx.clone()).run());
 
         loop {
             tokio::select! {
@@ -521,42 +737,9 @@ impl Runnable for Gasket {
             }
         }
 
-        speed_handle.await.unwrap();
+        coordinator_handle.await.unwrap();
         tracker_handle.await.unwrap();
         self.shutdown().await;
         debug!("gasket {} 已退出！", transfer_id);
     }
-}
-
-/// 启动速率播报
-async fn start_speed_report(
-    download: Arc<AtomicU64>,
-    length: u64,
-    peer_transfer_speed: Arc<DashMap<u64, u64>>,
-    peer_manager_context: PeerManagerContext,
-) {
-    let start = Instant::now() + Duration::from_secs(1);
-    let mut interval = tokio::time::interval_at(start, Duration::from_secs(1));
-    let mut window = FixedQueue::new(5);
-    let mut sum = 0.0;
-    loop {
-        tokio::select! {
-            _ = peer_manager_context.context.cancelled() => {
-                break;
-            }
-            _ = interval.tick() => {
-                let mut speed: f64 = 0.0;
-                peer_transfer_speed.retain(|_, read_size| {
-                    speed += *read_size as f64;
-                    false
-                });
-                window.push(speed).map(|head| sum -= head);
-                sum += speed;
-                let download = download.load(Ordering::Relaxed);
-                trace!("下载速度: {:.2} MiB/s\t当前进度: {:.2}%", sum / window.len() as f64 / 1024.0 / 1024.0, download as f64 / length as f64 * 100.0);
-            }
-        }
-    }
-
-    debug!("速率播报已退出！")
 }

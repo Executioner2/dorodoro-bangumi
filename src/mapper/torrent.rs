@@ -1,17 +1,21 @@
 //! torrent 数据持久化
 
 use crate::db::ConnWrapper;
+use crate::mapper::error::Error;
+use crate::mapper::error::Result;
 use crate::peer_manager::gasket::PieceStatus;
 use crate::torrent::TorrentArc;
 use bincode::config;
 use bytes::BytesMut;
 use dashmap::DashMap;
 use rusqlite::params;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::warn;
 
 /// 种子状态
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TorrentStatus {
     /// 下载
     Download,
@@ -24,6 +28,18 @@ pub enum TorrentStatus {
 
     /// 完成
     Finished,
+}
+
+impl TryFrom<u8> for TorrentStatus {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        if value <= 8 {
+            Ok(unsafe { mem::transmute(value) })
+        } else {
+            Err(Error::MappingError(format!("invalid torrent status: {}", value)))
+        }
+    }
 }
 
 #[derive(Default)]
@@ -99,6 +115,11 @@ pub trait TorrentMapper {
     ///
     /// returns: bool `true`: 添加成功 `false`: 添加失败
     fn add_torrent(&self, torrent: TorrentArc, save_path: PathBuf) -> bool;
+    
+    /// 列出所有种子
+    /// 
+    /// returns: Vec<TorrentArc> 种子列表
+    fn list_torrent(&self) -> Vec<TorrentEntity>;
 }
 
 impl TorrentMapper for ConnWrapper {
@@ -128,7 +149,7 @@ impl TorrentMapper for ConnWrapper {
 
     /// 从数据库中恢复状态
     fn recover_from_db(&self, info_hash: &[u8]) -> TorrentEntity {
-        let mut stmt = self.prepare_cached("select download, uploaded, save_path, bytefield, underway_bytefield from torrent where info_hash = ?1").unwrap();
+        let mut stmt = self.prepare_cached("select download, uploaded, save_path, bytefield, underway_bytefield, status from torrent where info_hash = ?1").unwrap();
         stmt.query_row([&info_hash], |row| {
             let ub: Vec<(u32, PieceStatus)> = bincode::decode_from_slice(
                 row.get::<_, Vec<u8>>(4)?.as_slice(),
@@ -142,6 +163,7 @@ impl TorrentMapper for ConnWrapper {
                 save_path: Some(PathBuf::from(row.get::<_, String>(2)?)),
                 bytefield: Some(BytesMut::from(row.get::<_, Vec<u8>>(3)?.as_slice())),
                 underway_bytefield: Some(ub),
+                status: Some(TorrentStatus::try_from(row.get::<_, usize>(5)? as u8).unwrap()),
                 ..Default::default()
             })
         })
@@ -150,17 +172,13 @@ impl TorrentMapper for ConnWrapper {
 
     /// 保存当前进度
     fn save_progress(&self, entity: TorrentEntity) {
-        // let ub = entity
-        //     .underway_bytefield.unwrap()
-        //     .iter()
-        //     .map(|item| (item.key().clone(), (*item.value()).clone()))
-        //     .collect::<Vec<(u32, PieceStatus)>>();
-        let mut stmt = self.prepare_cached("update torrent set download = ?1, uploaded = ?2, bytefield = ?3, underway_bytefield = ?4 where info_hash = ?5").unwrap();
+        let mut stmt = self.prepare_cached("update torrent set download = ?1, uploaded = ?2, bytefield = ?3, underway_bytefield = ?4, status = ?5 where info_hash = ?6").unwrap();
         stmt.execute(params![
             entity.download,
             entity.uploaded,
             entity.bytefield.unwrap().as_ref(),
             bincode::encode_to_vec(entity.underway_bytefield.unwrap(), config::standard()).unwrap(),
+            entity.status.map(|x| x as usize),
             entity.info_hash
         ])
         .unwrap();
@@ -181,7 +199,7 @@ impl TorrentMapper for ConnWrapper {
 
         let mut stmt = self.prepare_cached("insert into torrent(info_hash, serial, status, bytefield, underway_bytefield, save_path) values (?1, ?2, ?3, ?4, ?5, ?6)").unwrap();
         let serial = bincode::encode_to_vec(torrent.inner(), config::standard()).unwrap();
-        let bytefield = vec![0u8; ((torrent.info.pieces.len() / 20) + 7) / 8];
+        let bytefield = vec![0u8; torrent.bitfield_len()];
         let underway_bytefield: Vec<(u32, PieceStatus)> = vec![];
         let underway_bytefield =
             bincode::encode_to_vec(underway_bytefield, config::standard()).unwrap();
@@ -196,5 +214,22 @@ impl TorrentMapper for ConnWrapper {
         .unwrap();
 
         true
+    }
+    
+    fn list_torrent(&self) -> Vec<TorrentEntity> {
+        let mut stmt = self.prepare_cached("select serial, status from torrent").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let mut list = vec![];
+        while let Some(row) = rows.next().unwrap() {
+            let serial = row.get::<_, Vec<u8>>(0).unwrap();
+            let status = TorrentStatus::try_from(row.get::<_, usize>(1).unwrap() as u8).unwrap();
+            let torrent = bincode::decode_from_slice(serial.as_slice(), config::standard()).unwrap().0;
+            list.push(TorrentEntity {
+                serail: Some(TorrentArc::new(torrent)),
+                status: Some(status),
+               ..Default::default()
+            });
+        };
+        list
     }
 }

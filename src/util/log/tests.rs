@@ -2,7 +2,7 @@ use crate::log::{SizeBasedWriter, register_logger};
 use std::io::Error;
 use std::path::Path;
 use std::thread::spawn;
-use tracing::{Level, error};
+use tracing::{Level, error, info_span, error_span, debug_span};
 
 const PATH_STR: &str = "logs";
 const LOG_FILE_NAME: &str = "dorodoro-bangumi.log";
@@ -73,4 +73,30 @@ fn test_log_err_print() {
     .unwrap();
     let err = Error::new(std::io::ErrorKind::Other, "测试一下错误打印");
     error!("test error log {}", err)
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_log_span() {
+    let _guard = register_logger(
+        PATH_STR,
+        LOG_FILE_NAME,
+        LOG_FILE_SIZE,
+        LOG_FILE_CHUNKS,
+        LOG_FILE_LEVEL,
+    ).unwrap();
+    let span = info_span!("test_info_span");
+    span.in_scope(|| {
+        println!("这里执行 info span 里的内容")
+    });
+
+    let span = error_span!("test_error_span");
+    span.in_scope(|| {
+        println!("这里执行 error span 里的内容")
+    });
+
+    let span = debug_span!("test_debug_span");
+    span.in_scope(|| {
+        println!("这里执行 debug span 里的内容")
+    });
 }

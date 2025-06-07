@@ -35,8 +35,11 @@ struct ConfigInner {
     /// 总的 peer 配额
     peer_conn_limit: usize,
  
-    /// 每个 torrent 的 peer 配额
-    torrent_peer_conn_limit: usize,
+    /// 每个 torrent 的 lt peer 配额
+    torrent_lt_peer_conn_limit: usize,
+    
+    /// 每个 torrent 的临时 peer 配额
+    torrent_temp_peer_conn_limit: usize,
     
     /// 数据库连接池大小
     database_conn_limit: usize,
@@ -58,7 +61,9 @@ impl Config {
                 hash_chunk_size: 512,
                 hash_concurrency: 1, // 默认就一个
                 peer_conn_limit: 500,
-                torrent_peer_conn_limit: 100,
+                // torrent_lt_peer_conn_limit: 100,
+                torrent_lt_peer_conn_limit: 5,
+                torrent_temp_peer_conn_limit: 1,
                 database_conn_limit: 10,
                 peer_connection_timeout: Duration::from_secs(5),
             }),
@@ -129,9 +134,16 @@ impl Config {
         self
     }
     
-    pub fn set_torrent_peer_conn_limit(mut self, limit: usize) -> Self {
+    pub fn set_torrent_lt_peer_conn_limit(mut self, limit: usize) -> Self {
         Arc::get_mut(&mut self.inner).map(|inner| {
-            inner.torrent_peer_conn_limit = limit;
+            inner.torrent_lt_peer_conn_limit = limit;
+        });
+        self
+    }
+    
+    pub fn set_torrent_temp_peer_conn_limit(mut self, limit: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.torrent_temp_peer_conn_limit = limit;
         });
         self
     }
@@ -186,8 +198,16 @@ impl Config {
         self.inner.peer_conn_limit
     }
     
+    pub fn torrent_lt_peer_conn_limit(&self) -> usize {
+        self.inner.torrent_lt_peer_conn_limit
+    }
+    
+    pub fn torrent_temp_peer_conn_limit(&self) -> usize {
+        self.inner.torrent_temp_peer_conn_limit
+    }
+    
     pub fn torrent_peer_conn_limit(&self) -> usize {
-        self.inner.torrent_peer_conn_limit
+        self.inner.torrent_lt_peer_conn_limit + self.inner.torrent_temp_peer_conn_limit
     }
     
     pub fn database_conn_limit(&self) -> usize {

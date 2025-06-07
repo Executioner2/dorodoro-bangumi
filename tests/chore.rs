@@ -168,7 +168,7 @@ fn test_instant_duration() {
 #[ignore]
 #[cfg_attr(miri, ignore)]
 #[tokio::test]
-async fn test_dashmap_deadlock() {
+async fn test_dashmap_deadlock1() {
     let map = Arc::new(DashMap::new());
     map.insert(1, "");
 
@@ -177,4 +177,53 @@ async fn test_dashmap_deadlock() {
     let remove = map.remove(&k); // 前面的锁还没释放，这里再次尝试拿锁，拿不到，产生死锁
     println!("{:?}", value);
     println!("{:?}", remove);
+}
+
+/// 这个也会死锁
+#[ignore]
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn test_dashmap_deadlock2() {
+    let map = Arc::new(DashMap::new());
+    map.insert(1u32, "xx");
+    
+    println!("before: {:?}", map.get(&1).unwrap().value());
+    
+    // 这样写会有死锁风险，所以避免在拿到分段锁中，再进行一次可能会对这个 dashmap 进行操作的调用
+    // if let Some(item) = map.get(&1) {
+    //     println!("enter if let");
+    //     do_test_dashmap_deadlock2(map.clone(), item.key()).await;
+    // }
+    
+    println!("done");
+}
+
+#[allow(dead_code)]
+async fn do_test_dashmap_deadlock2(map: Arc<DashMap<u32, &str>>, key: &u32) {
+    println!("enter do dd2");
+    let value = map.get_mut(key);
+    println!("get lock success");
+    // let value = map.remove(key);
+    println!("value: {:?}", value);
+}
+
+struct B {
+    val: Option<i32>,
+}
+
+struct A {
+    b: Option<B>,
+}
+
+#[test]
+fn test_option() {
+    fn f() -> Option<i32> {
+        // let x = Some(A { b: Some(B { val: Some(10) }) });
+        let x = Some(A { b: None });
+        let v = x?.b?.val?;
+        println!("{}", v);
+        Some(v)
+    }
+    let v = f();
+    println!("{:?}", v);
 }

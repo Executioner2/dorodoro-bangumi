@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, ReadBuf};
-use tracing::{error, trace};
+use tracing::debug;
 
 pub struct ReaderHandle<'a, T: AsyncRead + Unpin> {
     stream: &'a mut T,
@@ -41,20 +41,39 @@ impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
                 Poll::Ready(Ok(())) => {
                     let filled = read_buf.filled().len();
                     if filled == 0 {
-                        trace!("客户端主动说bye-bye");
-                        return Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()));
+                        debug!("客户端主动说bye-bye");
+                        return Poll::Ready(Err(io::ErrorKind::ConnectionAborted.into()));
                     }
-                    unsafe { this.buf.advance_mut(filled); }
+                    unsafe {
+                        this.buf.advance_mut(filled);
+                    }
                     if this.buf.len() >= this.buf.capacity() {
                         return Poll::Ready(Ok(this.buf.split().freeze()));
                     }
                 }
                 Poll::Ready(Err(e)) => {
-                    error!("因神秘力量，和客户端失去了联系\t{}，addr: {}", e, this.addr);
+                    debug!("因神秘力量，和客户端失去了联系\t{}，addr: {}", e, this.addr);
                     return Poll::Ready(Err(e));
                 }
                 Poll::Pending => return Poll::Pending,
             }
         }
     }
+}
+
+pub fn rate_formatting<T: Into<u64>>(bw: T) -> (f64, &'static str) {
+    let rate: f64;
+    let unit: &str;
+    let bw = bw.into();
+    if bw >= 1 << 20 {
+        rate = bw as f64 / 1024.0 / 1024.0;
+        unit = "MiB/s";
+    } else if bw >= 1024 {
+        rate = bw as f64 / 1024.0;
+        unit = "KiB/s";
+    } else {
+        rate = bw as f64;
+        unit = "B/s";
+    }
+    (rate, unit)
 }

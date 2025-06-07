@@ -369,23 +369,39 @@ impl Tracker {
 
         interval
     }
-
-    /// 创建定时扫描任务
-    async fn create_scan_task(
-        &self,
-        delay: u64,
-    ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
+    
+    /// 本地环境测试
+    #[allow(dead_code)]
+    async fn local_env_test(&self) -> u64 {
         use std::str::FromStr;
-        let delay = delay + 99999999;
         let cmd = DiscoverPeerAddr {
-            peers: vec![SocketAddr::from_str("192.168.2.177:3115").unwrap()],
-            // peers: vec![SocketAddr::from_str("192.168.2.242:3115").unwrap()],
+            peers: vec![
+                // SocketAddr::from_str("192.168.2.242:3115").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6881").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6882").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6883").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6884").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6885").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6886").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6887").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6888").unwrap(),
+            ],
         }
             .into();
         self.emitter
             .send(&self.gasket_transfer_id, cmd)
             .await
             .unwrap();
+        9999999
+    }
+
+    /// 创建定时扫描任务
+    async fn create_scan_task(
+        &self,
+        delay: u64,
+    ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
+        // let mut delay = delay;
+        // delay += self.local_env_test().await;
         let send_to_gasket: Sender<TransferPtr> =
             self.emitter.get(&self.gasket_transfer_id).unwrap();
         let task = Tracker::scan_tracker(
@@ -427,6 +443,7 @@ impl Runnable for Tracker {
                             15
                         }
                     };
+                    debug!("下一次扫描: {:?}", Duration::from_secs(interval));
                     delayed_task_handle = self.create_scan_task(interval).await;
                 }
                 _ = recv.recv() => {

@@ -6,14 +6,18 @@ use crate::peer::error::Error::{PieceCheckoutError, PieceWriteError};
 use crate::peer::{MsgType, Peer};
 use crate::peer_manager::gasket::ExitReason;
 use bytes::Bytes;
+use tracing::debug;
 
 command_system! {
     ctx: Peer,
     Command {
         Exit,
         PeerTransfer,
+        Heartbeat,
         PieceCheckoutFailed,
         PieceWriteFailed,
+        TryRequestPiece,
+        FreePiece,
     }
 }
 
@@ -46,6 +50,17 @@ impl<'a> CommandHandler<'a, Result<()>> for PeerTransfer {
     }
 }
 
+/// 心跳包
+#[derive(Debug)]
+pub struct Heartbeat;
+impl<'a> CommandHandler<'a, Result<()>> for Heartbeat {
+    type Target = &'a mut Peer;
+
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
+        ctx.handle_heartbeat().await
+    }
+}
+
 /// 分块校验失败
 #[derive(Debug)]
 pub struct PieceCheckoutFailed {
@@ -60,7 +75,7 @@ impl<'a> CommandHandler<'a, Result<()>> for PieceCheckoutFailed {
             .iter_mut()
             .for_each(|(_, value)| value.block_offset = 0);
         // 下载完最后一个 block 后，piece_index 会被删除，因此重新设置为 0
-        ctx.update_response_pieces(self.piece_index, 0);
+        ctx.insert_response_pieces(self.piece_index, 0);
         Err(PieceCheckoutError(self.piece_index))
     }
 }
@@ -75,7 +90,35 @@ impl<'a> CommandHandler<'a, Result<()>> for PieceWriteFailed {
     type Target = &'a mut Peer;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.update_response_pieces(self.piece_index, self.block_offset);
+        ctx.insert_response_pieces(self.piece_index, self.block_offset);
         Err(PieceWriteError(self.piece_index, self.block_offset))
+    }
+}
+
+/// 尝试寻找可请求的分块
+#[derive(Debug)]
+pub struct TryRequestPiece;
+impl<'a> CommandHandler<'a, Result<()>> for TryRequestPiece {
+    type Target = &'a mut Peer;
+
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
+        ctx.request_piece().await
+    }
+}
+
+/// 释放分块
+#[derive(Debug)]
+pub struct FreePiece {
+    pub(crate) peer_no: u64,
+    pub(crate) pieces: Vec<u32>,
+}
+impl<'a> CommandHandler<'a, Result<()>> for FreePiece {
+    type Target = &'a mut Peer;
+
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
+        ctx.free_download_piece(&self.pieces).await;
+        ctx.ctx.gc.assign_peer_handle(self.peer_no).await;
+        debug!("将 {} 的分块给 {}\n给过去的分块有: {:?}", ctx.addr, self.peer_no, self.pieces);
+        Ok(())
     }
 }

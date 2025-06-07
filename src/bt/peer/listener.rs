@@ -1,7 +1,7 @@
 use crate::emitter::transfer::TransferPtr;
-use crate::peer::MsgType;
+use crate::peer::{command, MsgType};
 use crate::peer::command::{Exit, PeerTransfer};
-use crate::peer::future::BtResp;
+use crate::peer::peer_resp::PeerResp;
 use crate::peer::rate_control::PacketAck;
 use crate::peer_manager::gasket::ExitReason;
 use crate::runtime::Runnable;
@@ -12,6 +12,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
+use super::peer_resp::RespType::*;
 
 pub struct WriteFuture {
     pub(super) no: u64,
@@ -57,7 +58,7 @@ pub struct ReadFuture<T: PacketAck + Send> {
 
 impl<T: PacketAck + Send> Runnable for ReadFuture<T> {
     async fn run(mut self) {
-        let mut bt_resp = BtResp::new(&mut self.reader, &self.addr);
+        let mut bt_resp = PeerResp::new(&mut self.reader, &self.addr);
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -66,7 +67,7 @@ impl<T: PacketAck + Send> Runnable for ReadFuture<T> {
                 }
                 result = &mut bt_resp => {
                     match result {
-                        Some((msg_type, buf)) => {
+                        Normal(msg_type, buf) => {
                             let buf_len = buf.len() as u64;
                             if msg_type == MsgType::Piece {
                                 self.rc.ack((5 + buf_len) as u32);
@@ -77,14 +78,17 @@ impl<T: PacketAck + Send> Runnable for ReadFuture<T> {
                                 read_size: 5 + buf_len
                             }.into()).await.unwrap();
                         },
-                        None => {
+                        Heartbeat => {
+                            self.peer_sender.send(command::Heartbeat.into()).await.unwrap();
+                        }
+                        Unoknown => {
                             warn!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
                             let reason = ExitReason::Exception;
                             self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
                             break;
                         }
                     }
-                    bt_resp = BtResp::new(&mut self.reader, &self.addr);
+                    bt_resp = PeerResp::new(&mut self.reader, &self.addr);
                 }
             }
         }

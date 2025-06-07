@@ -5,12 +5,12 @@ use crate::core::context::Context;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::emitter::Emitter;
 use crate::core::runtime::Runnable;
+use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
 use crate::peer_manager::command::Command;
 use crate::peer_manager::gasket::Gasket;
 use crate::store::Store;
-use crate::torrent::{Torrent, TorrentArc};
+use crate::torrent::TorrentArc;
 use crate::tracker;
-use bincode::config;
 use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -143,21 +143,11 @@ impl PeerManager {
     /// 从数据库中加载任务
     async fn load_task_from_db(&self) {
         let conn = self.context.get_conn().await.unwrap();
-        let torrents = tokio::task::spawn_blocking(move || {
-            let mut stmt = conn.prepare_cached(r#"
-                select serial from torrent
-            "#).unwrap();
-            let mut rows = stmt.query([]).unwrap();
-            let mut list = vec![];
-            while let Some(row) = rows.next().unwrap() {
-                let serial = row.get::<_, Vec<u8>>(0).unwrap();
-                let torrent: Torrent = bincode::decode_from_slice(serial.as_slice(), config::standard()).unwrap().0;
-                list.push(TorrentArc::new(torrent));
-            };
-            list
-        }).await.unwrap();
+        let torrents = conn.list_torrent();
         for torrent in torrents {
-            self.start_gasket(torrent).await;
+            if torrent.status == Some(TorrentStatus::Download) && torrent.serail.is_some() {
+                self.start_gasket(torrent.serail.unwrap()).await;
+            }
         }
     }
 
