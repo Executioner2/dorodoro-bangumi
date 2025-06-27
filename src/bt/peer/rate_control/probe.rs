@@ -17,7 +17,7 @@ use crate::collection::FixedQueue;
 use crate::peer::rate_control::{PacketAck, PacketSend, RateControl};
 use crate::win_minmax::Minmax;
 use crate::{datetime, if_else, util};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tracing::{level_enabled, trace, Level};
 
@@ -33,7 +33,8 @@ pub struct Dashbord {
     acked_bytes: Arc<AtomicU64>,
 
     /// 近期平均带宽
-    bw: Arc<AtomicU64>,
+    bw: Arc<Mutex<TimeFixeQueue>>,
+
     // 发送速率
     // rate: Arc<AtomicU32>,
 }
@@ -44,7 +45,21 @@ impl Dashbord {
             cwnd: Arc::new(AtomicU32::new(MIN_CWND)),
             inflight: Arc::new(AtomicU32::new(0)),
             acked_bytes: Arc::new(AtomicU64::new(0)),
-            bw: Arc::new(AtomicU64::new(0)),
+            bw: Arc::new(Mutex::new(TimeFixeQueue::new(BW_RATE_THRESH))),
+        }
+    }
+}
+
+impl Dashbord {
+    pub fn update_bw(&self, bw: u32) {
+        let item = (bw, datetime::now_millis() as u64);
+        match self.bw.lock().as_mut() { 
+            Ok(x) => {
+                x.push(item);
+            }
+            Err(p) => {
+                p.get_mut().push(item);
+            }
         }
     }
 }
@@ -63,7 +78,10 @@ impl RateControl for Dashbord {
     }
 
     fn bw(&self) -> u64 {
-        self.bw.load(Ordering::Relaxed)
+        match self.bw.lock().as_mut() {
+            Ok(x) => x.avg(),
+            Err(p) => p.get_mut().avg(),
+        }
     }
 
     fn clear_ing(&self) {
@@ -119,7 +137,10 @@ const NORMAL_GAIN_CYCLE: u32 = 3;
 const MIN_CWND: u32 = 4;
 
 /// 最大拥塞窗口大小
-const MAX_CWND: u32 = 100;
+const MAX_CWND: u32 = 10;
+
+/// 带宽样本队列长度
+const BW_RATE_THRESH: usize = 10;
 
 /// 连续 3 轮没有增长，则判定为带宽受限
 const FULL_BW_CNT: u32 = 3;
@@ -135,6 +156,66 @@ const MAX_GAIN_KEEP_RATE: u32 = UNIT * 2 / 3;
 
 /// full bw 保持周期
 const FULL_BW_KEEP_CYCLE: u32 = 3;
+
+#[derive(Default, Debug)]
+pub struct TimeFixeQueue {
+    queue: FixedQueue<(u32, u64)>,
+    sum: u64,
+}
+
+impl TimeFixeQueue {
+    pub fn new(size: usize) -> Self {
+        Self {
+            queue: FixedQueue::new(size),
+            sum: 0,
+        }
+    }
+
+    fn expires(&mut self) {
+        let now = datetime::now_millis() as u64;
+        let i = self.queue.limit();
+        while !self.queue.is_empty() {
+            if let Some(x) = self.queue.peek_front() {
+                if x.1 + (UPDATE_INTERVAL * i as u64) < now {
+                    self.sum -= x.0 as u64;
+                    self.queue.pop_front();
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    pub fn push(&mut self, item: (u32, u64)) {
+        self.expires();
+        self.sum += item.0 as u64;
+        self.queue.push(item).map(|x| {
+            self.sum -= x.0 as u64;
+        });
+    }
+    
+    pub fn sum(&mut self) -> u64 {
+        self.expires();
+        self.sum
+    }
+    
+    pub fn avg(&mut self) -> u64 {
+        self.expires();
+        self.sum / self.queue.limit() as u64
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    pub fn iter(&self) -> std::collections::vec_deque::Iter<(u32, u64)> {
+        self.queue.iter()
+    }
+}
 
 /// 暴力探测
 pub struct Probe {
@@ -180,12 +261,6 @@ pub struct Probe {
     /// 是否进入带宽受限
     full_bw_reached: bool,
 
-    /// 平均带宽队列
-    avg_bw_fq: FixedQueue<u32>,
-
-    /// 平均带宽之和
-    avg_bw_sum: u64,
-
     /// 最近一次高带宽
     last_high_bw: u64,
 
@@ -213,8 +288,6 @@ impl Probe {
             full_bw_cnt: 0,
             full_bw_keep_cnt: 0,
             full_bw_reached: false,
-            avg_bw_fq: FixedQueue::new(10),
-            avg_bw_sum: 0,
             last_high_bw: 0,
             high_gain_valid_cnt: 0,
             starup_gain: false,
@@ -240,14 +313,7 @@ impl Probe {
     }
 
     fn update_avg_bw(&mut self, rs: &RateSample) {
-        self.avg_bw_sum += rs.bw;
-        self.avg_bw_fq.push(rs.bw as u32).map(|x| {
-            self.avg_bw_sum -= x as u64;
-        });
-        self.dashbord.bw.store(
-            self.avg_bw_sum / self.avg_bw_fq.len() as u64,
-            Ordering::Relaxed,
-        );
+        self.dashbord.update_bw(rs.bw as u32);
     }
 
     fn update_bw(&mut self, rs: &RateSample) -> u32 {

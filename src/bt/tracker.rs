@@ -9,7 +9,7 @@ use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer_manager::PeerManagerContext;
-use crate::peer_manager::gasket::command::DiscoverPeerAddr;
+use crate::peer_manager::gasket::command::{DiscoverPeerAddr, PeerSource};
 use crate::runtime::{DelayedTask, Runnable};
 use crate::torrent::TorrentArc;
 use crate::tracker::error::Error::PeerBytesInvalid;
@@ -18,9 +18,6 @@ use crate::tracker::udp_tracker::UdpTracker;
 use ahash::AHashSet;
 use core::fmt::Display;
 use error::Result;
-use lazy_static::lazy_static;
-use nanoid::nanoid;
-use rand::RngCore;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -30,47 +27,12 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::channel;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
+use crate::command::CommandHandler;
+use crate::tracker::command::Command;
 
-lazy_static! {
-    /// 进程 id，发送给 Tracker 的，用于区分多开情况
-    static ref PROCESS_KEY: u32 = rand::rng().next_u32();
-}
 
-/// 随机生成一个 20 字节的 peer_id
-///
-/// # Examples
-///
-/// ```
-/// use dorodoro_bangumi::bt::tracker::gen_peer_id;
-///
-/// let id = gen_peer_id();
-/// println!("peer_id: {:?}", String::from_utf8_lossy(&id));
-/// ```
-pub fn gen_peer_id() -> [u8; 20] {
-    let mut id = [0u8; 20];
-
-    // 正式开发完成后再改成这个
-    // id[0..9].copy_from_slice(b"-dr0100--");
-    // id[9..].copy_from_slice(nanoid!(11).as_bytes());
-
-    id[..].copy_from_slice(nanoid!(20).as_bytes()); // 临时使用完全随机生成的，且每次启动都不一样
-    id
-}
-
-/// 随机生成一个 4 字节的 process_key。实际上这个 key 只在程序启动时生成一次。
-///
-/// # Examples
-///
-/// ```
-/// use dorodoro_bangumi::bt::tracker::gen_process_key;
-///
-/// let key = gen_process_key();
-/// println!("process_key: {}", key);
-/// ```
-pub fn gen_process_key() -> u32 {
-    *PROCESS_KEY
-}
 
 // ===========================================================================
 // Peer Host
@@ -227,6 +189,7 @@ pub struct Tracker {
     gasket_transfer_id: String,
     trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>,
     scan_time: u64,
+    cancel_token: CancellationToken
 }
 
 impl Tracker {
@@ -237,6 +200,7 @@ impl Tracker {
         emitter: Emitter,
         peer_manager_context: PeerManagerContext,
         gasket_transfer_id: String,
+        cancel_token: CancellationToken
     ) -> Self {
         let trackers = instance_tracker(peer_id, torrent);
 
@@ -247,6 +211,7 @@ impl Tracker {
             gasket_transfer_id,
             trackers,
             scan_time: datetime::now_secs(),
+            cancel_token
         }
     }
 
@@ -288,7 +253,7 @@ impl Tracker {
                         tracker.announce(),
                         peers.len()
                     );
-                    let cmd = DiscoverPeerAddr { peers }.into();
+                    let cmd = DiscoverPeerAddr { peers, source: PeerSource::Tracker }.into();
                     send_to_gasket.send(cmd).await.unwrap();
                     announce.interval as u64
                 }
@@ -323,7 +288,7 @@ impl Tracker {
                         tracker.announce(),
                         peers.len()
                     );
-                    let cmd = DiscoverPeerAddr { peers }.into();
+                    let cmd = DiscoverPeerAddr { peers, source: PeerSource::Tracker }.into();
                     send_to_gasket.send(cmd).await.unwrap();
                     match announce.min_interval {
                         Some(interval) => interval,
@@ -376,16 +341,24 @@ impl Tracker {
         use std::str::FromStr;
         let cmd = DiscoverPeerAddr {
             peers: vec![
-                // SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6881").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6882").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6883").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6884").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6885").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6886").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6887").unwrap(),
-                SocketAddr::from_str("192.168.2.113:6888").unwrap(),
+                SocketAddr::from_str("192.168.2.242:3115").unwrap(),
+                
+                // SocketAddr::from_str("192.168.2.113:6881").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6882").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6883").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6884").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6885").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6886").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6887").unwrap(),
+                // SocketAddr::from_str("192.168.2.113:6888").unwrap(),
+                
+                // SocketAddr::from_str("209.141.46.35:15982").unwrap(),
+                // SocketAddr::from_str("123.156.68.196:20252").unwrap(),
+                // SocketAddr::from_str("1.163.51.40:42583").unwrap(),
+
+                // SocketAddr::from_str("106.73.62.197:40370").unwrap(),
             ],
+            source: PeerSource::Tracker,
         }
             .into();
         self.emitter
@@ -400,8 +373,10 @@ impl Tracker {
         &self,
         delay: u64,
     ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
+        // fixme - 正式记得注释掉下面这行
         // let mut delay = delay;
         // delay += self.local_env_test().await;
+        
         let send_to_gasket: Sender<TransferPtr> =
             self.emitter.get(&self.gasket_transfer_id).unwrap();
         let task = Tracker::scan_tracker(
@@ -431,7 +406,7 @@ impl Runnable for Tracker {
 
         loop {
             tokio::select! {
-                _ = self.peer_manager_context.context.cancelled() => {
+                _ = self.cancel_token.cancelled() => {
                     break
                 }
                 res = &mut delayed_task_handle => {
@@ -446,8 +421,20 @@ impl Runnable for Tracker {
                     debug!("下一次扫描: {:?}", Duration::from_secs(interval));
                     delayed_task_handle = self.create_scan_task(interval).await;
                 }
-                _ = recv.recv() => {
-
+                cmd = recv.recv() => {
+                    match cmd {
+                        Some(cmd) => {
+                            let cmd: Command = cmd.instance();
+                            if let Err(err) = cmd.handle(&mut self).await {
+                                error!("处理指令出现错误\t{}", err);
+                                break;
+                            }
+                        }
+                        None => {
+                            error!("tracker {} 接收到空命令！", Tracker::get_transfer_id(&self.gasket_transfer_id));
+                            break;
+                        }
+                    }
                 }
             }
         }

@@ -13,6 +13,12 @@ struct ConfigInner {
 
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
+    
+    /// udp server 监听地址
+    udp_server_addr: SocketAddr,
+    
+    /// udp 包大小限制
+    udp_packet_limit: usize,
 
     /// 块大小
     block_size: u32,
@@ -53,7 +59,9 @@ impl Config {
         Self {
             inner: Arc::new(ConfigInner {
                 channel_buffer: 100,
-                tcp_server_addr: "127.0.0.1:3300".parse().unwrap(),
+                tcp_server_addr: "0.0.0.0:3300".parse().unwrap(),
+                udp_server_addr: "0.0.0.0:3300".parse().unwrap(),
+                udp_packet_limit: 65535,
                 block_size: 1 << 14,
                 con_req_piece_limit: 100,
                 sucessed_recv_piece: 64, // 按照一次响应 16384 个字节，64 次响应成功，即为响应了 1MB 的数据
@@ -81,6 +89,20 @@ impl Config {
     pub fn set_tcp_server_addr(mut self, tcp_server_addr: SocketAddr) -> Self {
         Arc::get_mut(&mut self.inner).map(|inner| {
             inner.tcp_server_addr = tcp_server_addr;
+        });
+        self
+    }
+    
+    pub fn set_udp_server_addr(mut self, udp_server_addr: SocketAddr) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.udp_server_addr = udp_server_addr;
+        });
+        self
+    }
+    
+    pub fn set_udp_packet_limit(mut self, limit: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.udp_packet_limit = limit;
         });
         self
     }
@@ -168,6 +190,14 @@ impl Config {
 
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
+    }
+    
+    pub fn udp_server_addr(&self) -> SocketAddr {
+        self.inner.udp_server_addr
+    }
+    
+    pub fn udp_packet_limit(&self) -> usize {
+        self.inner.udp_packet_limit
     }
     
     pub fn block_size(&self) -> u32 {

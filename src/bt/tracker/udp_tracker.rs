@@ -81,7 +81,8 @@ impl UdpTracker {
     ///
     /// ```
     /// use std::sync::Arc;
-    /// use dorodoro_bangumi::tracker::{gen_peer_id, udp_tracker as udp_tracker};
+    /// use dorodoro_bangumi::util::rand::gen_peer_id;
+    /// use dorodoro_bangumi::tracker::{udp_tracker as udp_tracker};
     /// use udp_tracker::UdpTracker;
     ///
     /// let info_hash = Arc::new([0u8; 20]);
@@ -120,7 +121,7 @@ impl UdpTracker {
         req.write_u64::<BigEndian>(info.uploaded.load(Ordering::Acquire))?;
         req.write_u32::<BigEndian>(event as u32)?;
         req.write_u32::<BigEndian>(0)?; // ip
-        req.write_u32::<BigEndian>(tracker::gen_process_key())?;
+        req.write_u32::<BigEndian>(util::rand::gen_process_key())?;
         req.write_i32::<BigEndian>(-1)?; // 期望的 peer 数量
         req.write_u16::<BigEndian>(info.port)?;
 

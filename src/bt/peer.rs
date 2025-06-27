@@ -10,6 +10,7 @@ mod error;
 pub mod peer_resp;
 mod listener;
 pub mod rate_control;
+pub mod reserved;
 
 use crate::bytes::Bytes2Int;
 use crate::command::CommandHandler;
@@ -42,14 +43,16 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{Sender, channel};
+use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, Interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
+use crate::bt::pe_crypto;
+use crate::bt::pe_crypto::CryptoProvide;
+use crate::bt::socket::TcpStreamExt;
 
 const MSS: u32 = 17;
 
@@ -59,52 +62,129 @@ const KEEP_ALIVE: Duration = Duration::from_secs(60);
 /// Peer 通信的消息类型
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum MsgType {
-    /// 我现在还不想接收你的请求
-    ///
+    
+    // ===========================================================================
+    // Core 
+    // 详情见：[bep_0003](https://www.bittorrent.org/beps/bep_0003.html)
+    // ===========================================================================
+    
+    /// 我现在还不想接收你的请求        
+    /// 
     /// 格式：`length:u32 | 0:u8`
-    Choke,
+    Choke = 0,
 
-    /// 你现在可以向我发起请求了
-    ///
+    /// 你现在可以向我发起请求了   
+    ///     
     /// 格式：`length:u32 | 1:u8`
-    UnChoke,
+    UnChoke = 1,
 
-    /// 感兴趣，期望可以允许我发起请求
-    ///
+    /// 感兴趣，期望可以允许我发起请求    
+    /// 
     /// 格式：`length:u32 | 2:u8`
-    Interested,
+    Interested = 2,
 
-    /// 我已经对你不感兴趣了，你可以不再理我（choke）\
-    /// 告诉对方自己已经下载完他的资源了
-    ///
+    /// 我已经对你不感兴趣了，你可以不再理我（choke）告诉对方自己已经下载完他的资源了   
+    ///     
     /// 格式：`length:u32 | 3:u8`
-    NotInterested,
+    NotInterested = 3,
 
-    /// 我新增了这个分块，你要不要呀
-    ///
+    /// 我新增了这个分块，你要不要呀      
+    /// 
     /// 格式：`length:u32 | 4:u8 | piece_index:u32`
-    Have,
+    Have = 4,
 
-    /// 你不要告诉别人，我偷偷给你说，我拥有这些分块\
-    /// 一般在建立完链接后发送
-    ///
+    /// 你不要告诉别人，我偷偷给你说，我拥有这些分块。一般在建立完链接后发送         
+    ///  
     /// 格式：`length:u32 | 5:u8 | bitfield:&[u8]`
-    Bitfield,
+    Bitfield = 5,
 
-    /// 请给我这个分块
-    ///
+    /// 请给我这个分块     
+    /// 
     /// 格式：`length:u32 | 6:u8 | piece_index:u32 | block_offset:u32 | block_length:u32`
-    Request,
+    Request = 6,
 
-    /// 好的，给你这个分块
-    ///
+    /// 好的，给你这个分块     
+    ///  
     /// 格式：`length:u32 | 7:u8 | piece_index:u32 | block_offset:u32 | block_data:&[u8]`
-    Piece,
+    Piece = 7,
 
-    /// 噢撤回，我不需要这个分块了
-    ///
+    /// 噢撤回，我不需要这个分块了    
+    ///   
     /// 格式：`length:u32 | 8:u8 | piece_index:u32 | block_offset:u32`
-    Cancel,
+    Cancel = 8,
+
+    // ===========================================================================
+    // DHT Extension    
+    // 详情见：[bep_0005](https://www.bittorrent.org/beps/bep_0005.html)
+    // 握手时，通过设置扩展位（HANDSHAKE_DHT_PROTOCOL）开启
+    // ===========================================================================
+    
+    /// DHT 访问端口     
+    ///   
+    /// 格式：`length:u32 | 9:u8 | dht_port:u16`
+    Port = 9,
+
+    // ===========================================================================
+    // Fast Extensions
+    // 详情见：[bep_0006](https://www.bittorrent.org/beps/bep_0006.html)
+    // 握手时，通过设置扩展位（HANDSHAKE_FAST_EXTENSION）开启
+    // ===========================================================================
+
+    /// 建议请求的分片     
+    /// 
+    /// 格式：`length:u32 | 13:u8 | piece_index:u32`
+    Suggest = 13,
+    
+    /// 拥有所有的分片   
+    ///  
+    /// 格式：`length:u32 | 14:u8`
+    HaveAll = 14,
+    
+    /// 一个分片都没有
+    ///
+    /// 格式：`length:u32 | 15:u8`   
+    HaveNone = 15,
+    
+    /// 拒绝请求的分片
+    /// 
+    /// 格式：`length:u32 | 16:u8 | piece_index:u32 | block_offset:u32 | block_length:u32`
+    RejectRequest = 16,
+    
+    /// 允许快速下载
+    /// 
+    /// 格式：`length:u32 | 17:u8 | piece_index:u32`
+    AllowedFast = 17,
+
+    // ===========================================================================
+    // Additional IDs used in deployed clients  
+    // 详情见：[bep_0010](https://www.bittorrent.org/beps/bep_0010.html)
+    // 握手时，通过设置扩展位（HANDSHAKE_EXTENSION_PROTOCOL）开启
+    // ===========================================================================
+    
+    /// 扩展协议
+    /// 
+    /// 格式：`length:u32 | 20:u8 | extended_id:u64 | extended_data:bencode`
+    LTEPHandshake = 20,
+
+    // ===========================================================================
+    // Hash Transfer Protocol  
+    // 详情见：[bep_0009](https://www.bittorrent.org/beps/bep_0009.html)
+    // ===========================================================================
+    
+    /// 请求 metadata
+    /// 
+    /// 格式：`length:u32 | 21:u8 | hash:bencode`
+    HashRequest = 21,
+
+    /// 响应 metadata
+    /// 
+    /// 格式：`length:u32 | 22:u8 | metadata:bencode`
+    Hashes = 22,
+
+    /// 拒绝响应 metadata
+    /// 
+    /// 格式：`length:u32 | 23:u8 | metadata:bencode`
+    HashReject = 23,
 }
 
 unsafe impl Send for MsgType {}
@@ -114,10 +194,9 @@ impl TryFrom<u8> for MsgType {
     type Error = Error;
 
     fn try_from(value: u8) -> Result<Self> {
-        if value <= 8 {
-            Ok(unsafe { mem::transmute(value) })
-        } else {
-            Err(TryFromError)
+        match value { 
+            0..=9 | 13..=17 | 20..=23 => Ok(unsafe { mem::transmute(value) }),
+            _ => Err(TryFromError),
         }
     }
 }
@@ -366,16 +445,24 @@ impl Peer {
     fn no(&self) -> u64 {
         self.ctx.no
     }
-
+    
+    /// 加密握手
+    async fn crypto_handshake(&mut self, stream: TcpStream) -> Result<TcpStreamExt> {
+        trace!("加密握手 peer_no: {}", self.no());
+        let tse= pe_crypto::init_handshake(stream, &self.ctx.torrent().info_hash, CryptoProvide::Rc4).await?;
+        Ok(tse)
+    }
+    
     /// 握手
-    async fn handshake(&mut self, stream: &mut TcpStream) -> Result<()> {
+    async fn handshake(&mut self, stream: &mut TcpStreamExt) -> Result<()> {
         trace!("发送握手信息 peer_no: {}", self.no());
         let mut bytes =
             Vec::with_capacity(1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN);
         let info_hash = &self.ctx.torrent().info_hash;
         WriteBytesExt::write_u8(&mut bytes, BIT_TORRENT_PROTOCOL_LEN)?;
         std::io::Write::write(&mut bytes, BIT_TORRENT_PROTOCOL)?;
-        WriteBytesExt::write_u64::<BigEndian>(&mut bytes, 0u64)?;
+        let ext = reserved::LTEP | reserved::DHT;
+        WriteBytesExt::write_u64::<BigEndian>(&mut bytes, ext)?;
         std::io::Write::write(&mut bytes, info_hash)?;
         std::io::Write::write(&mut bytes, self.ctx.peer_id())?;
         stream.write_all(&bytes).await?;
@@ -576,7 +663,7 @@ impl Peer {
 
     /// 发送心跳包
     async fn send_heartbeat(&self) -> Result<()> {
-        // 一般来说不是很管用
+        // 一般来说不是很管用，暂时不要发，发了会被中断链接
         // let bytes = vec![0u8];
         // self.ctx.writer.send(bytes).await?;
         Ok(())
@@ -600,6 +687,7 @@ impl Peer {
             MsgType::Request => self.handle_request(bytes).await?,
             MsgType::Piece => self.handle_piece(bytes).await?,
             MsgType::Cancel => self.handle_cancel(bytes).await?,
+            _ => (),
         };
         Ok(res)
     }
@@ -710,10 +798,12 @@ impl Peer {
         self.request_piece().await?;
         let (over, cts_bo) = self.update_response_pieces(piece_index, block_offset)?;
 
-        if over {
-            self.ctx.gc.reported_piece_finished(self.no(), piece_index).await;
-        }
+        // fixme - 正式记得删掉下面
+        // if over {
+        //     self.ctx.gc.reported_piece_finished(self.no(), piece_index).await;
+        // }
         
+        // fixme - 正式记得取消下面的注释
         self.write_file(piece_index, block_offset, block_data, over);
 
         // 上报给 gasket
@@ -758,7 +848,6 @@ impl Peer {
 
             // 校验分块 hash
             if over {
-                // context.reported_piece_finished(peer_no, piece_index).await;
                 Self::checkout(peer_no, context, piece_index, sender, store).await;
             }
         });
@@ -810,7 +899,7 @@ impl Peer {
     /// 启动套接字监听
     fn start_listener(
         &mut self,
-        stream: TcpStream,
+        stream: TcpStreamExt,
         peer_send: Sender<TransferPtr>,
         cancel: CancellationToken,
     ) -> (JoinHandle<()>, JoinHandle<()>) {
@@ -852,7 +941,8 @@ impl Peer {
         &mut self,
         send: Sender<TransferPtr>,
     ) -> Result<(CancellationToken, Vec<JoinHandle<()>>)> {
-        let mut stream = self.connection().await?;
+        let stream = self.connection().await?;
+        let mut stream = self.crypto_handshake(stream).await?;
 
         self.handshake(&mut stream).await?;
         let cancel = CancellationToken::new();

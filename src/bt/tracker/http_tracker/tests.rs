@@ -1,15 +1,16 @@
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::http_tracker::HttpTracker;
-use crate::tracker::{AnnounceInfo, Event, gen_peer_id};
+use crate::tracker::{AnnounceInfo, Event};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use crate::util;
 
 /// HTTP tracker 握手测试
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
-    let peer_id = gen_peer_id();
+    let peer_id = util::rand::gen_peer_id();
     let announce = "http://nyaa.tracker.wf:7777/announce".to_string();
     let mut tracker = HttpTracker::new(announce, Arc::new(torrent.info_hash), Arc::new(peer_id));
 

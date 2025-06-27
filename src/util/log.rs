@@ -210,3 +210,20 @@ pub fn register_logger(
 
     Ok(guard)
 }
+
+/// 注册一个默认的日志记录器
+pub fn default_logger(level: Level) -> Result<WorkerGuard, std::io::Error> {
+    register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, level)
+}
+
+#[macro_export]
+macro_rules! default_logger {
+    ($level:expr) => {
+        use tracing_appender::non_blocking::WorkerGuard;
+        use ctor::ctor;
+        #[ctor]
+        fn init() {
+            let _guard: WorkerGuard = $crate::util::log::default_logger($level).unwrap();
+        }
+    };
+}

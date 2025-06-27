@@ -18,3 +18,6 @@ pub static GASKET_PREFIX: &str = "gasket_";
 
 /// tracker
 pub static TRACKER: &str = "tracker";
+
+/// dht 的前缀
+pub static DHT_PREFIX: &str = "dht_";

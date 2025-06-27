@@ -36,8 +36,7 @@ impl<'a> CommandHandler<'a, Result<()>> for GasketExit {
     type Target = &'a mut PeerManager;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        let context = ctx.get_context();
-        context.remove_gasket(self.0).await;
+        ctx.pmc.remove_gasket(self.0).await;
         Ok(())
     }
 }

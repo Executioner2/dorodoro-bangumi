@@ -27,6 +27,16 @@ macro_rules! hashmap {
     }};
 }
 
+#[macro_export]
+macro_rules! linked_hashmap {
+    () => { ::hashlink::LinkedHashMap::new() };
+    ($($key:expr => $value:expr),+ $(,)?) => {{
+        let mut hashmap = ::hashlink::LinkedHashMap::new();
+        $( hashmap.insert($key, $value); )*
+        hashmap
+    }};
+}
+
 // #[macro_export]
 // macro_rules! command_system {
 //     (

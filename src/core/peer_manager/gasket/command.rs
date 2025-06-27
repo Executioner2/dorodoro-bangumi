@@ -1,3 +1,4 @@
+use core::fmt::{Display, Formatter};
 use crate::command::CommandHandler;
 use crate::command_system;
 use crate::emitter::transfer::CommandEnum;
@@ -19,16 +20,33 @@ command_system! {
     }
 }
 
+#[derive(Debug)]
+pub enum PeerSource {
+    Tracker,
+    DHT,
+}
+
+impl Display for PeerSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PeerSource::Tracker => write!(f, "Tracker"),
+            PeerSource::DHT => write!(f, "DHT"),
+        }
+    }
+}
+
 /// 发现了 peer addr
 #[derive(Debug)]
 pub struct DiscoverPeerAddr {
     pub peers: Vec<SocketAddr>,
+    pub source: PeerSource,
 }
 
 impl<'a> CommandHandler<'a, Result<()>> for DiscoverPeerAddr {
     type Target = &'a mut Gasket;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
+        info!("通过 [{}] 的方式发现了 peer addr: {:?}", self.source, self.peers);
         for addr in self.peers {
             ctx.start_peer(Arc::new(addr)).await
         }

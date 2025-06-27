@@ -31,8 +31,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio_util::sync::WaitForCancellationFuture;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{debug, error, info, level_enabled, trace, Level};
+use crate::dht::DHT;
 
 #[derive(PartialEq, Debug)]
 pub enum ExitReason {
@@ -505,16 +506,19 @@ impl GasketContext {
             return true;
         }
 
-        let pn = self.torrent.piece_num() - 1; // 分片下标从 0 开始
-        let (_, mut last_v) = util::bytes::bitmap_offset(pn);
+        let mut pn = self.torrent.piece_num() - 1; // 分片下标是从 0 开始的
+        let mut last_v = !0u8 << (7 - (pn & 7));
         let bytefield = self.bytefield.lock().await;
-        for v in bytefield.iter().rev() {
+        for v in bytefield.iter().rev() { // 从后往前匹配
             if *v != last_v {
                 return false;
             }
+            pn -= 1;
             last_v = u8::MAX;
         }
 
+        let info_hash = hex::encode(self.torrent.info_hash);
+        info!("torrent [{}] 下载完成", info_hash);
         *self.status.lock().await = TorrentStatus::Finished;
         true
     }
@@ -523,6 +527,11 @@ impl GasketContext {
     pub fn reported_read_size(&self, peer_no: u64, read_size: u64) {
         *self.peer_transfer_speed.entry(peer_no).or_insert(0) += read_size
     }
+}
+
+#[inline]
+pub fn get_transfer_id(id: u64) -> String {
+    format!("{}{}", GASKET_PREFIX, id)
 }
 
 /// 同一个任务的peer交给一个垫片来管理，垫片对peer进行分块下载任务的分配
@@ -549,7 +558,7 @@ impl Gasket {
         let conn = pm_ctx.context.get_conn().await.unwrap();
         let entity = conn.recover_from_db(&torrent.info_hash);
         let ctx = GasketContext::new(
-            Self::get_transfer_id(id),
+            get_transfer_id(id),
             pm_ctx,
             peer_id,
             torrent,
@@ -678,13 +687,8 @@ impl Gasket {
         conn.save_progress(entity);
     }
 
-    #[inline]
-    fn get_transfer_id(id: u64) -> String {
-        format!("{}{}", GASKET_PREFIX, id)
-    }
-
-    fn start_tracker(&self) -> JoinHandle<()> {
-        let transfer_id = Self::get_transfer_id(self.id);
+    fn start_tracker(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
+        let transfer_id = get_transfer_id(self.id);
         trace!("启动 {} 的 tracker", transfer_id);
         let info = AnnounceInfo::new(
             self.ctx.download.clone(),
@@ -699,8 +703,29 @@ impl Gasket {
             self.ctx.emitter.clone(),
             self.ctx.pm_ctx.clone(),
             transfer_id,
+            cancel_token
         );
         tokio::spawn(tracker.run())
+    }
+    
+    fn start_dht(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
+        let transfer_id = get_transfer_id(self.id);
+        trace!("启动 {} 的 dht", transfer_id);
+        let dht = DHT::new(
+            self.id,
+            Arc::new(*NODE_ID),
+            Arc::new(self.ctx.torrent.info_hash),
+            self.ctx.emitter.clone(),
+            self.ctx.pm_ctx.context.clone(),
+            cancel_token,
+            self.ctx.pm_ctx.udp_server.clone()
+        );
+        tokio::spawn(dht.run())
+    }
+    
+    fn start_coordinator(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
+        let coor = Coordinator::new(self.ctx.clone(), cancel_token);
+        tokio::spawn(coor.run())
     }
 
     #[inline]
@@ -709,15 +734,22 @@ impl Gasket {
     }
 }
 
+/// 临时 node id todo - 临时的，记得改
+static NODE_ID: &[u8; 20] = b"adkoqwei123jk3341ks0";
+
 impl Runnable for Gasket {
     async fn run(mut self) {
         let (send, mut recv) = channel(self.get_config().channel_buffer());
-        let transfer_id = Self::get_transfer_id(self.id);
+        let transfer_id = get_transfer_id(self.id);
         self.ctx.emitter.register(transfer_id.clone(), send.clone());
 
         trace!("启动 gasket");
-        let tracker_handle = self.start_tracker();
-        let coordinator_handle = tokio::spawn(Coordinator::new(self.ctx.clone()).run());
+        let cancel_token = CancellationToken::new();
+        let future_handle = vec![
+            self.start_tracker(cancel_token.clone()),
+            self.start_dht(cancel_token.clone()),
+            self.start_coordinator(cancel_token.clone())
+        ];
 
         loop {
             tokio::select! {
@@ -736,9 +768,12 @@ impl Runnable for Gasket {
                 }
             }
         }
-
-        coordinator_handle.await.unwrap();
-        tracker_handle.await.unwrap();
+        
+        // 向 handle 发送退出命令
+        cancel_token.cancel();
+        for handle in future_handle {
+            handle.await.unwrap();
+        }
         self.shutdown().await;
         debug!("gasket {} 已退出！", transfer_id);
     }

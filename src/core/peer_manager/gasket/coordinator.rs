@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, level_enabled, trace, Level};
 use crate::util;
 
@@ -31,6 +32,9 @@ pub struct Coordinator {
 
     /// 统计计数
     alloc_cnt: u32,
+
+    /// 取消 token
+    cancel_token: CancellationToken
 }
 
 /// a 是否比 b 快 25%
@@ -39,12 +43,13 @@ pub fn faster(a: u64, b: u64) -> bool {
 }
 
 impl Coordinator {
-    pub fn new(ctx: GasketContext) -> Self {
+    pub fn new(ctx: GasketContext, cancel_token: CancellationToken) -> Self {
         Self {
             ctx,
             speed_window: FixedQueue::new(5),
             speed_sum: 0.0,
             alloc_cnt: 0,
+            cancel_token
         }
     }
 
@@ -60,10 +65,11 @@ impl Coordinator {
         self.speed_sum += speed;
         let download = self.ctx.download.load(Ordering::Relaxed);
         let len = self.speed_window.len();
+        let file_size = self.ctx.torrent.info.length;
         trace!(
             "下载速度: {:.2} MiB/s\t当前进度: {:.2}%",
             self.speed_sum / len as f64 / 1024.0 / 1024.0,
-            download as f64 / len as f64 * 100.0
+            download as f64 / file_size as f64 * 100.0
         );
     }
 
@@ -153,7 +159,7 @@ impl Runnable for Coordinator {
 
         loop {
             tokio::select! {
-                _ = self.ctx.cancel_token() => {
+                _ = self.cancel_token.cancelled() => {
                     break;
                 }
                 _ = interval.tick() => {

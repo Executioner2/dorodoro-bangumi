@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+#[derive(Default, Debug)]
 pub struct FixedQueue<T> {
     queue: VecDeque<T>,
     limit: usize,
@@ -40,5 +41,17 @@ impl<T> FixedQueue<T> {
     
     pub fn back(&self) -> Option<&T> {
         self.queue.back()
+    }
+    
+    pub fn pop_front(&mut self) -> Option<T> {
+        self.queue.pop_front()
+    }
+
+    pub fn peek_front(&self) -> Option<&T> {
+        self.queue.front()
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
     }
 }

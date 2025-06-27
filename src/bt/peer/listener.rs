@@ -1,22 +1,21 @@
+use super::peer_resp::RespType::*;
+use crate::bt::socket::{OwnedReadHalfExt, OwnedWriteHalfExt};
 use crate::emitter::transfer::TransferPtr;
-use crate::peer::{command, MsgType};
 use crate::peer::command::{Exit, PeerTransfer};
 use crate::peer::peer_resp::PeerResp;
 use crate::peer::rate_control::PacketAck;
+use crate::peer::{command, MsgType};
 use crate::peer_manager::gasket::ExitReason;
 use crate::runtime::Runnable;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
-use super::peer_resp::RespType::*;
 
 pub struct WriteFuture {
     pub(super) no: u64,
-    pub(super) writer: OwnedWriteHalf,
+    pub(super) writer: OwnedWriteHalfExt,
     pub(super) cancel_token: CancellationToken,
     pub(super) addr: Arc<SocketAddr>,
     pub(super) peer_sender: Sender<TransferPtr>,
@@ -32,8 +31,8 @@ impl Runnable for WriteFuture {
                     break;
                 }
                 data = self.recv.recv() => {
-                    if let Some(data) = data {
-                        if self.writer.write_all(&data).await.is_err() {
+                    if let Some(mut data) = data {
+                        if self.writer.write_all(&mut data).await.is_err() {
                             error!("[{}] 消息发送失败!", self.no);
                             let reason = ExitReason::Exception;
                             self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
@@ -49,7 +48,7 @@ impl Runnable for WriteFuture {
 
 pub struct ReadFuture<T: PacketAck + Send> {
     pub(super) no: u64,
-    pub(super) reader: OwnedReadHalf,
+    pub(super) reader: OwnedReadHalfExt,
     pub(super) cancel_token: CancellationToken,
     pub(super) addr: Arc<SocketAddr>,
     pub(super) peer_sender: Sender<TransferPtr>,

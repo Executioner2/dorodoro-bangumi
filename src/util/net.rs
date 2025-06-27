@@ -3,7 +3,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, ReadBuf};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tracing::debug;
 
 pub struct ReaderHandle<'a, T: AsyncRead + Unpin> {
@@ -61,6 +62,7 @@ impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
     }
 }
 
+/// 速率格式化
 pub fn rate_formatting<T: Into<u64>>(bw: T) -> (f64, &'static str) {
     let rate: f64;
     let unit: &str;
@@ -76,4 +78,37 @@ pub fn rate_formatting<T: Into<u64>>(bw: T) -> (f64, &'static str) {
         unit = "B/s";
     }
     (rate, unit)
+}
+
+/// 异步读取扩展的扩展
+pub trait AsyncReadExtExt: AsyncRead {
+    fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> impl Future<Output = io::Result<usize>>;
+
+    fn read_exact_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> impl Future<Output = io::Result<usize>>;
+    
+    fn has_data_available(&mut self) -> impl Future<Output = io::Result<bool>>;
+}
+
+impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
+    async fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        match tokio::time::timeout(timeout, self.read(buf)).await {
+            Ok(Ok(size)) => Ok(size),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
+        }
+    }
+
+    async fn read_exact_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        match tokio::time::timeout(timeout, self.read_exact(buf)).await {
+            Ok(Ok(size)) => Ok(size),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
+        }
+    }
+    
+    async fn has_data_available(&mut self) -> io::Result<bool> {
+        let mut data = [0u8; 1];
+        let size = self.read(&mut data).await?;
+        Ok(size != 0)
+    }
 }

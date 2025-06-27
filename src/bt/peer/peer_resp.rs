@@ -5,10 +5,11 @@ use bytes::Bytes;
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
-use tokio::net::tcp::OwnedReadHalf;
+use tokio::io::AsyncRead;
 use tracing::{error, trace};
 use crate::peer::peer_resp::RespType::{Heartbeat, Normal, Unoknown};
 
+#[derive(Debug)]
 pub enum RespType {
     /// 普通消息
     Normal(MsgType, Bytes),
@@ -27,14 +28,14 @@ enum State {
 }
 
 /// peer 响应处理
-pub struct PeerResp<'a> {
-    reader_handle: ReaderHandle<'a, OwnedReadHalf>,
+pub struct PeerResp<'a, T: AsyncRead + Unpin> {
+    reader_handle: ReaderHandle<'a, T>,
     state: State,
     msg_type: Option<MsgType>,
 }
 
-impl<'a> PeerResp<'a> {
-    pub fn new(read: &'a mut OwnedReadHalf, addr: &'a SocketAddr) -> Self {
+impl<'a, T: AsyncRead + Unpin> PeerResp<'a, T> {
+    pub fn new(read: &'a mut T, addr: &'a SocketAddr) -> Self {
         Self {
             reader_handle: ReaderHandle::new(read, addr, 5),
             state: State::Head,
@@ -43,7 +44,7 @@ impl<'a> PeerResp<'a> {
     }
 }
 
-impl Future for PeerResp<'_> {
+impl<T: AsyncRead + Unpin> Future for PeerResp<'_, T> {
     type Output = RespType;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

@@ -3,21 +3,21 @@
 use crate::bt::peer::MsgType;
 use crate::bytes::Bytes2Int;
 use crate::torrent::{Parse, Torrent};
-use crate::tracker;
-use crate::tracker::{AnnounceInfo, Event};
 use crate::tracker::udp_tracker::UdpTracker;
+use crate::tracker::{AnnounceInfo, Event};
+use crate::util;
 use byteorder::{BigEndian, WriteBytesExt};
 use sha1::{Digest, Sha1};
 use std::cmp::min;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
+use tokio::net::TcpStream;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 
@@ -26,7 +26,7 @@ use tokio::time::timeout;
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_connect() {
     let info_hash = [0u8; 20];
-    let peer_id = tracker::gen_peer_id();
+    let peer_id = util::rand::gen_peer_id();
     let mut tracker = UdpTracker::new(
         "tracker.torrent.eu.org:451".to_string(),
         Arc::new(info_hash),
@@ -43,7 +43,7 @@ async fn test_connect() {
 async fn test_announce() {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
 
-    let peer_id = tracker::gen_peer_id();
+    let peer_id = util::rand::gen_peer_id();
     let mut tracker = UdpTracker::new(
         "tracker.torrent.eu.org:451".to_string(),
         Arc::new(torrent.info_hash),
