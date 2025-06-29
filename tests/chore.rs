@@ -9,10 +9,13 @@ use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use dorodoro_bangumi::default_logger;
+
+default_logger!(Level::DEBUG);
 
 /// 测试发送了消息后，再发送取消信号，会不会处理取消信号
 ///
@@ -71,7 +74,7 @@ async fn test_oneshot_channel() {
 
     let t1 = tokio::spawn(async move {
         while let Ok(msg) = rx.try_recv() {
-            println!("接收到了消息：{}", msg);
+            info!("接收到了消息：{}", msg);
         }
     });
 
@@ -91,14 +94,14 @@ async fn test_tokio_select_new_instance() {
         for _ in 0..4 {
             select! {
                 _ = &mut test => {
-                    println!("[{k}] Ready 了");
+                    info!("[{k}] Ready 了");
                     k += 1;
                     test = Test::new(k);
                 }
                 res = recv.recv() => {
                     match res {
-                        Some(res) => println!("接收到了消息\t{}", res),
-                        None => println!("啥都没有"),
+                        Some(res) => info!("接收到了消息\t{}", res),
+                        None => info!("啥都没有"),
                     }
                 }
             }
@@ -125,7 +128,7 @@ struct Test {
 
 impl Test {
     fn new(id: usize) -> Self {
-        println!("新建了Test\tid: {}", id);
+        info!("新建了Test\tid: {}", id);
         Self {
             id,
             state: State::Start,
@@ -138,7 +141,7 @@ impl Future for Test {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        println!("触发了poll\t this: {:?}", this);
+        info!("触发了poll\t this: {:?}", this);
         match this.state {
             State::Start => {
                 this.state = State::End;
@@ -160,8 +163,8 @@ fn test_instant_duration() {
     let end = start.elapsed();
     thread::sleep(Duration::from_secs(1));
     let end2 = start.elapsed();
-    println!("{:?}", end);
-    println!("{:?}", end2);
+    info!("{:?}", end);
+    info!("{:?}", end2);
 }
 
 /// 这个会死锁
@@ -175,8 +178,8 @@ async fn test_dashmap_deadlock1() {
     let k = 1;
     let value = map.get(&k); // 这里获取时，会拿到分段锁
     let remove = map.remove(&k); // 前面的锁还没释放，这里再次尝试拿锁，拿不到，产生死锁
-    println!("{:?}", value);
-    println!("{:?}", remove);
+    info!("{:?}", value);
+    info!("{:?}", remove);
 }
 
 /// 这个也会死锁
@@ -187,24 +190,24 @@ async fn test_dashmap_deadlock2() {
     let map = Arc::new(DashMap::new());
     map.insert(1u32, "xx");
     
-    println!("before: {:?}", map.get(&1).unwrap().value());
+    info!("before: {:?}", map.get(&1).unwrap().value());
     
     // 这样写会有死锁风险，所以避免在拿到分段锁中，再进行一次可能会对这个 dashmap 进行操作的调用
     // if let Some(item) = map.get(&1) {
-    //     println!("enter if let");
+    //     info!("enter if let");
     //     do_test_dashmap_deadlock2(map.clone(), item.key()).await;
     // }
     
-    println!("done");
+    info!("done");
 }
 
 #[allow(dead_code)]
 async fn do_test_dashmap_deadlock2(map: Arc<DashMap<u32, &str>>, key: &u32) {
-    println!("enter do dd2");
+    info!("enter do dd2");
     let value = map.get_mut(key);
-    println!("get lock success");
+    info!("get lock success");
     // let value = map.remove(key);
-    println!("value: {:?}", value);
+    info!("value: {:?}", value);
 }
 
 struct B {
@@ -221,9 +224,9 @@ fn test_option() {
         // let x = Some(A { b: Some(B { val: Some(10) }) });
         let x = Some(A { b: None });
         let v = x?.b?.val?;
-        println!("{}", v);
+        info!("{}", v);
         Some(v)
     }
     let v = f();
-    println!("{:?}", v);
+    info!("{:?}", v);
 }

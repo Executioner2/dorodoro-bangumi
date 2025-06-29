@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::task::{Poll, Waker};
 use tokio::net::UdpSocket;
 use tracing::{error, info};
+use anyhow::Result;
 
 /// 循环 id
 struct CycleId {
@@ -61,7 +62,7 @@ pub struct UdpServer {
 }
 
 impl UdpServer {
-    pub async fn new(context: Context) -> Result<Self, std::io::Error> {
+    pub async fn new(context: Context) -> Result<Self> {
         let bind = context.get_config().udp_server_addr();
         let socket = UdpSocket::bind(bind).await?;
         Ok(Self {

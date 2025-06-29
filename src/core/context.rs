@@ -1,12 +1,10 @@
 //! 全局上下文
 
-mod error;
-
-use error::Result;
 use crate::config::Config;
 use crate::db::{ConnWrapper, Db};
 use std::sync::Arc;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
+use anyhow::Result;
 
 #[derive(Clone)]
 pub struct Context {

@@ -1,16 +1,14 @@
 //! 向调度器发送的指令
 
-use super::error::Result;
 use crate::command_system;
-use crate::core::command::CommandHandler;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::peer_manager::command;
 use crate::core::scheduler::{Scheduler, SchedulerContext};
-use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use crate::mapper::torrent::TorrentMapper;
 use crate::torrent::TorrentArc;
 use core::fmt::{Debug, Formatter};
 use std::path::PathBuf;
+use anyhow::Result;
 
 command_system! {
     ctx: Scheduler,

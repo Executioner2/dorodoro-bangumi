@@ -2,6 +2,10 @@ use dorodoro_bangumi::core::protocol;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tracing::Level;
+use dorodoro_bangumi::default_logger;
+
+default_logger!(Level::DEBUG);
 
 #[tokio::test]
 #[ignore]

@@ -1,12 +1,9 @@
-use crate::bt::peer::error::Result;
 use crate::command_system;
-use crate::core::command::CommandHandler;
-use crate::emitter::transfer::{CommandEnum, TransferPtr};
-use crate::peer::error::Error::{PieceCheckoutError, PieceWriteError};
 use crate::peer::{MsgType, Peer};
 use crate::peer_manager::gasket::ExitReason;
 use bytes::Bytes;
 use tracing::debug;
+use anyhow::{anyhow, Result};
 
 command_system! {
     ctx: Peer,
@@ -76,7 +73,7 @@ impl<'a> CommandHandler<'a, Result<()>> for PieceCheckoutFailed {
             .for_each(|(_, value)| value.block_offset = 0);
         // 下载完最后一个 block 后，piece_index 会被删除，因此重新设置为 0
         ctx.insert_response_pieces(self.piece_index, 0);
-        Err(PieceCheckoutError(self.piece_index))
+        Err(anyhow!("响应分块错误，piece_index: {}", self.piece_index))
     }
 }
 
@@ -91,7 +88,7 @@ impl<'a> CommandHandler<'a, Result<()>> for PieceWriteFailed {
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
         ctx.insert_response_pieces(self.piece_index, self.block_offset);
-        Err(PieceWriteError(self.piece_index, self.block_offset))
+        Err(anyhow!("piece_index: {}, block_offset: {} 写入失败", self.piece_index, self.block_offset))
     }
 }
 

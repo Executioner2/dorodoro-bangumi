@@ -1,14 +1,11 @@
 use core::fmt::{Display, Formatter};
-use crate::command::CommandHandler;
 use crate::command_system;
-use crate::emitter::transfer::CommandEnum;
-use crate::emitter::transfer::TransferPtr;
 use crate::peer_manager::gasket::{Gasket, PeerInfo};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{debug, info, trace};
 use crate::mapper::torrent::TorrentStatus;
-use super::error::Result;
+use anyhow::Result;
 
 command_system! {
     ctx: Gasket,

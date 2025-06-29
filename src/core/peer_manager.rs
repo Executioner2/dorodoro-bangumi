@@ -20,7 +20,6 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, trace};
 
 pub mod command;
-mod error;
 pub mod gasket;
 
 pub struct GasketInfo {

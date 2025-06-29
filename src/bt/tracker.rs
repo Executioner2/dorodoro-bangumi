@@ -1,10 +1,9 @@
 pub mod command;
-pub mod error;
 pub mod http_tracker;
 pub mod udp_tracker;
 
 use crate::bytes::Bytes2Int;
-use crate::datetime;
+use crate::{anyhow_eq, datetime};
 use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
@@ -12,12 +11,10 @@ use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{DiscoverPeerAddr, PeerSource};
 use crate::runtime::{DelayedTask, Runnable};
 use crate::torrent::TorrentArc;
-use crate::tracker::error::Error::PeerBytesInvalid;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
 use ahash::AHashSet;
 use core::fmt::Display;
-use error::Result;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -31,8 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 use crate::command::CommandHandler;
 use crate::tracker::command::Command;
-
-
+use anyhow::Result;
 
 // ===========================================================================
 // Peer Host
@@ -40,9 +36,7 @@ use crate::tracker::command::Command;
 
 /// 解析 peer 列表 - IpV4
 pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<SocketAddr>> {
-    if peers.len() % 6 != 0 {
-        return Err(PeerBytesInvalid);
-    }
+    anyhow_eq!(peers.len() % 6, 0, "peers length should be a multiple of 6");
     Ok(peers
         .chunks(6)
         .map(|chunk| {
@@ -54,9 +48,7 @@ pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<SocketAddr>> {
 
 /// 解析 peer 列表 - IpV6
 pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<SocketAddr>> {
-    if peers.len() % 18 != 0 {
-        return Err(PeerBytesInvalid);
-    }
+    anyhow_eq!(peers.len() % 18, 0, "peers length should be a multiple of 18");
     Ok(peers
         .chunks(18)
         .map(|chunk| {

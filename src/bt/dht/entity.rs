@@ -2,181 +2,14 @@ use alloc::borrow::Cow;
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
 use bendy::value::Value;
-use std::net::SocketAddr;
-use std::ops::{Deref, DerefMut};
 use tracing::warn;
+use crate::bendy_ext::{Bytes2Object, SocketAddrExt};
 use crate::bytes::Bytes2Int;
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct VecExt<T> {
-    list: Vec<T>,
-}
-
-impl<T> Default for VecExt<T> {
-    fn default() -> Self {
-        Self {
-            list: vec![]
-        }
-    }
-}
-
-impl<T> From<Vec<T>> for VecExt<T> {
-    fn from(list: Vec<T>) -> Self {
-        Self { list }
-    }
-}
-
-impl<T> Deref for VecExt<T> {
-    type Target = Vec<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.list
-    }
-}
-
-impl<T> DerefMut for VecExt<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.list
-    }
-}
-
-impl<T> IntoIterator for VecExt<T> {
-    type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.list.into_iter()
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct SocketAddrExt {
-    pub(crate) addr: SocketAddr,
-}
-
-impl From<SocketAddr> for SocketAddrExt {
-    fn from(addr: SocketAddr) -> Self {
-        Self { addr }
-    }
-}
-
-impl Into<SocketAddr> for SocketAddrExt {
-    fn into(self) -> SocketAddr {
-        self.addr
-    }
-}
-
-impl Deref for SocketAddrExt {
-    type Target = SocketAddr;
-
-    fn deref(&self) -> &Self::Target {
-        &self.addr
-    }
-}
-
-impl DerefMut for SocketAddrExt {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.addr
-    }
-}
-
-impl FromBencode for VecExt<SocketAddrExt> {
-    fn decode_bencode_object(object: Object) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        let mut res = vec![];
-        let mut list = object.try_into_list()?;
-        while let Some(item) = list.next_object()? {
-            let addr = item.try_into_bytes()?.to_object()?;
-            res.push(addr);
-        }
-
-        Ok(VecExt { list: res })
-    }
-}
-
-pub trait Bytes2Object<T> {
-    fn to_object(&self) -> Result<T, Error>;
-}
-
-impl Bytes2Object<SocketAddrExt> for &[u8] {
-    fn to_object(&self) -> Result<SocketAddrExt, Error> {
-        if self.len() == 6 {
-            let ip_bytes: [u8; 4] = self[..4].try_into()?;
-            let port = u16::from_be_bytes(self[4..6].try_into()?);
-            let addr = SocketAddr::from((ip_bytes, port));
-            Ok(SocketAddrExt { addr })
-        } else if self.len() == 18 {
-            let ip_bytes: [u8; 16] = self[..16].try_into()?;
-            let port = u16::from_be_bytes(self[16..18].try_into()?);
-            let addr = SocketAddr::from((ip_bytes, port));
-            Ok(SocketAddrExt { addr })
-        } else {
-            Err(Error::unexpected_field(format!(
-                "Invalid socket address length: {}",
-                self.len()
-            )))
-        }
-    }
-}
-
-impl ToBencode for SocketAddrExt {
-    const MAX_DEPTH: usize = 10;
-
-    fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
-        match self.addr {
-            SocketAddr::V4(v4) => {
-                let mut bytes = Vec::with_capacity(6);
-                bytes.extend_from_slice(&v4.ip().octets()); // 4 字节 IP
-                bytes.extend_from_slice(&v4.port().to_be_bytes()); // 2 字节端口
-                encoder.emit_bytes(&bytes)?;
-            }
-            SocketAddr::V6(v6) => {
-                let mut bytes = Vec::with_capacity(18);
-                bytes.extend_from_slice(&v6.ip().octets()); // 16 字节 IP
-                bytes.extend_from_slice(&v6.port().to_be_bytes()); // 2 字节端口
-                encoder.emit_bytes(&bytes)?;
-            }
-        }
-        Ok(())
-    }
-}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Host {
     pub id: [u8; 20],
     pub addr: SocketAddrExt,
-}
-
-impl FromBencode for VecExt<Host> {
-    fn decode_bencode_object(object: Object) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        let mut hosts = Vec::new();
-
-        let bytes = object.try_into_bytes()?;
-        let chunk_size = if bytes.len() % 26 == 0 {
-            26
-        } else if bytes.len() % 38 == 0 {
-            38
-        } else {
-            return Err(Error::unexpected_token(
-                "26 or 38 bytes per host expected",
-                format!("Invalid host list length: {}", bytes.len()),
-            ));
-        };
-
-        bytes.chunks(chunk_size).for_each(|data| {
-            let mut id = [0u8; 20];
-            id.copy_from_slice(&data[..20]);
-            let addr: SocketAddrExt = (&data[20..]).to_object().unwrap();
-            hosts.push(Host { id, addr });
-        });
-
-        Ok(VecExt { list: hosts })
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -399,8 +232,8 @@ impl<'a> FromBencode for Ping<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct GetPeersResp<'a> {
     pub id: Value<'a>,
-    pub nodes: Option<VecExt<Host>>,
-    pub values: Option<VecExt<SocketAddrExt>>,
+    pub nodes: Option<Vec<Host>>,
+    pub values: Option<Vec<SocketAddrExt>>,
     pub token: Value<'a>,
     pub p: Option<u16>,
 }
@@ -424,13 +257,11 @@ impl<'a> FromBencode for GetPeersResp<'a> {
                         .context("id")
                         .map(Some)?;
                 }
-                (b"nodes", value) => {
-                    nodes = VecExt::decode_bencode_object(value)
-                        .context("nodes")
-                        .map(Some)?;
+                (b"nodes", Object::Bytes(value)) => {
+                    nodes = Some(value.to_object()?);
                 }
                 (b"values", value) => {
-                    values = VecExt::decode_bencode_object(value)
+                    values = Vec::decode_bencode_object(value)
                         .context("values")
                         .map(Some)?;
                 }

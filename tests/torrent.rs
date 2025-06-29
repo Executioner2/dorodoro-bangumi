@@ -1,38 +1,36 @@
 //! 种子文件解析下载测试
 
+use bendy::decoding::FromBencode;
 use byteorder::{BigEndian, WriteBytesExt};
-use bytes::Bytes;
-use dorodoro_bangumi::bt::bencoding;
 use dorodoro_bangumi::bt::torrent::Torrent;
+use dorodoro_bangumi::default_logger;
 use dorodoro_bangumi::torrent::Parse;
+use dorodoro_bangumi::tracker::http_tracker::Announce;
 use dorodoro_bangumi::util::bytes::Bytes2Int;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
 use std::fs;
 use std::net::UdpSocket;
+use tracing::{Level, debug};
+
+default_logger!(Level::DEBUG);
 
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_bencoded_string() {
     let bytes = fs::read("tests/resources/test6.torrent").unwrap();
-    let data = bencoding::decode(Bytes::from_owner(bytes)).unwrap();
-    println!("decoded data: {:?}", data);
+    let data = Torrent::parse_torrent(bytes).unwrap();
+    debug!("decoded data: {:?}", data);
 }
 
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_announce_file() {
     let bytes = fs::read("tests/resources/announce").unwrap();
-    let data = bencoding::decode(Bytes::from_owner(bytes)).unwrap();
-    println!("decoded data: {:?}", data);
-    let peers = data
-        .as_dict()
-        .unwrap()
-        .get("peers")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    println!("peers: {:?}", peers);
+    let data = Announce::from_bencode(&bytes).unwrap();
+    debug!("decoded data: {:?}", data);
+    let peers = data.peers;
+    debug!("peers: {:?}", peers);
 }
 
 /// 种子文件解析测试
@@ -57,7 +55,7 @@ fn test_info_hash() {
 fn test_udp_tracker_handshake() {
     let torrent = Torrent::parse_torrent("tests/resources/test6.torrent").unwrap();
 
-    println!("tracker: {}", torrent.announce);
+    debug!("tracker: {}", torrent.announce);
 
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
     socket
@@ -70,20 +68,20 @@ fn test_udp_tracker_handshake() {
     request.write_u64::<BigEndian>(0x41727101980).unwrap(); // protocol_id
     request.write_u32::<BigEndian>(0).unwrap(); // action = 0 (connect)
     request.write_u32::<BigEndian>(transaction_id).unwrap(); // transaction_id
-    println!("send_transaction_id: {}", transaction_id);
+    debug!("send_transaction_id: {}", transaction_id);
 
     socket
         .send_to(&request, "tracker.torrent.eu.org:451")
         .unwrap();
     let mut response = [0u8; 16];
     let (size, _) = socket.recv_from(&mut response).unwrap();
-    println!("收到的响应大小: {}\n收到的数据: {:?}", size, response);
+    debug!("收到的响应大小: {}\n收到的数据: {:?}", size, response);
 
     let action = u32::from_be_slice(&response[0..4]);
     let transaction_id = u32::from_be_slice(&response[4..8]);
     let connection_id = u64::from_be_slice(&response[8..16]);
 
-    println!(
+    debug!(
         "action: {}, transaction_id: {}, connection_id: {}",
         action, transaction_id, connection_id
     )
@@ -93,7 +91,7 @@ fn test_udp_tracker_handshake() {
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
-    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
+    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent")?;
 
     let announce = "http://nyaa.tracker.wf:7777/announce";
     let port = "6881";
@@ -111,16 +109,17 @@ fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
     let encoded_peer = percent_encode(&peer_id, NON_ALPHANUMERIC).to_string();
 
     let url = format!(
-        "{}?info_hash={}&peer_id={}&port={}&uploaded=0&downloaded={}",
+        "{}?info_hash={}&peer_id={}&port={}&uploaded=0&downloaded={}&compact=1",
         announce, encoded_info, encoded_peer, port, downloaded
     );
 
     let response = reqwest::blocking::get(url)?;
-    println!("url: {}", response.url());
+    debug!("url: {}", response.url());
     let response = response.bytes()?;
-    println!("response: {:?}", response);
-    let response = bencoding::decode(response).unwrap();
-    println!("decoded response: {:?}", response);
+    debug!("response: {:?}", response);
+
+    let response = Announce::from_bencode(&response).unwrap();
+    debug!("decoded response: {:?}", response);
     Ok(())
 }
 
@@ -128,10 +127,10 @@ fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg_attr(miri, ignore)]
 fn test_piece_hash() {
     let torrent = Torrent::parse_torrent("tests/resources/test6.torrent").unwrap();
-    println!("文件序: {:?}", torrent.info.files);
-    println!("tracker: {}", torrent.announce);
+    debug!("文件序: {:?}", torrent.info.files);
+    debug!("tracker: {}", torrent.announce);
     for (i, data) in torrent.info.pieces.chunks(20).enumerate() {
-        let x= hex::encode(data);
-        println!("第[{}]个分块的hash: {}", i, x)
+        let x = hex::encode(data);
+        debug!("第[{}]个分块的hash: {}", i, x)
     }
 }

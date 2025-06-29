@@ -27,7 +27,7 @@
 use crate::BBRState::{Drain, ProbeBW, ProbeRtprop, Startup};
 use dorodoro_bangumi::runtime::Runnable;
 use dorodoro_bangumi::win_minmax::Minmax;
-use dorodoro_bangumi::{datetime, if_else};
+use dorodoro_bangumi::{datetime, default_logger, if_else};
 use fnv::FnvHashMap;
 use futures::future::BoxFuture;
 use std::cmp::max;
@@ -41,6 +41,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tracing::{info, Level};
+
+default_logger!(Level::DEBUG);
 
 /// 带宽计算基准，作用是消除小包微秒级别的交付导致速率计算异常高。
 ///
@@ -454,7 +457,7 @@ where
     pub fn next_send_time(&self) -> Duration {
         let packet_size = self.block_size;
         let next = Duration::from_micros(packet_size as u64 * MICROS_PER_SEC / self.pacing_rate);
-        println!(
+        info!(
             "cwnd: {}\tpacing_rate: {}\tpacket_size: {}\t下一次发送时间: {:?}\tmin rtt: {}us\t",
             self.cwnd, self.pacing_rate, packet_size, next, self.min_rtt_us
         );
@@ -581,7 +584,7 @@ where
         }
 
         let bw_thresh = self.full_bw * BBR_FULL_BW_THRESH >> BBR_SCALE;
-        println!("当前带宽最大值: {}\t受限值: {}", self.max_bw(), bw_thresh);
+        info!("当前带宽最大值: {}\t受限值: {}", self.max_bw(), bw_thresh);
         if self.max_bw() >= bw_thresh {
             // 当前带宽最大值大于等于受限值，则更新受限值
             self.full_bw = self.max_bw();
@@ -594,7 +597,7 @@ where
 
     /// 重置为 ProbeBW 状态
     fn reset_probe_bw_mode(&mut self) {
-        println!("进入 ProbeBW 状态");
+        info!("进入 ProbeBW 状态");
         self.state = ProbeBW;
         self.cycle_idx = rand::random_range(0..CYCLE_LEN);
         self.advance_cycle_phase();
@@ -603,7 +606,7 @@ where
     /// 检查 Drain 状态
     fn check_drain(&mut self, _rs: &RateSample) {
         if self.state == Startup && self.full_bw_reached {
-            println!("进入 Drain 状态");
+            info!("进入 Drain 状态");
             self.state = Drain;
         }
 
@@ -616,7 +619,7 @@ where
 
     /// 重置为 Startup 状态
     fn reset_startup_mode(&mut self) {
-        println!("进入 Startup 状态");
+        info!("进入 Startup 状态");
         self.state = Startup;
     }
 
@@ -659,7 +662,7 @@ where
         }
 
         if BBR_PROBE_RTT_MODE_US > 0 && filter_expired && self.state != ProbeRtprop {
-            println!("进入 ProbeRtprop 状态");
+            info!("进入 ProbeRtprop 状态");
             self.state = ProbeRtprop; // 切换到 rtt 测量状态
             self.save_cwnd();
             self.probe_rtt_done_stamp = 0;
@@ -744,7 +747,7 @@ where
     fn set_cwnd(&mut self, bw: u32, gain: u32) {
         let mut cwnd = self.cwnd;
         let target_cwnd = self.theory_inflight_limit(bw, gain);
-        println!("目标cwnd: {}", target_cwnd);
+        info!("目标cwnd: {}", target_cwnd);
 
         if self.full_bw_reached {
             cwnd = target_cwnd.min(cwnd + 1);
@@ -919,6 +922,7 @@ pub mod rd {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
     use tokio::net::tcp::OwnedReadHalf;
+    use tracing::info;
     use dorodoro_bangumi::peer::peer_resp::RespType::Normal;
 
     pub struct ReqDataFactory {
@@ -1063,7 +1067,7 @@ pub mod rd {
                     let read_count = read_count.swap(0, Ordering::Relaxed);
                     sum += read_count;
                     queue.push(read_count).map(|val| sum -= val);
-                    println!("当前速率: {}Mib/s", sum / queue.len() as u64 / 1024 / 1024);
+                    info!("当前速率: {}Mib/s", sum / queue.len() as u64 / 1024 / 1024);
                 }
             }
         }
@@ -1087,6 +1091,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
+    use tracing::info;
 
     #[ignore]
     #[tokio::test]
@@ -1129,6 +1134,6 @@ mod tests {
         stream.read_exact(res.as_mut()).await.unwrap();
 
         let end = datetime::now_micros() - t;
-        println!("耗时: {:?}", Duration::from_micros(end as u64));
+        info!("耗时: {:?}", Duration::from_micros(end as u64));
     }
 }

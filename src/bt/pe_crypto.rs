@@ -51,6 +51,7 @@ use tokio::net::TcpStream;
 use tracing::debug;
 use crate::bt::socket::{Crypto, TcpStreamExt};
 use crate::net::AsyncReadExtExt;
+use anyhow::{anyhow, Result};
 
 lazy_static! {
     static ref PRIME: BigUint = BigUint::from_str_radix("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63A36210000000000090563", 16).unwrap();
@@ -226,7 +227,7 @@ fn encrypt_a2b_handshake_packet(
 }
 
 /// 解密第四步，B->A 的握手包
-fn decrypt_b2a_handshake_packet(remote_cipher: &mut Rc4Cipher, recv: &mut [u8]) -> Result<(CryptoProvide, usize), std::io::Error> {
+fn decrypt_b2a_handshake_packet(remote_cipher: &mut Rc4Cipher, recv: &mut [u8]) -> Result<(CryptoProvide, usize)> {
     // 解析出 VC
     let mut pos = 0usize;
     let vc_len = VC.len();
@@ -241,14 +242,14 @@ fn decrypt_b2a_handshake_packet(remote_cipher: &mut Rc4Cipher, recv: &mut [u8]) 
     }
 
     if pos >= n - vc_len {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "握手失败，没有找到 VC"));
+        return Err(anyhow!("握手失败，没有找到 VC"));
     }
 
     pos += vc_len; // 跳过 VC
 
     // 解析出 crypto_select 和 len(padD)
     if recv.len() < pos + CRYPTO_OPTION_LEN + PAD_LEN_UNIT {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "crypto_select 和 len(padD) 长度不足"));
+        return Err(anyhow!("crypto_select 和 len(padD) 长度不足"));
     }
     
     remote_cipher.apply_keystream(&mut recv[pos..pos + CRYPTO_OPTION_LEN + PAD_LEN_UNIT]);
@@ -262,7 +263,7 @@ fn decrypt_b2a_handshake_packet(remote_cipher: &mut Rc4Cipher, recv: &mut [u8]) 
         } else if crypto_select & CryptoProvide::Plaintext as u32 != 0 {
             CryptoProvide::Plaintext
         } else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "不支持的加密方式"));
+            return Err(anyhow!("不支持的加密方式"));
         };
     
     // 注意这里要对 pad 数据也进行解密，不然这里的 remote_cipher 流会和对端的 remote_cipher 不一致
@@ -295,7 +296,8 @@ pub fn decrypt_payload(remote_cipher: &mut Rc4Cipher, payload: &mut [u8]) {
 /// * `info_hash`: 种子哈希值
 ///
 /// returns: 正常情况返回 TcpStreamExt，包含密钥，实现读取和写入的加解密封装
-pub async fn init_handshake(mut socket: TcpStream, info_hash: &[u8], cp: CryptoProvide) -> Result<TcpStreamExt, std::io::Error> {
+/// todo - 数据不足时，需要等待
+pub async fn init_handshake(mut socket: TcpStream, info_hash: &[u8], cp: CryptoProvide) -> Result<TcpStreamExt> {
     if cp == CryptoProvide::Plaintext {
         return Ok(TcpStreamExt::new(socket, Crypto::Plaintext, Crypto::Plaintext));
     }
@@ -307,7 +309,7 @@ pub async fn init_handshake(mut socket: TcpStream, info_hash: &[u8], cp: CryptoP
     let mut recv = [0u8; 608];
     let size = socket.read_with_timeout(&mut recv, TIMEOUT).await?;
     if size >= 608 && socket.has_data_available().await? {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "握手失败，长度超出608字节"));
+        return Err(anyhow!("握手失败，长度超出 608 字节"));
     }
 
     // 计算出共享密钥

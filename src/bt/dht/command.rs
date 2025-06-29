@@ -1,9 +1,7 @@
 use std::net::SocketAddr;
-use crate::emitter::transfer::{TransferPtr, CommandEnum};
-use super::error::Result;
-use crate::command::CommandHandler;
 use crate::command_system;
 use crate::dht::DHT;
+use anyhow::Result;
 
 command_system! {
     ctx: DHT,

@@ -1,7 +1,7 @@
 use crate::bt::peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
 use crate::bytes::Bytes2Int;
 use crate::collection::FixedQueue;
-use crate::log;
+use crate::{default_logger, log};
 use crate::peer::peer_resp::PeerResp;
 use crate::timer::CountdownTimer;
 use byteorder::{BigEndian, WriteBytesExt};
@@ -29,8 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
-use tracing::Level;
+use tracing::{error, info, Level};
 use crate::peer::peer_resp::RespType::*;
+
+default_logger!(Level::DEBUG);
 
 const BLOCK_SIZE: u32 = 1 << 14;
 const MSS: u32 = 17;
@@ -61,7 +63,7 @@ async fn test_net_rate() {
                 if let Some(_size) = res {
                     ct = uniform_send_data(&mut wrtie, &throttle, &mut ct, &inflight, &mut idx).await;
                 } else {
-                    eprintln!("中断了 channel");
+                    error!("中断了 channel");
                     break;
                 }
             }
@@ -153,7 +155,7 @@ async fn do_async_read(
                         tx.send(packet_size).await.unwrap();
                     },
                     Heartbeat => {
-                        println!("心跳包");
+                        info!("心跳包");
                     }
                     Unoknown => {
                         eprintln!("断开了链接");
@@ -243,7 +245,7 @@ async fn do_tick_update_cwnd(
                 sum += rate;
                 window.push(rate).map(|prev| sum -= prev);
                 let current_n = update(rate, prev_rate, &current_n);
-                println!("并发请求数: {}\t平均速率: {:.2} Mib/s", current_n, sum as f64 / window.len() as f64 / 1024.0 / 1024.0);
+                info!("并发请求数: {}\t平均速率: {:.2} Mib/s", current_n, sum as f64 / window.len() as f64 / 1024.0 / 1024.0);
                 prev_rate = rate;
             }
         }
@@ -302,10 +304,10 @@ async fn do_normal_async_read(
                         tx.send(size).await.unwrap();
                     },
                     Heartbeat => {
-                        println!("心跳包");
+                        info!("心跳包");
                     }
                     Unoknown => {
-                        eprintln!("断开了链接");
+                        error!("断开了链接");
                         break;
                     }
                 }
@@ -355,13 +357,13 @@ async fn test_get_tcp_socket_rtt() {
     .unwrap();
 
     let mut ci: CmsgIterator = r.cmsgs().unwrap();
-    println!("ci: {:?}", ci);
+    info!("ci: {:?}", ci);
     if let Some(ControlMessageOwned::ScmTimestamp(rtime)) = ci.next() {
-        println!("rtt: {}", rtime);
+        info!("rtt: {}", rtime);
     }
 
-    println!("cmsgspace: {:?}", cmsgspace);
-    println!("buffer: {:?}", buffer);
+    info!("cmsgspace: {:?}", cmsgspace);
+    info!("buffer: {:?}", buffer);
 }
 
 /// 从 udp 中获取 rtt
@@ -405,7 +407,7 @@ async fn test_get_udp_socket_rtt() {
     // the packet's received timestamp should lie in-between the two system
     // times, unless the system clock was adjusted in the meantime.
     let rduration = Duration::new(rtime.tv_sec() as u64, rtime.tv_usec() as u32 * 1000);
-    println!(
+    info!(
         "rtime: {}\trtt: {:?}",
         rtime,
         time1.duration_since(UNIX_EPOCH).unwrap() - rduration
@@ -423,7 +425,7 @@ async fn test_get_tcp_socket_tcp_info() {
     let (mut read, mut write) = stream.into_split();
     let fd = read.as_ref().as_raw_fd();
     let info = get_tco_info(fd).unwrap();
-    println!(
+    info!(
         "tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}\ttcp_option: {}\ttcpi_rxpackets: {}\ttcpi_snd_sbbytes: {}",
         info.tcpi_srtt,
         info.tcpi_rttcur,
@@ -436,7 +438,7 @@ async fn test_get_tcp_socket_tcp_info() {
     send_data(&mut write, 0, 0).await;
 
     let info = get_tco_info(fd).unwrap();
-    println!(
+    info!(
         "tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}\ttcp_option: {}\ttcpi_rxpackets: {}\ttcpi_snd_sbbytes: {}",
         info.tcpi_srtt,
         info.tcpi_rttcur,
@@ -459,7 +461,7 @@ async fn test_get_tcp_socket_tcp_info() {
     //     println!("tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}tcpi_rxpackets: {}", info.tcpi_srtt, info.tcpi_rttcur, info.tcpi_rttvar, info.tcpi_rxpackets);
     // }
     let info = get_tco_info(fd).unwrap();
-    println!(
+    info!(
         "tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}\ttcpi_rxpackets: {}\ttcpi_txpackets: {}\ttcpi_rxretransmitpackets: {}\ttcp_option: {}\ttcpi_snd_sbbytes: {}",
         info.tcpi_srtt,
         info.tcpi_rttcur,
@@ -472,7 +474,7 @@ async fn test_get_tcp_socket_tcp_info() {
     );
 
     let info = get_tco_info(fd).unwrap();
-    println!(
+    info!(
         "tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}\ttcpi_rxpackets: {}\ttcpi_txpackets: {}\ttcpi_rxretransmitpackets: {}\ttcp_option: {}\ttcpi_snd_sbbytes: {}",
         info.tcpi_srtt,
         info.tcpi_rttcur,
@@ -485,7 +487,7 @@ async fn test_get_tcp_socket_tcp_info() {
     );
 
     let info = get_tco_info(fd).unwrap();
-    println!(
+    info!(
         "tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}\ttcpi_rxpackets: {}\ttcpi_txpackets: {}\ttcpi_rxretransmitpackets: {}\ttcp_option: {}\ttcpi_snd_sbbytes: {}",
         info.tcpi_srtt,
         info.tcpi_rttcur,
@@ -498,7 +500,7 @@ async fn test_get_tcp_socket_tcp_info() {
     );
 
     let info = get_tco_info(fd).unwrap();
-    println!(
+    info!(
         "tcpi_srtt: {}\ttcpi_rttcur: {}\ttcpi_rttvar: {}\ttcpi_rxpackets: {}\ttcpi_txpackets: {}\ttcpi_rxretransmitpackets: {}\ttcp_option: {}\ttcpi_snd_sbbytes: {}",
         info.tcpi_srtt,
         info.tcpi_rttcur,
@@ -511,7 +513,7 @@ async fn test_get_tcp_socket_tcp_info() {
     );
     
     if let Normal(msg_type, buf) = x {
-        println!("msg_type: {:?}", msg_type);
+        info!("msg_type: {:?}", msg_type);
     }
 }
 

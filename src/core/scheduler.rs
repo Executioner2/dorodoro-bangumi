@@ -10,7 +10,6 @@ use tokio::sync::mpsc::channel;
 use tracing::{error, info, trace};
 
 pub mod command;
-mod error;
 
 /// 多线程下的共享数据
 pub struct SchedulerContext {

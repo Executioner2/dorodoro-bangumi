@@ -52,6 +52,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
+use tracing::{debug, Level};
+use dorodoro_bangumi::default_logger;
+
+default_logger!(Level::DEBUG);
 
 /// 方案1：所有 UDP Tracker 共享同一个 socket
 fn scheme1() {
@@ -97,7 +101,7 @@ fn scheme1() {
     // 第一次 接收到的字节数: 246957056Byte[235.52MB] 发送的字节数: 246967296Byte[235.53MB]
     // 第二次 接收到的字节数: 230904832Byte[220.21MB] 发送的字节数: 230915072Byte[220.22MB]
     // 第三次 接收到的字节数: 259508224Byte[247.49MB] 发送的字节数: 259518464Byte[247.50MB]
-    println!(
+    debug!(
         "接收到的字节数: {}Byte[{:.2}MB] 发送的字节数: {}Byte[{:.2}MB]",
         recv,
         recv as f64 / 1048576f64,
@@ -148,7 +152,7 @@ fn scheme2() {
     // 第一次 接收到的字节数: 246234112Byte[234.83MB] 发送的字节数: 246243328Byte[234.84MB]
     // 第二次 接收到的字节数: 243945472Byte[232.64MB] 发送的字节数: 243955712Byte[232.65MB]
     // 第三次 接收到的字节数: 275804160Byte[263.03MB] 发送的字节数: 275814400Byte[263.04MB]
-    println!(
+    debug!(
         "接收到的字节数: {}Byte[{:.2}MB] 发送的字节数: {}Byte[{:.2}MB]",
         recv,
         recv as f64 / 1048576f64,

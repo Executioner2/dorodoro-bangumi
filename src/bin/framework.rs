@@ -2,14 +2,15 @@
 
 use crate::peer::PeerManager;
 use crate::torrent::Torrent;
-use dorodoro_bangumi::log;
+use dorodoro_bangumi::{default_logger, log};
 use dorodoro_bangumi::util::buffer::ByteBuffer;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, error, info, warn};
-use tracing_appender::non_blocking::WorkerGuard;
+
+default_logger!(Level::DEBUG);
 
 pub mod torrent {
     /// Torrent

@@ -1,24 +1,19 @@
 //! 种子内容下载
 
-pub mod error;
-
 #[cfg(test)]
 mod tests;
 
-use self::error::Result;
-use crate::bencoding::error::Error::TransformError;
-use crate::bt::bencoding;
-use crate::bt::bencoding::BEncode;
 use crate::if_else;
-use crate::torrent::error::Error::InvalidTorrent;
+use anyhow::{anyhow, Result};
+use bendy::decoding::{Error, FromBencode, Object, ResultExt};
+use bendy::encoding::AsString;
 use bincode::{Decode, Encode};
-use bytes::Bytes;
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
 use std::fs;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::warn;
 
 /// 种子，多线程共享
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -29,7 +24,7 @@ pub struct TorrentArc {
 impl TorrentArc {
     pub fn new(torrent: Torrent) -> Self {
         Self {
-            inner: Arc::new(torrent)
+            inner: Arc::new(torrent),
         }
     }
 }
@@ -38,7 +33,7 @@ impl TorrentArc {
     pub fn as_ptr(&self) -> *const Torrent {
         self.inner.as_ref() as *const Torrent
     }
-    
+
     pub fn inner(&self) -> &Torrent {
         &*self.inner
     }
@@ -61,38 +56,8 @@ pub struct Torrent {
     pub creation_date: u64,              // 创建时间
     pub info: Info,                      // 种子信息
     pub info_hash: [u8; 20],             // 种子信息hash值
-    _comment: Option<String>,            // 种子描述
-    _encoding: Option<String>,           // 编码方式
-}
-
-/// 种子信息结构体
-#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
-pub struct Info {
-    pub length: u64,             // 文件大小
-    pub piece_length: u64,       // 分片大小
-    pub pieces: Vec<u8>,         // 每20个字节一块的校验码
-    pub name: String,            // 文件名
-    pub files: Vec<File>,        // 文件列表
-    _md5sum: Option<String>,     // 文件md5值
-    _private: Option<u8>,        // 是否私有
-    file_piece: Vec<(u32, u32)>, // 多文件情况下，分片下标对应的文件
-}
-
-/// 文件结构体，适用于多文件种子
-#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
-pub struct File {
-    pub length: u64,         // 文件大小
-    pub path: Vec<String>,   // 文件路径
-    length_prefix_sum: u64,  // 总大小的前缀和
-    _md5sum: Option<String>, // 文件md5值
-}
-
-#[derive(Clone, Debug)]
-pub struct BlockInfo {
-    pub filepath: PathBuf,
-    pub start: u64,
-    pub len: usize,
-    pub file_len: u64,
+    pub comment: Option<String>,         // 种子描述
+    pub encoding: Option<String>,        // 编码方式
 }
 
 impl Torrent {
@@ -103,6 +68,8 @@ impl Torrent {
         creation_date: u64,
         info: Info,
         info_hash: [u8; 20],
+        comment: Option<String>,
+        encoding: Option<String>,
     ) -> Self {
         Self {
             announce,
@@ -111,8 +78,8 @@ impl Torrent {
             creation_date,
             info,
             info_hash,
-            _comment: None,
-            _encoding: None,
+            comment,
+            encoding,
         }
     }
 
@@ -127,16 +94,106 @@ impl Torrent {
         self.info
             .find_file_of_piece_index(path_buf, piece_index, offset, len)
     }
-    
+
     /// 分片数量
     pub fn piece_num(&self) -> usize {
         self.info.pieces.len() / 20
     }
-    
+
     /// bitfield 数组的长度
     pub fn bitfield_len(&self) -> usize {
         (self.piece_num() + 7) >> 3
     }
+}
+
+impl FromBencode for Torrent {
+    fn decode_bencode_object(object: Object) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        let mut announce = None;
+        let mut announce_list = None;
+        let mut created_by = None;
+        let mut creation_date = None;
+        let mut info = None;
+        let mut info_hash = None;
+        let mut comment = None;
+        let mut encoding = None;
+
+        let mut dict = object.try_into_dictionary()?;
+        while let Some(pair) = dict.next_pair()? {
+            match pair {
+                (b"announce", value) => {
+                    announce = String::decode_bencode_object(value)
+                        .context("announce")
+                        .map(Some)?;
+                }
+                (b"announce-list", value) => {
+                    announce_list = Vec::<Vec<String>>::decode_bencode_object(value)
+                        .context("announce-list")
+                        .map(Some)?;
+                }
+                (b"created by", value) => {
+                    created_by = String::decode_bencode_object(value)
+                        .context("created by")
+                        .map(Some)?;
+                }
+                (b"creation date", value) => {
+                    creation_date = u64::decode_bencode_object(value)
+                        .context("creation date")
+                        .map(Some)?;
+                }
+                (b"info", Object::Dict(dict)) => {
+                    let info_bytes = dict.into_raw()?;
+                    info_hash = Some(calculate_info_hash(&info_bytes));
+                    info = Info::from_bencode(&info_bytes).context("info").map(Some)?;
+                }
+                (b"comment", value) => {
+                    comment = String::decode_bencode_object(value)
+                        .context("comment")
+                        .map(Some)?;
+                }
+                (b"encoding", value) => {
+                    encoding = String::decode_bencode_object(value)
+                        .context("encoding")
+                        .map(Some)?;
+                }
+                (unknown_field, _) => {
+                    warn!("未知的字段: {:?}", String::from_utf8_lossy(unknown_field));
+                }
+            }
+        }
+
+        let announce = announce.ok_or_else(|| Error::missing_field("announce"))?;
+        let announce_list = announce_list.ok_or_else(|| Error::missing_field("announce_list"))?;
+        let creation_date = creation_date.ok_or_else(|| Error::missing_field("creation_date"))?;
+        let info = info.ok_or_else(|| Error::missing_field("info"))?;
+        let info_hash = info_hash.ok_or_else(|| Error::missing_field("info_hash"))?;
+
+        Ok(Self::new(
+            announce,
+            announce_list,
+            created_by,
+            creation_date,
+            info,
+            info_hash,
+            comment,
+            encoding,
+        ))
+    }
+}
+
+/// 种子信息结构体
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
+pub struct Info {
+    pub length: u64,             // 文件大小
+    pub piece_length: u64,       // 分片大小
+    pub pieces: Vec<u8>,         // 每20个字节一块的校验码
+    pub name: String,            // 文件名
+    pub files: Vec<File>,        // 文件列表
+    pub md5sum: Option<String>,  // 文件md5值
+    pub private: Option<u8>,     // 是否私有
+    file_piece: Vec<(u32, u32)>, // 多文件情况下，分片下标对应的文件
 }
 
 impl Info {
@@ -146,6 +203,8 @@ impl Info {
         piece_length: u64,
         pieces: Vec<u8>,
         mut files: Vec<File>,
+        md5sum: Option<String>,
+        private: Option<u8>,
     ) -> Self {
         let file_piece = Self::calculate_file_piece(&mut files, piece_length);
         Self {
@@ -154,8 +213,8 @@ impl Info {
             piece_length,
             pieces,
             files,
-            _md5sum: None,
-            _private: None,
+            md5sum,
+            private,
             file_piece,
         }
     }
@@ -227,156 +286,157 @@ impl Info {
     }
 }
 
+impl FromBencode for Info {
+    fn decode_bencode_object(object: Object) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        let mut name = None;
+        let mut length = None;
+        let mut piece_length = None;
+        let mut pieces = None;
+        let mut files = None;
+        let mut md5sum = None;
+        let mut private = None;
+
+        let mut dict = object.try_into_dictionary()?;
+        while let Some(pair) = dict.next_pair()? {
+            match pair {
+                (b"name", value) => {
+                    name = String::decode_bencode_object(value)
+                        .context("name")
+                        .map(Some)?;
+                }
+                (b"length", value) => {
+                    length = u64::decode_bencode_object(value)
+                        .context("length")
+                        .map(Some)?;
+                }
+                (b"piece length", value) => {
+                    piece_length = u64::decode_bencode_object(value)
+                        .context("piece length")
+                        .map(Some)?;
+                }
+                (b"pieces", value) => {
+                    pieces = Some(AsString::decode_bencode_object(value)?.0);
+                }
+                (b"files", value) => {
+                    files = Vec::<File>::decode_bencode_object(value)
+                        .context("files")
+                        .map(Some)?;
+                }
+                (b"md5sum", value) => {
+                    md5sum = String::decode_bencode_object(value)
+                        .context("md5sum")
+                        .map(Some)?;
+                }
+                (b"private", value) => {
+                    private = u8::decode_bencode_object(value)
+                        .context("private")
+                        .map(Some)?;
+                }
+                (unknown_field, _) => {
+                    warn!("未知的字段: {:?}", String::from_utf8_lossy(unknown_field));
+                }
+            }
+        }
+
+        let name = name.ok_or_else(|| Error::missing_field("name"))?;
+        let piece_length = piece_length.ok_or_else(|| Error::missing_field("piece length"))?;
+        let pieces = pieces.ok_or_else(|| Error::missing_field("pieces"))?;
+        let length =
+        if let Some(files) = files.as_ref() {
+            files.iter().map(|file| file.length).sum()
+        } else {
+            length.ok_or_else(|| Error::missing_field("length"))?
+        };
+
+        Ok(Info::new(
+            name,
+            length,
+            piece_length,
+            pieces,
+            files.unwrap_or_default(),
+            md5sum,
+            private,
+        ))
+    }
+}
+
+/// 文件结构体，适用于多文件种子
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
+pub struct File {
+    pub length: u64,        // 文件大小
+    pub path: Vec<String>,  // 文件路径
+    length_prefix_sum: u64, // 总大小的前缀和
+    md5sum: Option<String>, // 文件md5值
+}
+
 impl File {
-    fn new(length: u64, path: Vec<String>) -> Self {
+    fn new(length: u64, path: Vec<String>, md5sum: Option<String>) -> Self {
         Self {
             length,
             path,
             length_prefix_sum: 0,
-            _md5sum: None,
+            md5sum,
         }
     }
 }
 
-/// 解析 announce
-fn parse_announce(encode: &HashMap<String, BEncode>) -> Result<String> {
-    Ok(encode
-        .get("announce")
-        .ok_or(InvalidTorrent("缺少announce"))?
-        .as_str()
-        .ok_or(TransformError)?
-        .to_string())
-}
+impl FromBencode for File {
+    fn decode_bencode_object(object: Object) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        let mut length = None;
+        let mut path = None;
+        let mut md5sum = None;
 
-/// 解析 List<String> 这种格式的数据。重复出现，所以抽出来
-fn parse_list_str(encode: &BEncode) -> Result<Vec<String>> {
-    encode
-        .as_list()
-        .ok_or(TransformError)?
-        .iter()
-        .try_fold(Vec::new(), |mut acc, announce| {
-            acc.push(announce.as_str().ok_or(TransformError)?.to_string());
-            Ok(acc)
-        })
-}
+        let mut dict = object.try_into_dictionary()?;
+        while let Some(pair) = dict.next_pair()? {
+            match pair {
+                (b"length", value) => {
+                    length = u64::decode_bencode_object(value)
+                        .context("length")
+                        .map(Some)?;
+                }
+                (b"path", value) => {
+                    path = Vec::<String>::decode_bencode_object(value)
+                        .context("path")
+                        .map(Some)?;
+                }
+                (b"md5sum", value) => {
+                    md5sum = String::decode_bencode_object(value)
+                        .context("md5sum")
+                        .map(Some)?;
+                }
+                (unknown_field, _) => {
+                    warn!("未知的字段: {:?}", String::from_utf8_lossy(unknown_field));
+                }
+            }
+        }
 
-/// 解析 announce-list
-fn parse_announce_list(encode: &HashMap<String, BEncode>) -> Result<Vec<Vec<String>>> {
-    match encode.get("announce-list") {
-        Some(announce_list) => announce_list
-            .as_list()
-            .ok_or(TransformError)?
-            .iter()
-            .try_fold(Vec::new(), |mut acc, announce_list| {
-                let announce_list = parse_list_str(announce_list)?;
-                acc.push(announce_list);
-                Ok(acc)
-            }),
-        None => Ok(Vec::new()),
+        let length = length.ok_or_else(|| Error::missing_field("length"))?;
+        let path = path.ok_or_else(|| Error::missing_field("path"))?;
+
+        Ok(File::new(length, path, md5sum))
     }
 }
 
-/// 解析 created by
-fn parse_created_by(encode: &HashMap<String, BEncode>) -> Result<Option<String>> {
-    let created_by = match encode.get("created by") {
-        Some(created_by) => Some(created_by.as_str().ok_or(TransformError)?.to_string()),
-        None => None,
-    };
-    Ok(created_by)
+#[derive(Clone, Debug)]
+pub struct BlockInfo {
+    pub filepath: PathBuf,
+    pub start: u64,
+    pub len: usize,
+    pub file_len: u64,
 }
 
-/// 解析创建时间
-fn parse_creation_date(encode: &HashMap<String, BEncode>) -> Result<u64> {
-    let creation_date = encode
-        .get("creation date")
-        .ok_or(InvalidTorrent("缺少creation date"))?
-        .as_int()
-        .ok_or(TransformError)?;
-    if creation_date < 0 {
-        return Err(InvalidTorrent("creation date 不能为负数"));
-    }
-    Ok(creation_date as u64)
-}
-
-fn info_hash(data: &[u8]) -> [u8; 20] {
+fn calculate_info_hash(data: &[u8]) -> [u8; 20] {
     let mut hasher = Sha1::new();
     hasher.update(data);
     let mut result = [0; 20];
     result.copy_from_slice(&hasher.finalize());
     result
-}
-
-/// 解析 info
-fn parse_info(encode: &HashMap<String, BEncode>) -> Result<(Info, [u8; 20])> {
-    let info_bencode = encode.get("info").ok_or(InvalidTorrent("缺少info"))?;
-
-    let info = info_bencode.as_dict().ok_or(TransformError)?;
-    let mut length = match info.get("length") {
-        Some(length) => length.as_int().ok_or(TransformError)?,
-        None => 0,
-    };
-    let piece_length = info
-        .get("piece length")
-        .ok_or(InvalidTorrent("缺少info.piece length"))?
-        .as_int()
-        .ok_or(TransformError)?;
-
-    if length < 0 || piece_length < 0 {
-        return Err(InvalidTorrent("info.length或info.piece length 不能为负数"));
-    }
-
-    let pieces = info
-        .get("pieces")
-        .ok_or(InvalidTorrent("缺少info.pieces"))?
-        .as_bytes_conetnt()
-        .ok_or(TransformError)?
-        .to_vec();
-    let name = info
-        .get("name")
-        .ok_or(InvalidTorrent("缺少info.name"))?
-        .as_str()
-        .ok_or(TransformError)?
-        .to_string();
-    let files = parse_info_files(info)?;
-
-    if length == 0 && !files.is_empty() {
-        length = files.iter().fold(0, |acc, file| acc + file.length as i64);
-    }
-
-    Ok((
-        Info::new(name, length as u64, piece_length as u64, pieces, files),
-        info_hash(info_bencode.bytes()),
-    ))
-}
-
-/// 解析 info.files
-fn parse_info_files(info: &HashMap<String, BEncode>) -> Result<Vec<File>> {
-    match info.get("files") {
-        Some(files) => {
-            files
-                .as_list()
-                .ok_or(TransformError)?
-                .iter()
-                .try_fold(Vec::new(), |mut acc, file| {
-                    let file = file.as_dict().ok_or(TransformError)?;
-                    let length = file
-                        .get("length")
-                        .ok_or(InvalidTorrent("缺少info.files.length"))?
-                        .as_int()
-                        .ok_or(TransformError)?;
-                    let path = parse_list_str(
-                        file.get("path")
-                            .ok_or(InvalidTorrent("缺少info.files.path"))?,
-                    )?;
-                    if length < 0 {
-                        return Err(InvalidTorrent("info.files.length 不能为负数"));
-                    }
-                    acc.push(File::new(length as u64, path));
-                    Ok(acc)
-                })
-        }
-        None => Ok(Vec::new()),
-    }
 }
 
 pub trait Parse<T, U = Self> {
@@ -387,17 +447,12 @@ pub trait Parse<T, U = Self> {
 /// 直接传入字节数组
 impl Parse<Vec<u8>> for Torrent {
     fn parse_torrent(data: Vec<u8>) -> Result<Torrent> {
-        let binding = bencoding::decode(Bytes::from(data))?;
-        let encode = binding.as_dict().ok_or(TransformError)?;
-        let (info, info_hash) = parse_info(encode)?;
-        Ok(Torrent::new(
-            parse_announce(encode)?,
-            parse_announce_list(encode)?,
-            parse_created_by(encode)?,
-            parse_creation_date(encode)?,
-            info,
-            info_hash,
-        ))
+        match Torrent::from_bencode(&data) {
+            Ok(torrent) => Ok(torrent),
+            Err(e) => {
+                Err(anyhow!("解析种子文件失败: {}", e))
+            }
+        }
     }
 }
 

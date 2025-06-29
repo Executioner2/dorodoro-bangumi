@@ -2,6 +2,10 @@ use bincode::config;
 use dashmap::DashMap;
 use dorodoro_bangumi::peer_manager::gasket::PieceStatus;
 use rusqlite::Connection;
+use tracing::{info, Level};
+use dorodoro_bangumi::default_logger;
+
+default_logger!(Level::DEBUG);
 
 #[test]
 fn test_db() {
@@ -17,5 +21,5 @@ fn test_db() {
     }).unwrap();
 
     let ub: DashMap<u32, PieceStatus> = ub.into_iter().collect();
-    println!("ub: {:?}", ub);
+    info!("ub: {:?}", ub);
 }

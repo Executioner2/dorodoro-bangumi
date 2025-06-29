@@ -6,7 +6,6 @@
 //! 长度的需要加上消息类型的 1 字节。
 
 pub mod command;
-mod error;
 pub mod peer_resp;
 mod listener;
 pub mod rate_control;
@@ -23,19 +22,17 @@ use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
-use crate::peer::error::Error;
-use crate::peer::error::Error::{BitfieldError, HandshakeError, ResponseDataIncomplete, ResponsePieceError, TryFromError};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
 use crate::peer_manager::gasket::{ExitReason, GasketContext};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
-use crate::util;
+use crate::{anyhow_eq, anyhow_ge, util};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
-use error::Result;
 use fnv::FnvHashMap;
+use anyhow::{anyhow, Error, Result};
 use std::cmp::min;
 use std::mem;
 use std::net::SocketAddr;
@@ -196,7 +193,7 @@ impl TryFrom<u8> for MsgType {
     fn try_from(value: u8) -> Result<Self> {
         match value { 
             0..=9 | 13..=17 | 20..=23 => Ok(unsafe { mem::transmute(value) }),
-            _ => Err(TryFromError),
+            _ => Err(anyhow!("Invalid message type: {}", value)),
         }
     }
 }
@@ -472,21 +469,18 @@ impl Peer {
 
         let mut handshake_resp = vec![0u8; bytes.len()];
         let size = stream.read(&mut handshake_resp).await?;
-        if size != bytes.len() {
-            error!("响应数据长度与预期不符 [{}]\t[{}]", size, bytes.len());
-            return Err(HandshakeError);
-        }
+        anyhow_eq!(size, bytes.len(),
+            "握手响应数据长度与预期不符 [{}]\t[{}]", 
+            size, bytes.len()
+        );
 
         let protocol_len = u8::from_be_bytes([handshake_resp[0]]) as usize;
         let resp_info_hash = &handshake_resp[1 + protocol_len + 8..1 + protocol_len + 8 + 20];
         let peer_id = &handshake_resp[1 + protocol_len + 8 + 20..];
 
-        if info_hash != resp_info_hash {
-            error!("没有在讨论同一个资源文件");
-            return Err(HandshakeError);
-        }
+        anyhow_eq!(info_hash, resp_info_hash, "对端的 info_hash 与本地不符");
 
-        self.opposite_peer_id = Some(peer_id.try_into().unwrap());
+        self.opposite_peer_id = Some(peer_id.try_into()?);
 
         Ok(())
     }
@@ -631,7 +625,7 @@ impl Peer {
 
     fn update_response_pieces(&mut self, piece_index: u32, block_offset: u32) -> Result<(bool, u32)> {
         let piece = self.response_pieces.get_mut(&piece_index)
-            .ok_or(ResponsePieceError)?;
+            .ok_or(anyhow!("分块响应错误，响应的分块: {}", piece_index))?;
         piece.add_finish(block_offset);
         let res = (piece.is_finish(), piece.block_offset);
         if res.0 { self.response_pieces.remove(&piece_index); }
@@ -732,9 +726,8 @@ impl Peer {
     /// 对端告诉我们他有新的分块可以下载
     async fn handle_have(&mut self, bytes: Bytes) -> Result<()> {
         trace!("对端告诉我们他有新的分块可以下载");
-        if bytes.len() != 4 {
-            return Err(ResponseDataIncomplete);
-        }
+        anyhow_eq!(bytes.len(), 4, "对端的 Have 消息长度不正确");
+        
         let bit = u32::from_be_slice(&bytes[..4]);
         let (idx, offset) = util::bytes::bitmap_offset(bit as usize);
 
@@ -751,14 +744,11 @@ impl Peer {
         trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
         let torrent = self.ctx.torrent();
         let bit_len = torrent.bitfield_len();
-        if bytes.len() != bit_len {
-            warn!(
-                "远端给到的 bitfield 长度和期望的不一致，期望的: {}\t实际的bytes: {:?}",
-                bit_len,
-                &bytes[..]
-            );
-            return Err(BitfieldError);
-        }
+        
+        anyhow_eq!(bytes.len(), bit_len, 
+            "对端的 Bitfield 消息长度不正确。预计长度：{}，实际长度：{}", 
+            bit_len, bytes.len()
+        );
 
         let bitfield = Arc::new(Mutex::new(BytesMut::from(bytes)));
         self.opposite_peer_bitfield = bitfield.clone();
@@ -780,9 +770,7 @@ impl Peer {
     /// 对端给我们发来了数据
     async fn handle_piece(&mut self, mut bytes: Bytes) -> Result<()> {
         trace!("peer_no [{}] 收到了对端发来的数据", self.ctx.no);
-        if bytes.len() < 8 {
-            return Err(ResponseDataIncomplete);
-        }
+        anyhow_ge!(bytes.len(), 8, "对端的 Piece 消息长度不正确");
 
         let piece_index = u32::from_be_slice(&bytes[0..4]);
         
@@ -870,7 +858,6 @@ impl Peer {
         let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
         match store.checkout(list.clone(), hash).await {
             Ok(false) | Err(_) => {
-                error!("就是false了，参与计算的文件: {:?}", list);
                 let cmd = PieceCheckoutFailed { piece_index }.into();
                 let _ = sender.send(cmd).await; // 有可能第一次发送错误就关闭了 peer，所以不必理会发送错误
             }
@@ -887,11 +874,10 @@ impl Peer {
         match tokio::time::timeout(timeout, TcpStream::connect(&*self.addr)).await {
             Ok(Ok(stream)) => Ok(stream),
             Ok(Err(e)) => {
-                error!("连接对端 peer 失败: {:?}", e);
-                Err(Error::ConnectionError)
+                Err(anyhow!("连接对端 peer 失败\n{}", e))
             },
             Err(_) => {
-                Err(Error::TimeoutError)
+                Err(anyhow!("连接对端 peer 超时"))
             }
         }
     }

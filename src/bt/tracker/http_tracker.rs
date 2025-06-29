@@ -1,23 +1,18 @@
 //! HTTP Tracker 实现
 
-pub mod error;
-
 #[cfg(test)]
 mod tests;
 
-use crate::bt::bencoding;
-use crate::bt::bencoding::BEncodeHashMap;
-use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
-use crate::tracker;
-use crate::tracker::http_tracker::error::Error::{
-    FieldValueError, MissingField, ResponseStatusNotOk,
-};
-use crate::tracker::{AnnounceInfo, Event};
-use error::Result;
-use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use std::net::SocketAddr;
+use crate::bendy_ext::{Bytes2Object, SocketAddrExt};
+use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
+use crate::tracker::{AnnounceInfo, Event};
+use anyhow::{Result, anyhow};
+use bendy::decoding::{Error, FromBencode, Object, ResultExt};
+use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct Announce {
@@ -31,7 +26,7 @@ pub struct Announce {
     pub complete: u64,
 
     /// 已下载的数据量（字节）
-    pub downloaded: u64,
+    pub downloaded: Option<u64>,
 
     /// peer 主机列表
     pub peers: Vec<SocketAddr>,
@@ -41,6 +36,77 @@ pub struct Announce {
 
     /// peer 主机列表（IPv6）
     pub peers6: Vec<SocketAddr>,
+}
+
+impl FromBencode for Announce {
+    fn decode_bencode_object(object: Object) -> std::result::Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        let mut interval = None;
+        let mut incomplete = None;
+        let mut complete = None;
+        let mut downloaded = None;
+        let mut peers: Option<Vec<SocketAddrExt>> = None;
+        let mut min_interval = None;
+        let mut peers6: Option<Vec<SocketAddrExt>> = None;
+
+        let mut dict = object.try_into_dictionary()?;
+        while let Some(pair) = dict.next_pair()? {
+            match pair {
+                (b"interval", value) => {
+                    interval = u64::decode_bencode_object(value)
+                        .context("interval")
+                        .map(Some)?;
+                }
+                (b"incomplete", value) => {
+                    incomplete = u64::decode_bencode_object(value)
+                        .context("incomplete")
+                        .map(Some)?;
+                }
+                (b"complete", value) => {
+                    complete = u64::decode_bencode_object(value)
+                        .context("complete")
+                        .map(Some)?;
+                }
+                (b"downloaded", value) => {
+                    downloaded = u64::decode_bencode_object(value)
+                        .context("downloaded")
+                        .map(Some)?;
+                }
+                (b"peers", Object::Bytes(value)) => {
+                    peers = Some(value.to_object()?);
+                }
+                (b"min interval", value) => {
+                    min_interval = u64::decode_bencode_object(value)
+                        .context("min interval")
+                        .map(Some)?;
+                }
+                (b"peers6", Object::Bytes(value)) => {
+                    peers6 = Some(value.to_object()?);
+                }
+                (unknown_field, _) => {
+                    warn!("未知的字段: {:?}", String::from_utf8_lossy(unknown_field));
+                }
+            }
+        }
+
+        let interval = interval.ok_or_else(|| Error::missing_field("interval"))?;
+        let incomplete = incomplete.ok_or_else(|| Error::missing_field("incomplete"))?;
+        let complete = complete.ok_or_else(|| Error::missing_field("complete"))?;
+        let peers = peers.unwrap_or_default().into_iter().map(|x| x.into()).collect::<Vec<SocketAddr>>();
+        let peers6 = peers6.unwrap_or_default().into_iter().map(|x| x.into()).collect::<Vec<SocketAddr>>();
+
+        Ok(Announce {
+            interval,
+            incomplete,
+            complete,
+            downloaded,
+            peers,
+            min_interval,
+            peers6,
+        })
+    }
 }
 
 pub struct HttpTracker {
@@ -95,75 +161,18 @@ impl HttpTracker {
         {
             response
         } else {
-            return Err(error::Error::TimeoutError);
+            return Err(anyhow!("HTTP request timeout"));
         };
 
         if !response.status().is_success() {
-            return Err(ResponseStatusNotOk(
+            return Err(anyhow!(
+                "HTTP request failed with status code {}: {}",
                 response.status(),
                 response.text().await?,
             ));
         }
 
-        let encode = bencoding::decode(response.bytes().await?)?;
-        let encode = encode
-            .as_dict()
-            .ok_or(bencoding::error::Error::TransformError)?;
-
-        let interval = encode.get_int("interval").ok_or(MissingField("interval"))?;
-        if interval < 0 {
-            return Err(FieldValueError(format!("interval = {}", interval)));
-        }
-        self.next_request_time += interval as u64;
-
-        let complete = encode.get_int("complete").ok_or(MissingField("complete"))?;
-        if complete < 0 {
-            return Err(FieldValueError(format!("complete = {}", complete)));
-        }
-
-        let incomplete = encode
-            .get_int("incomplete")
-            .ok_or(MissingField("incomplete"))?;
-        if incomplete < 0 {
-            return Err(FieldValueError(format!("incomplete = {}", incomplete)));
-        }
-
-        let downloaded = encode
-            .get_int("downloaded")
-            .ok_or(MissingField("downloaded"))?;
-        if downloaded < 0 {
-            return Err(FieldValueError(format!("downloaded = {}", downloaded)));
-        }
-
-        let min_interval = match encode.get_int("min interval") {
-            Some(min_interval) => {
-                if min_interval < 0 {
-                    return Err(FieldValueError(format!("{}", min_interval)));
-                }
-                self.next_request_time += min_interval as u64;
-                Some(min_interval as u64)
-            }
-            None => None,
-        };
-
-        let peers = encode
-            .get_bytes_conetnt("peers")
-            .ok_or(MissingField("peers"))?;
-        let peers = tracker::parse_peers_v4(&peers)?;
-
-        let peers6 = match encode.get_bytes_conetnt("peers6") {
-            Some(peers6) => tracker::parse_peers_v6(peers6)?,
-            None => vec![],
-        };
-
-        Ok(Announce {
-            interval: interval as u64,
-            incomplete: incomplete as u64,
-            complete: complete as u64,
-            downloaded: downloaded as u64,
-            peers,
-            min_interval,
-            peers6,
-        })
+        let resp = response.bytes().await?;
+        Announce::from_bencode(&resp).map_err(|e| anyhow!("解析 tracker 返回数据失败: {}", e))
     }
 }

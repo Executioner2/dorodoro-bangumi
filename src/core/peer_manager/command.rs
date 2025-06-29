@@ -1,10 +1,8 @@
-use super::error::Result;
 use crate::command_system;
-use crate::core::command::CommandHandler;
-use crate::emitter::transfer::{CommandEnum, TransferPtr};
 use crate::peer_manager::PeerManager;
 use crate::torrent::TorrentArc;
 use tracing::trace;
+use anyhow::Result;
 
 command_system! {
     ctx: PeerManager,

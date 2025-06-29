@@ -1,5 +1,9 @@
 use crate::runtime::DelayedTask;
 use std::time::Duration;
+use tracing::{info, Level};
+use crate::default_logger;
+
+default_logger!(Level::DEBUG);
 
 /// 测试延迟任务
 ///
@@ -10,7 +14,7 @@ async fn test_delayed_task() {
     let mut list = vec![];
 
     async fn task() {
-        println!("任务执行了")
+        info!("任务执行了")
     }
     
     let delayed_task = DelayedTask::new(Duration::from_secs(1), task());

@@ -18,7 +18,6 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, trace, warn};
 
 pub mod command;
-mod error;
 mod future;
 
 /// 链接id，一般需要 TcpServer 管理资源释放的才需要这个

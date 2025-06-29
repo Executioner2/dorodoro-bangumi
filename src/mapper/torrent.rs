@@ -1,8 +1,7 @@
 //! torrent 数据持久化
 
 use crate::db::ConnWrapper;
-use crate::mapper::error::Error;
-use crate::mapper::error::Result;
+use anyhow::{anyhow, Error, Result};
 use crate::peer_manager::gasket::PieceStatus;
 use crate::torrent::TorrentArc;
 use bincode::config;
@@ -37,7 +36,7 @@ impl TryFrom<u8> for TorrentStatus {
         if value <= 8 {
             Ok(unsafe { mem::transmute(value) })
         } else {
-            Err(Error::MappingError(format!("invalid torrent status: {}", value)))
+            Err(anyhow!("invalid torrent status: {}", value))
         }
     }
 }

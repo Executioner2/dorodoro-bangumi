@@ -9,3 +9,4 @@ pub mod net;
 pub mod fs;
 pub mod win_minmax;
 pub mod timer;
+pub mod bendy_ext;

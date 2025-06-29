@@ -1,11 +1,8 @@
 //! 数据库存储
 
-pub mod error;
-
 #[cfg(test)]
 mod tests;
 
-use error::Result;
 use rusqlite::Connection;
 use std::collections::VecDeque;
 use std::fs;
@@ -14,6 +11,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use anyhow::Result;
 
 type Pool = Arc<Mutex<VecDeque<Connection>>>;
 

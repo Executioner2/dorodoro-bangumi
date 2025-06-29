@@ -1,6 +1,5 @@
 //! UDP Tracker 实现
 
-pub mod error;
 #[deprecated(note = "一个tracker一个socket的方案会比此模块占用更少的cpu资源")]
 pub mod socket;
 #[cfg(test)]
@@ -8,18 +7,17 @@ mod tests;
 
 use crate::bt::constant::udp_tracker::*;
 use crate::bytes::Bytes2Int;
-use crate::tracker::udp_tracker::error::Error;
 use crate::tracker::{AnnounceInfo, Event};
 use crate::util::buffer::ByteBuffer;
-use crate::{datetime, tracker, util};
+use crate::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime, tracker, util};
+use anyhow::Result;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
-use error::Result;
 use std::io::Write;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tracing::{error, warn};
+use std::sync::Arc;
+use tracing::warn;
 
 type Buffer = Vec<u8>;
 
@@ -128,9 +126,7 @@ impl UdpTracker {
         let resp = self.send(&req, -1).await?;
 
         // 解析响应数据
-        if resp.len() < MIN_ANNOUNCE_RESP_SIZE {
-            return Err(Error::ResponseLengthError(resp.len()));
-        }
+        anyhow_ge!(resp.len(), MIN_ANNOUNCE_RESP_SIZE, "响应数据长度不足");
         self.check_resp_data(&resp, req_tran_id)?;
         let interval = u32::from_be_slice(&resp[8..12]);
         let leechers = u32::from_be_slice(&resp[12..16]); // 未完成下载的 peer 数
@@ -234,9 +230,7 @@ impl UdpTracker {
         let resp = self.send(&req, MIN_CONNECT_RESP_SIZE as isize).await?;
 
         // 解析响应数据
-        if resp.len() < MIN_CONNECT_RESP_SIZE {
-            return Err(Error::ResponseLengthError(resp.len()));
-        }
+        anyhow_ge!(resp.len(), MIN_CONNECT_RESP_SIZE, "响应数据长度不足");
         self.check_resp_data(&resp, req_tran_id)?;
         let connection_id = u64::from_be_slice(&resp[8..16]);
 
@@ -251,15 +245,9 @@ impl UdpTracker {
         let action = u32::from_be_slice(&data[0..4]);
         let resp_tran_id = u32::from_be_slice(&data[4..8]);
 
-        if resp_tran_id != req_tran_id {
-            return Err(Error::TransactionIdMismatching(req_tran_id, resp_tran_id));
-        } else if action == Action::Error as u32 {
-            return Err(Error::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Tracker 出现错误",
-            )));
-        }
-
+        anyhow_eq!(resp_tran_id, req_tran_id, "传输 ID 不匹配");
+        anyhow_ne!(action, Action::Error as u32, "Tracker 出现错误");
+        
         Ok(())
     }
 
@@ -288,9 +276,7 @@ impl UdpTracker {
     /// # Returns
     /// 正确的情况下，返回响应的数据
     async fn send(&mut self, data: &[u8], expect_size: isize) -> Result<Bytes> {
-        if self.retry_count > MAX_RETRY_NUM {
-            return Err(Error::Timeout);
-        }
+        anyhow_le!(self.retry_count, MAX_RETRY_NUM, "请求超时，且重试次数过多");
 
         match self.send_recv(data, &self.announce, expect_size).await {
             Ok(resp) => {

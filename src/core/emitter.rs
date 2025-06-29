@@ -1,14 +1,12 @@
 //! 命令（信号）发射器。统一管理所有运行时实例的 channel sender 端。
 
 pub mod constant;
-mod error;
 #[cfg(test)]
 mod test;
 pub mod transfer;
 
-use crate::core::emitter::error::Error;
 use dashmap::DashMap;
-use error::Result;
+use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use transfer::TransferPtr;
@@ -38,10 +36,10 @@ impl Emitter {
         if let Some(sender) = self.mpsc_senders.get(transfer_id) {
             match sender.send(data).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(Error::SendError(e)),
+                Err(e) => Err(anyhow!("Failed to send data: {}", e)),
             }
         } else {
-            Err(Error::NotFindEmitterType)
+            Err(anyhow!("Transfer id not found: {}", transfer_id))
         }
     }
 

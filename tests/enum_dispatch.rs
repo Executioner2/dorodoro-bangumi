@@ -1,6 +1,10 @@
 use enum_dispatch::enum_dispatch;
 use std::fmt::Display;
 use std::marker::PhantomData;
+use tracing::{info, Level};
+use dorodoro_bangumi::default_logger;
+
+default_logger!(Level::DEBUG);
 
 #[enum_dispatch]
 trait MyTrait<T: Display> {
@@ -24,7 +28,7 @@ impl<T: Display> MyTrait<T> for _Maker<T> {
 struct A;
 impl<T: Display> MyTrait<T> for A {
     async fn my_method(&self, arg: T) {
-        println!("A.my_method({})", arg);
+        info!("A.my_method({})", arg);
     }
 }
 

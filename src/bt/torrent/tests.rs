@@ -2,7 +2,7 @@ use crate::torrent::{File, Info};
 
 #[test]
 fn test_calculate_file_piece() {
-    let mut files = vec![File::new(10, vec![]), File::new(10, vec![]), File::new(11, vec![]), File::new(10, vec![])];
+    let mut files = vec![File::new(10, vec![], None), File::new(10, vec![], None), File::new(11, vec![], None), File::new(10, vec![], None)];
     let res = Info::calculate_file_piece(&mut files, 10);
     assert_eq!(res, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
 }

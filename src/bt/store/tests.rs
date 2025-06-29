@@ -7,8 +7,12 @@ use memmap2::MmapMut;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::time::Duration;
+use tracing::{info, Level};
 use crate::buffer::ByteBuffer;
+use crate::default_logger;
 use crate::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
+
+default_logger!(Level::DEBUG);
 
 // 包装 File 并记录写入次数
 struct InstrumentedFile {
@@ -85,25 +89,25 @@ async fn test_buf_writer() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     buf.seek(SeekFrom::Start(10)).await.unwrap();
-    println!("5秒到了，写入 hello world");
+    info!("5秒到了，写入 hello world");
     buf.write_all(b"hello world").await.unwrap();
 
     tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("5秒到了，设置起始位置");
+    info!("5秒到了，设置起始位置");
     // buf.seek(SeekFrom::Start(4)).await.unwrap();
     buf.seek(SeekFrom::Start(21)).await.unwrap();
 
     tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("5秒到了，写入 ni hao");
+    info!("5秒到了，写入 ni hao");
     buf.write_all(b"ni hao").await.unwrap();
 
     tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("刷新 ni hao 到磁盘");
+    info!("刷新 ni hao 到磁盘");
     buf.flush().await.unwrap();
 
     // 获取最终写入次数
     let count = write_count.load(Ordering::SeqCst);
-    println!("实际磁盘写入次数: {}", count);
+    info!("实际磁盘写入次数: {}", count);
 }
 
 /// 测试在刷新数据到磁盘之前读取
@@ -133,7 +137,7 @@ async fn test_flush_before_read() {
     let mut reader = BufReader::new(file);
     let mut buff = ByteBuffer::new(11);
     let n = reader.read(buff.as_mut()).await.unwrap();
-    println!("数据量: {}\t数据: {:?}", n, buff.as_ref())
+    info!("数据量: {}\t数据: {:?}", n, buff.as_ref())
 }
 
 /// 测试迭代过程删除
@@ -146,17 +150,17 @@ fn test_iter_remove() {
     map.insert(3, 3);
     
     for item in map.iter_mut() {
-        println!("key: {}\tvalue: {}", item.key(), item.value());
+        info!("key: {}\tvalue: {}", item.key(), item.value());
         // map.remove(&item.key()); // 不能在里面删除，会卡死
     }
 
     // 这个同理
     // if let Some(item) = map.get_mut(&1) {
-    //     println!("key: {}\tvalue: {}", item.key(), item.value());
+    //     info!("key: {}\tvalue: {}", item.key(), item.value());
     //     map.remove(&1);
     // }
     
-    println!("{:?}", map);
+    info!("{:?}", map);
 }
 
 /// 尝试使用 mmap 落盘

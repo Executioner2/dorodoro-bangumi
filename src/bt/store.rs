@@ -1,17 +1,17 @@
 //! 资源存储服务
 
-pub mod error;
 #[cfg(test)]
 mod tests;
 
+use crate::anyhow_le;
 use crate::buffer::ByteBuffer;
 use crate::config::Config;
 use crate::emitter::Emitter;
 use crate::fs::OpenOptionsExt;
 use crate::torrent::BlockInfo;
+use anyhow::Result;
 use bytes::Bytes;
 use dashmap::DashMap;
-use error::Result;
 use memmap2::MmapMut;
 use sha1::{Digest, Sha1};
 use std::fs::{File, OpenOptions};
@@ -19,11 +19,10 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 use tokio::sync::Semaphore;
-use crate::store::error::Error::FileLengthError;
 
 struct FileWriter {
     /// 文件路径
@@ -87,9 +86,8 @@ impl FileWriter {
             self.mmap = Some(unsafe { MmapMut::map_mut(&self.get_file()?)? })
         }
         let end = (offset + data.len() as u64) as usize;
-        if end as u64 > self.file_len {
-            return Err(FileLengthError(self.file_len, end as u64));
-        }
+        anyhow_le!(end as u64, self.file_len, "文件长度错误，期望值: {}，实际值: {}", self.file_len, end);
+        
         self.mmap.as_mut().map(|mmap| {
             mmap[offset as usize..end].copy_from_slice(&data);
         });

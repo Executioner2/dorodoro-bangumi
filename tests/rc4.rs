@@ -4,7 +4,7 @@ use byteorder::{BigEndian, WriteBytesExt};
 use dorodoro_bangumi::bytes::Bytes2Int;
 use dorodoro_bangumi::peer::reserved;
 use dorodoro_bangumi::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
-use dorodoro_bangumi::util;
+use dorodoro_bangumi::{default_logger, util};
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use num_traits::Num;
@@ -15,6 +15,9 @@ use rc4::{consts::*, KeyInit, Rc4Core, StreamCipher};
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tracing::{info, Level};
+
+default_logger!(Level::DEBUG);
 
 lazy_static! {
     static ref PRIME: BigUint = BigUint::from_str_radix("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63A36210000000000090563", 16).unwrap();
@@ -189,12 +192,12 @@ fn decrypt_step4_packet(remote_encrypt: &mut Rc4Encrypt, recv: &mut [u8]) -> usi
     while pos < recv.len() {
         if recv.len() - pos < 8 {
             // 剩余数据不足一个 VC，断定这个不是有效的握手包
-            println!("剩余数据不足一个 VC\tpos: {}\tlen: {}", pos, recv.len());
+            info!("剩余数据不足一个 VC\tpos: {}\tlen: {}", pos, recv.len());
             return 0;
         }
         remote_encrypt.apply_keystream(&mut recv[pos..pos + 8]);
         if recv[pos..pos + 8] == VC {
-            println!("找到VC");
+            info!("找到VC");
             break;
         }
         pos += 8;
@@ -202,7 +205,7 @@ fn decrypt_step4_packet(remote_encrypt: &mut Rc4Encrypt, recv: &mut [u8]) -> usi
 
     if pos >= recv.len() {
         // 没有找到 VC，断定这个不是有效的握手包
-        println!("没有找到VC");
+        info!("没有找到VC");
         return 0;
     }
     
@@ -214,10 +217,10 @@ fn decrypt_step4_packet(remote_encrypt: &mut Rc4Encrypt, recv: &mut [u8]) -> usi
     }
     remote_encrypt.apply_keystream(&mut recv[pos..pos + CRYPTO_OPTION_LEN]);
     let crypto_select = u32::from_be_slice(&recv[pos..pos + CRYPTO_OPTION_LEN]);
-    println!("加密方式: {:?}", crypto_select);
+    info!("加密方式: {:?}", crypto_select);
     if crypto_select & CryptoProvide::Rc4 as u32 == 0 && crypto_select & CryptoProvide::Plaintext as u32 == 0 {
         // 不支持的加密方式
-        println!("不支持的加密方式");
+        info!("不支持的加密方式");
         return 0;
     }
     
@@ -229,7 +232,7 @@ fn decrypt_step4_packet(remote_encrypt: &mut Rc4Encrypt, recv: &mut [u8]) -> usi
     }
     remote_encrypt.apply_keystream(&mut recv[pos..pos + 2]);
     let pad_d_len = u16::from_be_slice(&recv[pos..pos + 2]) as usize;
-    println!("pad_d_len: {}", pad_d_len);
+    info!("pad_d_len: {}", pad_d_len);
     pos += 2; // 跳过 PadD 长度
 
     remote_encrypt.apply_keystream(&mut recv[pos..pos + pad_d_len]);
@@ -261,7 +264,7 @@ fn test() {
     let s1 = ya.modpow(&xb, &PRIME);
     let s2 = yb.modpow(&xa, &PRIME);
     assert_eq!(s1, s2);
-    println!("s1: {}\n s2: {}", s1, s2);
+    info!("s1: {}\n s2: {}", s1, s2);
 }
 
 /// 测试生成本地密钥对
@@ -270,11 +273,11 @@ fn test_generate_local_key() {
     let (lpk , gpk) = generate_key_pair();
 
     // 打印本地私钥和公钥
-    println!("local private key: {}", lpk);
-    println!("local public key: {}", gpk);
+    info!("local private key: {}", lpk);
+    info!("local public key: {}", gpk);
 
-    println!("local private key len: {}", lpk.to_bytes_be().len());
-    println!("local public key len: {}", gpk.to_bytes_be().len());
+    info!("local private key len: {}", lpk.to_bytes_be().len());
+    info!("local public key len: {}", gpk.to_bytes_be().len());
 }
 
 /// 测试发送公钥，看看有没有响应
@@ -286,23 +289,23 @@ async fn test_send_peer() {
     let data = send_secret(&lpuk);
     socket.write_all(&data).await.unwrap();
     
-    println!("发送端本地公钥: {:?}", lpuk.to_bytes_be());
+    info!("发送端本地公钥: {:?}", lpuk.to_bytes_be());
 
     socket.readable().await.unwrap();
     let mut buffer = vec![0u8; 9120];
     let n = socket.read(&mut buffer).await.unwrap();
     let mut data = buffer[..n].to_vec();
-    println!("收到对端的公钥响应数据: {:?}", data);
+    info!("收到对端的公钥响应数据: {:?}", data);
 
     let remote_public_key = compute_secret(&mut data);
-    println!("对端的公钥: {:?}", remote_public_key.to_bytes_be());
+    info!("对端的公钥: {:?}", remote_public_key.to_bytes_be());
     
     let s = remote_public_key.modpow(&lprk, &PRIME);
-    println!("根据本地私钥计算出共享对称密钥s: {:?}", s.to_bytes_be());
-    println!("根据对端公钥计算出共享对称密钥s: {}", s);
+    info!("根据本地私钥计算出共享对称密钥s: {:?}", s.to_bytes_be());
+    info!("根据对端公钥计算出共享对称密钥s: {}", s);
     
     let info_hash = hex::decode("c6bbdb50bd685bacf8c0d615bb58a3a0023986ef").unwrap();
-    println!("请求下载的资源的 info_hash: {}", hex::encode(&info_hash));
+    info!("请求下载的资源的 info_hash: {}", hex::encode(&info_hash));
     
     // 生成解密器
     let mut local_encrypt = generate_decryptor(&s, &info_hash, KeyType::KeyA); // 本地加密器
@@ -325,16 +328,16 @@ async fn test_send_peer() {
     let mut buffer = vec![0u8; 9120];
     let n = socket.read(&mut buffer).await.unwrap();
     let mut data = buffer[..n].to_vec();
-    println!("data len: {}", data.len());
-    println!("data: {:?}", data);
+    info!("data len: {}", data.len());
+    info!("data: {:?}", data);
     
     let pos = decrypt_step4_packet(&mut remote_encrypt, &mut data);
-    println!("解密后 pos: {}", pos);
-    println!("解密后 data: {:?}", &data[pos..]);
+    info!("解密后 pos: {}", pos);
+    info!("解密后 data: {:?}", &data[pos..]);
     
-    println!("向对端发起握手请求");
+    info!("向对端发起握手请求");
     let peer_id = util::rand::gen_peer_id();
-    println!("peer_id: {:?}", hex::encode(peer_id));
+    info!("peer_id: {:?}", hex::encode(peer_id));
     
     let mut bytes =
         Vec::with_capacity(1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN);
@@ -352,22 +355,22 @@ async fn test_send_peer() {
     let mut handshake_resp = vec![0u8; bytes.len()];
     let size = socket.read(&mut handshake_resp).await.unwrap();
     if size != bytes.len() {
-        println!("响应数据长度与预期不符 [{}]\t[{}]", size, bytes.len());
+        info!("响应数据长度与预期不符 [{}]\t[{}]", size, bytes.len());
         return;
     }
     
-    println!("握手响应原始数据流: {:?}", handshake_resp);
+    info!("握手响应原始数据流: {:?}", handshake_resp);
     
     decrypt_payload(&mut remote_encrypt, &mut handshake_resp);
-    println!("解密握手数据: {:?}", handshake_resp);
+    info!("解密握手数据: {:?}", handshake_resp);
     
     let protocol_len = u8::from_be_bytes([handshake_resp[0]]) as usize;
-    println!("协议长度: {}", protocol_len);
+    info!("协议长度: {}", protocol_len);
     
     let resp_info_hash = &handshake_resp[1 + protocol_len + 8..1 + protocol_len + 8 + 20];
     let peer_id = &handshake_resp[1 + protocol_len + 8 + 20..];
     
-    println!("对端响应的 info_hash: {}", hex::encode(resp_info_hash));
-    println!("对端响应的 peer_id: {}", hex::encode(peer_id));
+    info!("对端响应的 info_hash: {}", hex::encode(resp_info_hash));
+    info!("对端响应的 peer_id: {}", hex::encode(peer_id));
     assert_eq!(info_hash, resp_info_hash, "没有在讨论同一个资源文件");
 }

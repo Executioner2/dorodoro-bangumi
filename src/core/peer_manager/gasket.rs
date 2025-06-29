@@ -1,6 +1,5 @@
 pub mod command;
 mod coordinator;
-mod error;
 
 use crate::command::CommandHandler;
 use crate::core::config::Config;

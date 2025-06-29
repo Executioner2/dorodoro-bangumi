@@ -2,6 +2,10 @@ use super::*;
 use crate::core::emitter::transfer::TransferPtr;
 use std::{mem, thread};
 use tokio::sync::mpsc::{Receiver, channel};
+use tracing::{info, Level};
+use crate::default_logger;
+
+default_logger!(Level::DEBUG);
 
 trait CommandHandler {
     fn handle(self);
@@ -46,12 +50,12 @@ impl From<Shoutown> for Scheduler {
 }
 impl CommandHandler for Shoutown {
     fn handle(self) {
-        println!("执行关机指令");
+        info!("执行关机指令");
     }
 }
 impl Drop for Shoutown {
     fn drop(&mut self) {
-        println!("shoutown drop 了");
+        info!("shoutown drop 了");
     }
 }
 
@@ -64,12 +68,12 @@ impl From<AddTorrent> for Scheduler {
 }
 impl CommandHandler for AddTorrent {
     fn handle(self) {
-        println!("执行添加种子的指令，携带的参数: {}", self.0);
+        info!("执行添加种子的指令，携带的参数: {}", self.0);
     }
 }
 impl Drop for AddTorrent {
     fn drop(&mut self) {
-        println!("add torrent drop 了");
+        info!("add torrent drop 了");
     }
 }
 
@@ -82,12 +86,12 @@ impl From<StackData> for Scheduler {
 }
 impl CommandHandler for StackData {
     fn handle(self) {
-        println!("执行栈上数据处理: {:?}", self.0);
+        info!("执行栈上数据处理: {:?}", self.0);
     }
 }
 impl Drop for StackData {
     fn drop(&mut self) {
-        println!("stack data drop 了");
+        info!("stack data drop 了");
     }
 }
 
@@ -113,12 +117,12 @@ impl From<NewDownload> for PeerManager {
 }
 impl CommandHandler for NewDownload {
     fn handle(self) {
-        println!("这里执行了 new download");
+        info!("这里执行了 new download");
     }
 }
 impl Drop for NewDownload {
     fn drop(&mut self) {
-        println!("new download drop 了");
+        info!("new download drop 了");
     }
 }
 

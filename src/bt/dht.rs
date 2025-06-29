@@ -3,7 +3,7 @@
 use crate::command::CommandHandler;
 use crate::context::Context;
 use crate::dht::command::Command;
-use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping, SocketAddrExt, VecExt};
+use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
 use crate::emitter::Emitter;
 use crate::emitter::constant::DHT_PREFIX;
 use crate::peer_manager::gasket;
@@ -21,10 +21,10 @@ use std::time::Duration;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
+use crate::bendy_ext::SocketAddrExt;
 
 mod command;
 pub mod entity;
-mod error;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVER_MIN: usize = 100;
@@ -115,7 +115,7 @@ impl DHT {
         }
     }
 
-    async fn get_peers(&self, addr: SocketAddr) -> (VecExt<Host>, VecExt<SocketAddrExt>) {
+    async fn get_peers(&self, addr: SocketAddr) -> (Vec<Host>, Vec<SocketAddrExt>) {
         debug!("开始尝试 get_peers");
         let t = self.udp_server.tran_id();
         let get_peers = DHTBase::<GetPeersReq>::request(
@@ -127,7 +127,7 @@ impl DHT {
             t,
         );
 
-        let default = (VecExt::default(), VecExt::default());
+        let default = (Vec::default(), Vec::default());
         let data = get_peers.to_bencode().unwrap();
         let response = self
             .udp_server
