@@ -85,7 +85,7 @@ default_logger!(Level::DEBUG);
 //     // 等待对方发起 extend 协议
 //     loop {
 //         let resp_type = PeerResp::new(&mut read, &peer).await;
-//         if let RespType::Normal(msg_type, mut bytes) = resp_type {
+//         if let RespType::Continue(msg_type, mut bytes) = resp_type {
 //             if msg_type == MsgType::Port {
 //                 info!("port: {:?}", u32::from_be_slice(&bytes[0..4]))
 //             } else if msg_type == MsgType::LTEPHandshake {
@@ -156,7 +156,7 @@ default_logger!(Level::DEBUG);
 //             // 接收数据
 //             loop {
 //                 let resp_type = PeerResp::new(&mut read, &peer).await;
-//                 if let RespType::Normal(msg_type, mut bytes) = resp_type {
+//                 if let RespType::Continue(msg_type, mut bytes) = resp_type {
 //                     if msg_type == MsgType::Hashes {
 //                         println!("收到了 hashes\n{:?}", bytes);
 //                         return Ok(());

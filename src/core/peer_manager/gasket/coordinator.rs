@@ -1,7 +1,6 @@
 use crate::collection::FixedQueue;
 use crate::peer::rate_control::RateControl;
-use crate::peer_manager::gasket::{ExitReason, GasketContext};
-use crate::runtime::Runnable;
+use crate::peer_manager::gasket::{PeerExitReason, GasketContext};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -80,7 +79,7 @@ impl Coordinator {
 
         for item in self.ctx.peers.iter() {
             if !item.value().is_lt() {
-                temp_peer = Some((*item.key(), item.value().dashbord.bw(), *item.addr));
+                temp_peer = Some((*item.key(), item.value().dashbord.bw(), item.addr));
                 continue;
             }
 
@@ -88,7 +87,7 @@ impl Coordinator {
             if bw < low.1 {
                 low.0 = *item.key();
                 low.1 = bw;
-                low.2 = Some(*item.addr);
+                low.2 = Some(item.addr);
             }
         }
 
@@ -102,7 +101,7 @@ impl Coordinator {
             debug!("将 {} 替换为 lt peer，停止 {}", temp_peer?.2, low.2?);
         } else {
             // 关闭临时 peer
-            let cmd = ExitReason::PeriodicPeerReplace;
+            let cmd = PeerExitReason::PeriodicPeerReplace;
             self.ctx.notify_peer_stop(temp_peer?.0, cmd).await;
             debug!("关闭临时 peer，addr: {}", temp_peer?.2);
         }
@@ -135,7 +134,7 @@ impl Coordinator {
     
     fn printf_peer_status(&self) {
         let mut peers = self.ctx.peers.iter().map(|item| {
-            (*item.value().addr, item.value().dashbord.bw(), item.value().dashbord.cwnd())
+            (item.value().addr, item.value().dashbord.bw(), item.value().dashbord.cwnd())
         }).collect::<Vec<_>>();
         peers.sort_unstable_by(|a, b| b.1.cmp(&a.1));
         let mut str = String::new();
@@ -152,8 +151,8 @@ impl Coordinator {
     }
 }
 
-impl Runnable for Coordinator {
-    async fn run(mut self) {
+impl Coordinator {
+    pub async fn run(mut self) {
         let start = Instant::now() + Duration::from_secs(1);
         let mut interval = tokio::time::interval_at(start, Duration::from_secs(1));
 

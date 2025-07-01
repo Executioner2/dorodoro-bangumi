@@ -1,6 +1,6 @@
 use crate::command_system;
 use crate::peer::{MsgType, Peer};
-use crate::peer_manager::gasket::ExitReason;
+use crate::peer_manager::gasket::PeerExitReason;
 use bytes::Bytes;
 use tracing::debug;
 use anyhow::{anyhow, Result};
@@ -20,7 +20,7 @@ command_system! {
 
 #[derive(Debug)]
 pub struct Exit {
-    pub reason: ExitReason,
+    pub reason: PeerExitReason,
 }
 impl<'a> CommandHandler<'a, Result<()>> for Exit {
     type Target = &'a mut Peer;

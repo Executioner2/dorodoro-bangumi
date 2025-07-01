@@ -6,18 +6,21 @@ use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::emitter::Emitter;
 use crate::core::runtime::Runnable;
 use crate::core::udp_server::UdpServer;
+use crate::emitter::transfer::TransferPtr;
 use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
 use crate::peer_manager::command::Command;
 use crate::peer_manager::gasket::Gasket;
+use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::util;
+use anyhow::Result;
 use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
-use tracing::{error, info, trace};
+use tokio_util::sync::WaitForCancellationFuture;
+use tracing::{error, info};
 
 pub mod command;
 pub mod gasket;
@@ -140,9 +143,33 @@ impl PeerManager {
             }
         }
     }
+}
 
-    async fn shutdown(self) {
-        self.pmc.emitter.remove(PEER_MANAGER);
+impl Runnable for PeerManager {
+    fn emitter(&self) -> &Emitter {
+        &self.pmc.emitter
+    }
+
+    fn get_transfer_id<T: ToString>(_suffix: T) -> String {
+        PEER_MANAGER.to_string()
+    }
+
+    async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
+        self.load_task_from_db().await;
+        Ok(())
+    }
+
+    fn cancelled(&self) -> WaitForCancellationFuture<'_> {
+        self.pmc.context.cancelled()
+    }
+
+    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
+        let cmd: Command = cmd.instance();
+        cmd.handle(self).await?;
+        Ok(CommandHandleResult::Continue)
+    }
+
+    async fn shutdown(&mut self, _reason: ExitReason) {
         for mut item in self.pmc.gaskets.iter_mut() {
             let handle = &mut item.join_handle;
             handle.await.unwrap()
@@ -151,36 +178,5 @@ impl PeerManager {
             Ok(_) => info!("关机前 flush 数据到存储设备成功"),
             Err(e) => error!("flush 数据到存储设备失败！！！\t{}", e)
         }
-    }
-}
-
-impl Runnable for PeerManager {
-    async fn run(mut self) {
-        let (send, mut recv) = channel(self.pmc.context.get_config().channel_buffer());
-        self.pmc.emitter.register(PEER_MANAGER, send);
-        self.load_task_from_db().await;
-
-        info!("peer manager 已启动");
-        loop {
-            tokio::select! {
-                _ = self.pmc.context.cancelled() => {
-                    break;
-                }
-                recv = recv.recv() => {
-                    trace!("peer manager 收到了消息: {:?}", recv);
-                    if let Some(cmd) = recv {
-                        let cmd: Command = cmd.instance();
-                        if let Err(e) = cmd.handle(&mut self).await {
-                            error!("处理指令出现错误\t{}", e);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        info!("等待 peer 退出");
-        self.shutdown().await;
-        info!("peer manager 已关闭");
     }
 }

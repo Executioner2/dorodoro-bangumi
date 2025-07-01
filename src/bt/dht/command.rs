@@ -7,6 +7,7 @@ command_system! {
     ctx: DHT,
     Command {
         Spread,
+        PeersScan,
     }
 }
 
@@ -20,6 +21,18 @@ impl<'a> CommandHandler<'a, Result<()>> for Spread {
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
         ctx.spread(self.addr).await;
+        Ok(())
+    }
+}
+
+/// 扫描 DHT 网络中的节点，更新路由表
+#[derive(Debug)]
+pub struct PeersScan;
+impl<'a> CommandHandler<'a, Result<()>> for PeersScan {
+    type Target = &'a mut DHT;
+
+    async fn handle(self, ctx: Self::Target) -> Result<()> {
+        ctx.peers_scan().await;
         Ok(())
     }
 }

@@ -8,7 +8,7 @@ use crate::emitter::Emitter;
 use crate::emitter::constant::DHT_PREFIX;
 use crate::peer_manager::gasket;
 use crate::peer_manager::gasket::command::PeerSource;
-use crate::runtime::Runnable;
+use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
 use crate::udp_server::UdpServer;
 use alloc::borrow::Cow;
 use bendy::decoding::FromBencode;
@@ -16,12 +16,15 @@ use bendy::encoding::ToBencode;
 use bendy::value::Value;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::channel;
-use tokio_util::sync::CancellationToken;
+use futures::stream::FuturesUnordered;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{debug, error};
 use crate::bendy_ext::SocketAddrExt;
+use crate::emitter::transfer::TransferPtr;
+use crate::peer_manager::gasket::Gasket;
 
 mod command;
 pub mod entity;
@@ -41,6 +44,7 @@ fn distancemetric(a: &[u8], b: &[u8]) -> [u8; 20] {
     res
 }
 
+#[derive(Clone)]
 pub struct DHT {
     /// id 标识。同 gasket id 一致
     id: u64,
@@ -52,6 +56,7 @@ pub struct DHT {
     info_hash: Arc<[u8; 20]>,
 
     /// 全局上下文
+    #[allow(dead_code)]
     ctx: Context,
 
     /// 命令发射器。注册到全局 emitter 中
@@ -200,7 +205,7 @@ impl DHT {
             };
             let _ = self
                 .emitter
-                .send(&gasket::get_transfer_id(self.id), cmd.into())
+                .send(&Gasket::get_transfer_id(self.id), cmd.into())
                 .await;
         }
     }
@@ -209,68 +214,59 @@ impl DHT {
     async fn peers_scan(&self) {
         debug!("开始扫描 peers");
     }
-
-    fn shutdown(self) {
-        // 从 emiiter 中移除自己
-        self.emitter.remove(&get_transfer_id(self.id));
+    
+    /// 定时扫描
+    fn register_interval_scan(&self) -> Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>> {
+        let id = Self::get_transfer_id(self.id);
+        let emitter = self.emitter.clone();
+        Box::pin(async move {
+            loop {
+                let _ = emitter.send(&id, command::PeersScan.into()).await;
+                tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+            }
+        })
     }
-}
-
-#[inline]
-pub fn get_transfer_id(id: u64) -> String {
-    format!("{}{}", DHT_PREFIX, id)
 }
 
 impl Runnable for DHT {
-    async fn run(mut self) {
-        debug!("dht started");
-        let (send, mut recv) = channel(self.ctx.get_config().channel_buffer());
-        let transfer_id = get_transfer_id(self.id);
-        self.emitter.register(transfer_id, send.clone());
+    fn emitter(&self) -> &Emitter {
+        &self.emitter
+    }
 
-        // 15 分钟扫描一次
-        let interval = Duration::from_secs(15 * 60);
-        let mut tick = tokio::time::interval_at(tokio::time::Instant::now(), interval);
+    fn get_transfer_id<T: ToString>(suffix: T) -> String {
+        format!("{}{}", DHT_PREFIX, suffix.to_string())
+    }
 
-        // fixme - 测试用
-        // let _ = self
-        //     .emitter
-        //     .send(
-        //         &get_transfer_id(self.id),
-        //         command::Spread {
-        //             addr: SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-        //         }
-        //         .into(),
-        //     )
-        //     .await;
+    fn get_suffix(&self) -> String {
+        self.id.to_string()
+    }
 
-        loop {
-            tokio::select! {
-                _ = self.cancel_token.cancelled() => {
-                    break;
-                },
-                cmd = recv.recv() => {
-                    match cmd {
-                        Some(cmd) => {
-                            let cmd: Command = cmd.instance();
-                            if let Err(e) = cmd.handle(&mut self).await {
-                                error!("处理指令出现错误\t{}", e);
-                                break;
-                            }
-                        }
-                        None => {
-                            error!("dht {} 接收到空命令！", get_transfer_id(self.id));
-                            break;
-                        }
-                    }
-                }
-                _ = tick.tick() => {
-                    self.peers_scan().await;
-                }
-            }
-        }
+    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
+        // 注册一个定时任务的 future 就行了
+        let futs = FuturesUnordered::new();
+        futs.push(self.register_interval_scan());  
+        futs
+    }
 
-        self.shutdown();
-        debug!("dht stopped");
+    fn cancelled(&self) -> WaitForCancellationFuture<'_> {
+        self.cancel_token.cancelled()
+    }
+
+    async fn command_handle(&mut self, cmd: TransferPtr) -> anyhow::Result<CommandHandleResult> {
+        let cmd: Command = cmd.instance();
+        cmd.handle(self).await?;
+        Ok(CommandHandleResult::Continue)
     }
 }
+
+// fixme - 测试用
+// let _ = self
+//     .emitter
+//     .send(
+//         &get_transfer_id(self.id),
+//         command::Spread {
+//             addr: SocketAddr::from_str("192.168.2.242:3115").unwrap(),
+//         }
+//         .into(),
+//     )
+//     .await;

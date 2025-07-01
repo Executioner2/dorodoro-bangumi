@@ -13,7 +13,7 @@ pub mod reserved;
 
 use crate::bytes::Bytes2Int;
 use crate::command::CommandHandler;
-use crate::config::Config;
+use crate::config::{Config, CHANNEL_BUFFER};
 use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
 };
@@ -25,7 +25,7 @@ use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
-use crate::peer_manager::gasket::{ExitReason, GasketContext};
+use crate::peer_manager::gasket::{PeerExitReason, GasketContext};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::{anyhow_eq, anyhow_ge, util};
@@ -39,22 +39,18 @@ use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, Interval};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
+use tracing::{error, info, trace};
 use crate::bt::pe_crypto;
 use crate::bt::pe_crypto::CryptoProvide;
 use crate::bt::socket::TcpStreamExt;
+use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 
 const MSS: u32 = 17;
-
-/// 每隔 1 分钟发送一次心跳包
-const KEEP_ALIVE: Duration = Duration::from_secs(60);
 
 /// Peer 通信的消息类型
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -223,6 +219,12 @@ pub struct Piece {
     finish: bool,
 }
 
+impl AsRef<Piece> for Piece {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl Piece {
     fn new(block_offset: u32, piece_length: u32, block_size: u32) -> Self {
         let share = Self::block_offset_idx(piece_length, block_size);
@@ -372,7 +374,7 @@ pub struct Peer {
     status: Status,
 
     /// 对端地址
-    addr: Arc<SocketAddr>,
+    addr: SocketAddr,
 
     /// 对端的 peer id
     opposite_peer_id: Option<[u8; 20]>,
@@ -387,7 +389,7 @@ pub struct Peer {
     store: Store,
 
     /// 对端拥有的分块
-    opposite_peer_bitfield: Arc<Mutex<BytesMut>>,
+    opposite_peer_bitfield: BytesMut,
 
     /// 收到响应的分块数据，收到的块（block）可能是乱序的
     /// 因此只有在前面的块（block）都收到后，才会更新这个
@@ -402,22 +404,20 @@ pub struct Peer {
     /// 下载速率仪表盘
     dashbord: Dashbord,
 
-    /// 心跳包间隔
-    keep_alive_interval: Interval,
+    /// 异步任务
+    future_token: (CancellationToken, Vec<JoinHandle<()>>)
 }
 
 impl Peer {
     pub fn new(
         no: u64,
-        addr: Arc<SocketAddr>,
+        addr: SocketAddr,
         context: GasketContext,
         emitter: Emitter,
         store: Store,
         dashbord: Dashbord,
     ) -> Self {
         let context = PeerContext::new(no, context, dashbord.clone());
-        let start = Instant::now() + KEEP_ALIVE;
-        let keep_alive_interval = tokio::time::interval_at(start, KEEP_ALIVE);
 
         Peer {
             ctx: context,
@@ -427,11 +427,11 @@ impl Peer {
             opposite_peer_status: Status::Choke,
             emitter,
             store,
-            opposite_peer_bitfield: Arc::new(Mutex::new(BytesMut::new())),
+            opposite_peer_bitfield: BytesMut::new(),
             response_pieces: FnvHashMap::default(),
             request_pieces: FnvHashMap::default(),
             dashbord,
-            keep_alive_interval
+            future_token: (CancellationToken::new(), vec![]),
         }
     }
     
@@ -595,7 +595,7 @@ impl Peer {
             let (idx, offset) = util::bytes::bitmap_offset(piece_index);
             
             let item = self.opposite_peer_bitfield
-                .lock().await.get(idx) 
+                .get(idx) 
                 .map(|value| value & offset != 0);
             if !matches!(item, Some(true))  {
                 continue;
@@ -637,30 +637,18 @@ impl Peer {
         let resource_length = torrent.info.length;
         piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length)) as u32
     }
-
-    pub fn get_transfer_id(no: u64) -> String {
-        format!("{}{}", PEER_PREFIX, no)
-    }
     
     /// 释放正在下载的分片
     async fn free_download_piece(&mut self, pieces: &Vec<u32>) {
         for piece_index in pieces {
             self.request_pieces.remove(piece_index);
             if let Some(peer) = self.response_pieces.remove(piece_index) {
-                self.ctx.gc.give_back_download_pieces(self.no(), vec![(*piece_index, peer)]);
+                self.ctx.gc.give_back_download_pieces(self.no(), &vec![(piece_index, &peer)]);
             }
         }
         if self.response_pieces.is_empty() {
             self.ctx.gc.report_no_downloadable_piece(self.no()).await;
         }
-    }
-
-    /// 发送心跳包
-    async fn send_heartbeat(&self) -> Result<()> {
-        // 一般来说不是很管用，暂时不要发，发了会被中断链接
-        // let bytes = vec![0u8];
-        // self.ctx.writer.send(bytes).await?;
-        Ok(())
     }
 
     /// 收到心跳包，处理心跳包
@@ -731,8 +719,8 @@ impl Peer {
         let bit = u32::from_be_slice(&bytes[..4]);
         let (idx, offset) = util::bytes::bitmap_offset(bit as usize);
 
-        self.opposite_peer_bitfield.
-            lock().await.get_mut(idx)
+        self.opposite_peer_bitfield
+            .get_mut(idx)
             .map(|bytes| *bytes |= offset);
         self.request_piece().await?;
 
@@ -750,9 +738,8 @@ impl Peer {
             bit_len, bytes.len()
         );
 
-        let bitfield = Arc::new(Mutex::new(BytesMut::from(bytes)));
-        self.opposite_peer_bitfield = bitfield.clone();
-        self.ctx.gc.reported_bitfield(self.no(), bitfield);
+        self.opposite_peer_bitfield = BytesMut::from(bytes);
+        self.ctx.gc.reported_bitfield(self.no(), self.opposite_peer_bitfield.clone());
         self.request_piece().await?;
 
         Ok(())
@@ -871,7 +858,7 @@ impl Peer {
     /// 连接对端 peer
     async fn connection(&self) -> Result<TcpStream> {
         let timeout = self.ctx.config().peer_connection_timeout();
-        match tokio::time::timeout(timeout, TcpStream::connect(&*self.addr)).await {
+        match tokio::time::timeout(timeout, TcpStream::connect(self.addr)).await {
             Ok(Ok(stream)) => Ok(stream),
             Ok(Err(e)) => {
                 Err(anyhow!("连接对端 peer 失败\n{}", e))
@@ -890,7 +877,7 @@ impl Peer {
         cancel: CancellationToken,
     ) -> (JoinHandle<()>, JoinHandle<()>) {
         let (reader, writer) = stream.into_split();
-        let (send, recv) = channel(self.ctx.config().channel_buffer());
+        let (send, recv) = channel(CHANNEL_BUFFER);
         let probe = Probe::new(self.dashbord.clone());
 
         let write_future_handle = tokio::spawn(
@@ -898,7 +885,7 @@ impl Peer {
                 no: self.ctx.no,
                 writer,
                 cancel_token: cancel.clone(),
-                addr: self.addr.clone(),
+                addr: self.addr,
                 peer_sender: peer_send.clone(),
                 recv,
             }
@@ -910,7 +897,7 @@ impl Peer {
                 no: self.ctx.no,
                 reader,
                 cancel_token: cancel,
-                addr: self.addr.clone(),
+                addr: self.addr,
                 peer_sender: peer_send.clone(),
                 rc: probe,
             }
@@ -926,91 +913,77 @@ impl Peer {
     async fn start(
         &mut self,
         send: Sender<TransferPtr>,
-    ) -> Result<(CancellationToken, Vec<JoinHandle<()>>)> {
+    ) -> Result<Vec<JoinHandle<()>>> {
         let stream = self.connection().await?;
         let mut stream = self.crypto_handshake(stream).await?;
 
         self.handshake(&mut stream).await?;
-        let cancel = CancellationToken::new();
-
-        let res = self.start_listener(stream, send.clone(), cancel.clone());
+        let res = self.start_listener(stream, send.clone(), self.future_token.0.clone());
 
         self.bitfield().await?;
         self.interested().await?;
 
-        Ok((cancel, vec![res.0, res.1]))
+        Ok(vec![res.0, res.1])
     }
 }
 
 impl Runnable for Peer {
-    async fn run(mut self) {
-        let (send, mut recv) = channel(self.ctx.config().channel_buffer());
-        let transfer_id = Self::get_transfer_id(self.ctx.no);
-        self.emitter.register(transfer_id, send.clone());
+    fn emitter(&self) -> &Emitter {
+        &self.emitter
+    }
 
-        let future_token = match self.start(send).await {
+    fn get_transfer_id<T: ToString>(suffix: T) -> String {
+        format!("{}{}", PEER_PREFIX, suffix.to_string())
+    }
+
+    fn get_suffix(&self) -> String {
+        self.ctx.no.to_string()   
+    }
+
+    async fn run_before_handle(&mut self, rc: RunContext) -> Result<()> {
+        self.future_token.1 = match self.start(rc.get_sender()).await {
             Ok(future_token) => future_token,
             Err(e) => {
-                debug!("启动 future token 失败: {}", e);
-                self.ctx
-                    .gc
-                    .peer_exit(self.ctx.no, ExitReason::Exception)
-                    .await;
-                return;
+                return Err(e);
             }
         };
+        Ok(())
+    }
 
-        let reason: ExitReason;
-        loop {
-            tokio::select! {
-                _ = self.ctx.gc.cancel_token() => {
-                    debug!("peer {} cancelled", self.ctx.no);
-                    reason = ExitReason::Normal;
-                    break;
-                }
-                result = recv.recv() => {
-                    match result {
-                        Some(cmd) => {
-                            let cmd: command::Command = cmd.instance();
-                            if let command::Command::Exit(exit) = cmd {
-                                reason = exit.reason;
-                                break;
-                            }
-                            if let Err(e) = cmd.handle(&mut self).await {
-                                error!("处理指令出现错误\t{}", e);
-                                reason = ExitReason::Exception;
-                                break;
-                            }
-                        }
-                        None => {
-                            // 发送通道全部关闭（emitter 已被销毁），buffer 没有消息，peer 退出
-                            reason = ExitReason::Normal;
-                            break;
-                        }
-                    }
-                }
-                _ = self.keep_alive_interval.tick() => {
-                    if self.send_heartbeat().await.is_err() {
-                        // 失败了就失败，这个不是很重要，因为大部分
-                        // 端都不会理会心跳包的
-                        warn!("发送心跳包失败");
-                    }
-                }
-            }
+    fn cancelled(&self) -> WaitForCancellationFuture<'_> {
+        self.ctx.gc.cancel_token()
+    }
+
+    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
+        let cmd: command::Command = cmd.instance();
+        if let command::Command::Exit(exit) = cmd {
+            return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(exit.reason))));
         }
+        if let Err(e) = cmd.handle(self).await {
+            error!("处理指令出现错误\t{}", e);
+            return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(PeerExitReason::Exception))));
+        }
+        Ok(CommandHandleResult::Continue)
+    }
 
-        future_token.0.cancel();
-        for handle in future_token.1 {
+    async fn shutdown(&mut self, reason: ExitReason) {
+        self.future_token.0.cancel();
+        for handle in self.future_token.1.iter_mut() {
             handle.await.unwrap();
         }
-
-        // 归还未下完的分块
+        
+        let reason = match reason {
+            ExitReason::Custom(reason) => {
+                reason.exit_code().try_into().unwrap_or_else(|_| PeerExitReason::Exception)
+            },
+            ExitReason::Normal => PeerExitReason::Normal,
+            ExitReason::Error(_) => PeerExitReason::Exception,
+        };
+        
         self.ctx
             .gc
-            .give_back_download_pieces(self.ctx.no, self.response_pieces.into_iter().collect());
+            .give_back_download_pieces(self.ctx.no, &self.response_pieces.iter().collect());
         self.dashbord.clear_ing();
-        self.emitter.remove(&Self::get_transfer_id(self.ctx.no));
         self.ctx.gc.peer_exit(self.ctx.no, reason).await;
-        debug!("peer [{}] 已退出！", self.ctx.no);
     }
 }

@@ -9,13 +9,18 @@ use crate::core::tcp_server::command::Command;
 use crate::core::tcp_server::future::Accept;
 use dashmap::DashMap;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
-use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
-use tracing::{error, info, trace, warn};
+use tokio_util::sync::WaitForCancellationFuture;
+use tracing::{info, trace, warn};
+use crate::emitter::transfer::TransferPtr;
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext};
+use anyhow::{anyhow, Result};
+use futures::stream::FuturesUnordered;
 
 pub mod command;
 mod future;
@@ -28,23 +33,8 @@ struct ConnInfo {
 }
 
 /// 多线程下的共享数据
+#[derive(Clone)]
 pub struct TcpServerContext {
-    conn_id: Arc<AtomicU64>,
-    conns: Arc<DashMap<ConnId, ConnInfo>>,
-    context: Context,
-    emitter: Emitter,
-}
-
-impl TcpServerContext {
-    pub async fn remove_conn(&self, conn_id: ConnId) {
-        self.conns.remove(&conn_id);
-    }
-}
-
-pub struct TcpServer {
-    /// 监听地址
-    addr: SocketAddr,
-
     /// 链接增长 id
     conn_id: Arc<AtomicU64>,
 
@@ -53,37 +43,46 @@ pub struct TcpServer {
 
     /// 全局上下文
     context: Context,
-
+    
     /// 命令发射器
     emitter: Emitter,
 }
 
-impl TcpServer {
-    pub fn new(context: Context, emitter: Emitter) -> Self {
-        TcpServer {
-            addr: context.get_config().tcp_server_addr(),
+impl TcpServerContext {
+    fn new(context: Context, emitter: Emitter) -> Self {
+        Self {
             conn_id: Arc::new(AtomicU64::new(0)),
             conns: Arc::new(DashMap::default()),
             context,
             emitter,
-        }
+        }    
     }
-
-    fn get_context(&self) -> TcpServerContext {
-        TcpServerContext {
-            conn_id: self.conn_id.clone(),
-            conns: self.conns.clone(),
-            context: self.context.clone(),
-            emitter: self.emitter.clone(),
-        }
+    
+    pub async fn remove_conn(&self, conn_id: ConnId) {
+        self.conns.remove(&conn_id);
     }
+}
 
-    async fn shutdown(self) {
-        self.emitter.remove(TCP_SERVER);
-        trace!("等待关闭的子线程数量: {}", self.conns.len());
-        for mut conn in self.conns.iter_mut() {
-            let join_handle = &mut conn.join_handle;
-            join_handle.await.unwrap()
+pub struct TcpServer {
+    /// tcp server 上下文
+    tsc: TcpServerContext,
+    
+    /// 监听地址
+    addr: SocketAddr,
+
+    /// Tcp Server 监听器
+    listener: Option<TcpListener>
+}
+
+impl TcpServer {
+    pub fn new(context: Context, emitter: Emitter) -> Self {
+        let addr = context.get_config().tcp_server_addr();
+        let tsc = TcpServerContext::new(context, emitter);
+        
+        TcpServer {
+            tsc,
+            addr,
+            listener: None,
         }
     }
 
@@ -124,10 +123,43 @@ impl TcpServer {
             }
         }
     }
+    
+    /// 监听器接收连接
+    fn listener_accept(&mut self) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
+        let listener = self.listener.take().unwrap();
+        let tsc = self.tsc.clone();
+        Box::pin(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((socket, addr)) => {
+                        trace!("tcp server 接收到连接: {}", addr);
+                        tokio::spawn(Self::accept(socket, tsc.clone()));
+                    },
+                    Err(e) => {
+                        warn!("tcp server 接收连接错误: {}", e);
+                    }
+                }
+            }
+        })
+    }
 }
 
 impl Runnable for TcpServer {
-    async fn run(mut self) {
+    fn emitter(&self) -> &Emitter {
+        &self.tsc.emitter
+    }
+
+    fn get_transfer_id<T: ToString>(_suffix: T) -> String {
+        TCP_SERVER.to_string()
+    }
+
+    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
+        let futures = FuturesUnordered::new();
+        futures.push(self.listener_accept());
+        futures
+    }
+
+    async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
         let listener: TcpListener;
         match TcpListener::bind(&self.addr).await {
             Ok(l) => {
@@ -135,48 +167,29 @@ impl Runnable for TcpServer {
                 listener = l;
             }
             Err(e) => {
-                error!("tcp server 绑定地址失败: {}", e);
-                self.context.cancel();
-                return;
+                self.tsc.context.cancel();
+                return Err(anyhow!("tcp server 绑定地址失败: {}", e));
             }
         }
+        self.listener = Some(listener);
+        Ok(())
+    }
 
-        // 注册接收器
-        let (send, mut recv) = channel(self.context.get_config().channel_buffer());
-        self.emitter.register(TCP_SERVER, send);
+    fn cancelled(&self) -> WaitForCancellationFuture<'_> {
+        self.tsc.context.cancelled()
+    }
 
-        loop {
-            select! {
-                _ = self.context.cancelled() => {
-                    break;
-                }
-                res = listener.accept() => {
-                    match res {
-                        Ok((socket, addr)) => {
-                            trace!("tcp server 接收到连接: {}", addr);
-                            let context = self.get_context();
-                            tokio::spawn(Self::accept(socket, context));
-                        },
-                        Err(e) => {
-                            warn!("tcp server 接收连接错误: {}", e);
-                        }
-                    }
-                }
-                res = recv.recv() => {
-                    if let Some(cmd) = res {
-                        let cmd: Command = cmd.instance();
-                        trace!("tcp server 收到了消息: {:?}", cmd);
-                        if let Err(e) = cmd.handle(&mut self).await {
-                            error!("处理指令出现错误\t{}", e);
-                            break;
-                        }
-                    }
-                }
-            }
+    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
+        let cmd: Command = cmd.instance();
+        cmd.handle(self).await?;
+        Ok(CommandHandleResult::Continue)
+    }
+
+    async fn shutdown(&mut self, _reason: ExitReason) {
+        trace!("等待关闭的子线程数量: {}", self.tsc.conns.len());
+        for mut conn in self.tsc.conns.iter_mut() {
+            let join_handle = &mut conn.join_handle;
+            join_handle.await.unwrap()
         }
-
-        info!("tcp server 等待资源释放");
-        self.shutdown().await;
-        info!("tcp server 已关闭");
     }
 }

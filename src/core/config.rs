@@ -2,15 +2,20 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+// ===========================================================================
+// 写死的配置值，一般也不会改的
+// ===========================================================================
+
+/// channel 大小
+pub const CHANNEL_BUFFER: usize = 100; 
+
+
 #[derive(Clone)]
 pub struct Config {
     inner: Arc<ConfigInner>,
 }
 
 struct ConfigInner {
-    /// 信道大小
-    channel_buffer: usize,
-
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
     
@@ -58,7 +63,6 @@ impl Config {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(ConfigInner {
-                channel_buffer: 100,
                 tcp_server_addr: "0.0.0.0:3300".parse().unwrap(),
                 udp_server_addr: "0.0.0.0:3300".parse().unwrap(),
                 udp_packet_limit: 65535,
@@ -76,14 +80,6 @@ impl Config {
                 peer_connection_timeout: Duration::from_secs(5),
             }),
         }
-    }
-
-    pub fn set_channel_buffer(mut self, channel_buffer: usize) -> Self {
-        assert!(channel_buffer > 0, "Channel buffer must be greater than 0");
-        Arc::get_mut(&mut self.inner).map(|inner| {
-            inner.channel_buffer = channel_buffer;
-        });
-        self
     }
 
     pub fn set_tcp_server_addr(mut self, tcp_server_addr: SocketAddr) -> Self {
@@ -182,10 +178,6 @@ impl Config {
             inner.peer_connection_timeout = timeout;
         });
         self
-    }
-
-    pub fn channel_buffer(&self) -> usize {
-        self.inner.channel_buffer
     }
 
     pub fn tcp_server_addr(&self) -> SocketAddr {

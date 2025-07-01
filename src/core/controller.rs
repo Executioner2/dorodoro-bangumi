@@ -3,7 +3,6 @@
 use crate::core::context::Context;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::{CONTROLLER_PREFIX, SCHEDULER, TCP_SERVER};
-use crate::core::runtime::Runnable;
 use crate::core::scheduler::command;
 use crate::core::scheduler::command::Shutdown;
 use crate::core::tcp_server::command::Exit;
@@ -15,6 +14,7 @@ use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tracing::{info, trace, warn};
+use crate::config::CHANNEL_BUFFER;
 
 /// 响应给客户端的内容
 pub struct _RespClient {}
@@ -54,9 +54,9 @@ impl Controller {
     }
 }
 
-impl Runnable for Controller {
-    async fn run(mut self) {
-        let (send, mut recv) = channel(self.context.get_config().channel_buffer());
+impl Controller {
+    pub async fn run(mut self) {
+        let (send, mut recv) = channel(CHANNEL_BUFFER);
         let transfer_id = self.get_transfer_id();
         self.emitter.register(transfer_id, send);
 

@@ -25,7 +25,6 @@
 //! [linux bbr 实现](https://github.com/torvalds/linux/blob/master/net/ipv4/tcp_bbr.c#L160)
 
 use crate::BBRState::{Drain, ProbeBW, ProbeRtprop, Startup};
-use dorodoro_bangumi::runtime::Runnable;
 use dorodoro_bangumi::win_minmax::Minmax;
 use dorodoro_bangumi::{datetime, default_logger, if_else};
 use fnv::FnvHashMap;
@@ -810,7 +809,7 @@ where
     }
 }
 
-impl<T, Packet, K> Runnable for BBRCongestion<T, Packet, K>
+impl<T, Packet, K> BBRCongestion<T, Packet, K>
 where
     T: LoadSendPackage<Packet, K> + Send + Sync + 'static,
     Packet: PacketId<K> + 'static + Into<Vec<u8>> + Sync + Send,
@@ -869,7 +868,7 @@ where
     }
 }
 
-impl<T, Packet, K> Runnable for BBRRead<T, Packet, K>
+impl<T, Packet, K> BBRRead<T, Packet, K>
 where
     T: BBRReadCallback<Packet, K> + 'static + Send,
     Packet: PacketId<K> + 'static + Send,
@@ -1085,7 +1084,6 @@ mod tests {
     use byteorder::{BigEndian, WriteBytesExt};
     use dorodoro_bangumi::buffer::ByteBuffer;
     use dorodoro_bangumi::datetime;
-    use dorodoro_bangumi::runtime::Runnable;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};

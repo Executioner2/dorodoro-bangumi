@@ -9,7 +9,7 @@ use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{DiscoverPeerAddr, PeerSource};
-use crate::runtime::{DelayedTask, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
 use crate::torrent::TorrentArc;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
@@ -22,13 +22,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::mpsc::channel;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tokio::sync::mpsc::{Sender};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
+use tracing::{error, info};
 use crate::command::CommandHandler;
 use crate::tracker::command::Command;
 use anyhow::Result;
+use futures::stream::FuturesUnordered;
 
 // ===========================================================================
 // Peer Host
@@ -177,11 +177,12 @@ pub enum TrackerInstance {
 pub struct Tracker {
     info: AnnounceInfo,
     emitter: Emitter,
-    peer_manager_context: PeerManagerContext,
+    #[allow(dead_code)]
+    pmc: PeerManagerContext,
     gasket_transfer_id: String,
     trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>,
     scan_time: u64,
-    cancel_token: CancellationToken
+    cancel_token: CancellationToken,
 }
 
 impl Tracker {
@@ -190,7 +191,7 @@ impl Tracker {
         peer_id: Arc<[u8; 20]>,
         info: AnnounceInfo,
         emitter: Emitter,
-        peer_manager_context: PeerManagerContext,
+        pmc: PeerManagerContext,
         gasket_transfer_id: String,
         cancel_token: CancellationToken
     ) -> Self {
@@ -199,16 +200,12 @@ impl Tracker {
         Self {
             info,
             emitter,
-            peer_manager_context,
+            pmc,
             gasket_transfer_id,
             trackers,
             scan_time: datetime::now_secs(),
-            cancel_token
+            cancel_token,
         }
-    }
-
-    pub fn get_transfer_id(gasket_transfer_id: &String) -> String {
-        format!("{}{}", gasket_transfer_id, TRACKER)
     }
 
     async fn tracker_handle_process(
@@ -361,79 +358,59 @@ impl Tracker {
     }
 
     /// 创建定时扫描任务
-    async fn create_scan_task(
-        &self,
-        delay: u64,
-    ) -> DelayedTask<Pin<Box<dyn Future<Output = u64> + Send>>> {
+    fn create_scan_task(&self) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
         // fixme - 正式记得注释掉下面这行
         // let mut delay = delay;
         // delay += self.local_env_test().await;
-        
+
+        let trackers = self.trackers.clone();
+        let scan_time = self.scan_time;
+        let info = self.info.clone();
+
         let send_to_gasket: Sender<TransferPtr> =
             self.emitter.get(&self.gasket_transfer_id).unwrap();
-        let task = Tracker::scan_tracker(
-            self.trackers.clone(),
-            self.scan_time,
-            self.info.clone(),
-            send_to_gasket,
-        );
-        let delayed_task_handle =
-            DelayedTask::new(Duration::from_secs(delay), Box::pin(task) as Pin<Box<_>>);
-        delayed_task_handle
+        
+        Box::pin(async move {
+            loop {
+                let task = Tracker::scan_tracker(
+                    trackers.clone(),
+                    scan_time,
+                    info.clone(),
+                    send_to_gasket.clone(),
+                );
+                let interval = task.await;
+                tokio::time::sleep(Duration::from_secs(interval)).await;
+            }
+        })
     }
 }
 
 impl Runnable for Tracker {
-    async fn run(mut self) {
-        let (send, mut recv) = channel(
-            self.peer_manager_context
-                .context
-                .get_config()
-                .channel_buffer(),
-        );
-        self.emitter
-            .register(Tracker::get_transfer_id(&self.gasket_transfer_id), send);
+    fn emitter(&self) -> &Emitter {
+        &self.emitter
+    }
 
-        let mut delayed_task_handle = self.create_scan_task(0).await;
+    fn get_transfer_id<T: ToString>(suffix: T) -> String {
+        format!("{}{}", suffix.to_string(), TRACKER)
+    }
 
-        loop {
-            tokio::select! {
-                _ = self.cancel_token.cancelled() => {
-                    break
-                }
-                res = &mut delayed_task_handle => {
-                    let interval = match res {
-                        Some(interval) => {
-                            interval
-                        }
-                        None => {
-                            15
-                        }
-                    };
-                    debug!("下一次扫描: {:?}", Duration::from_secs(interval));
-                    delayed_task_handle = self.create_scan_task(interval).await;
-                }
-                cmd = recv.recv() => {
-                    match cmd {
-                        Some(cmd) => {
-                            let cmd: Command = cmd.instance();
-                            if let Err(err) = cmd.handle(&mut self).await {
-                                error!("处理指令出现错误\t{}", err);
-                                break;
-                            }
-                        }
-                        None => {
-                            error!("tracker {} 接收到空命令！", Tracker::get_transfer_id(&self.gasket_transfer_id));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+    fn get_suffix(&self) -> String {
+        self.gasket_transfer_id.to_string()
+    }
 
-        debug!(
-            "tracker {} 已退出！",
-            Tracker::get_transfer_id(&self.gasket_transfer_id)
-        )
+    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
+        let futures = FuturesUnordered::new();        
+        futures.push(self.create_scan_task());
+        futures
+    }
+
+    fn cancelled(&self) -> WaitForCancellationFuture<'_> {
+        self.cancel_token.cancelled()
+    }
+
+    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
+        let cmd: Command = cmd.instance();
+        cmd.handle(self).await?;
+        Ok(CommandHandleResult::Continue)
     }
 }

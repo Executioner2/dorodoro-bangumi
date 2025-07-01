@@ -1,120 +1,182 @@
-#[cfg(test)]
-mod tests;
-
+use crate::config::CHANNEL_BUFFER;
+use crate::emitter::transfer::TransferPtr;
+use crate::emitter::Emitter;
+use anyhow::{anyhow, Result};
+use core::fmt::Debug;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use tokio::sync::mpsc::{channel, Sender};
+use tokio_util::sync::WaitForCancellationFuture;
+use tracing::{debug, error, info, warn};
 
-/// 这个标记实现者是一个持续运行时
-pub trait Runnable {
-    fn run(self) -> impl Future<Output = ()> + Send;
+pub trait CustomExitReason: Debug {
+    /// 退出代码
+    fn exit_code(&self) -> u8;
+    
+    /// 退出信息
+    fn exit_message(&self) -> String {
+        String::new()
+    }
+}
+
+/// 处理命令的结果
+pub enum CommandHandleResult {
+    /// 正常处理
+    Continue,
+    
+    /// 退出执行
+    Exit(ExitReason),
+}
+
+/// 自定义任务的结果
+pub enum CustomTaskResult {
+    /// 继续执行
+    Continue(Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>),
+    
+    /// 完成
+    Finished,
+    
+    /// 退出执行
+    Exit(ExitReason),
 }
 
 #[derive(Debug)]
-enum DelayedTaskState {
-    Wait(Pin<Box<tokio::time::Sleep>>),
-    Ready,
-    Finished,
-}
-
-#[derive(Clone)]
-pub struct CancelToken {
-    cancel: Arc<AtomicBool>,
-    waker: Arc<Mutex<Option<Waker>>>,
-}
-
-impl CancelToken {
-    fn new(waker: Option<Waker>) -> Self {
-        Self {
-            cancel: Arc::new(AtomicBool::new(false)),
-            waker: Arc::new(Mutex::new(waker)),
-        }
-    }
-
-    fn update_waker(&self, waker: Waker) {
-        match self.waker.lock() {
-            Ok(mut mutex) => {
-                let _ = mutex.insert(waker);
-            }
-            Err(mut e) => {
-                let _ = e.get_mut().insert(waker);
-            }
-        }
-    }
+pub enum ExitReason {
+    /// 正常结束
+    Normal,
     
-    fn is_cancel(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
+    /// 错误退出
+    Error(anyhow::Error),
+
+    /// 自定义退出
+    Custom(Box<dyn CustomExitReason + Send + 'static>),
+}
+
+/// 运行时上下文
+pub struct RunContext {
+    /// 发送命令的通道
+    send: Sender<TransferPtr>,
+}
+
+impl RunContext {
+    pub fn get_sender(&self) -> Sender<TransferPtr> {
+        self.send.clone()
     }
-    
-    pub fn cancel(self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        match self.waker.lock() {
-            Ok(mut mutex) => {
-                mutex.take().map(|waker| waker.wake());
-            }
-            Err(mut e) => {
-                e.get_mut().take().map(|waker| waker.wake());
-            }
+}
+
+/// 这个标记实现者是一个持续运行时
+pub trait Runnable {
+    /// 启动实例
+    #[allow(async_fn_in_trait)]
+    async fn run(mut self) where Self: Sized {
+        // 注册命令通道
+        let mut emitter = self.emitter().clone();
+        let id = Self::get_transfer_id(self.get_suffix());
+        info!("{id} 启动中...");
+        let (send, mut recv) = {
+            let (send, recv) = channel(CHANNEL_BUFFER);
+            emitter.register(id.clone(), send.clone());
+            (send, recv)
+        };
+
+        let exit_reason: ExitReason;
+        let rc = RunContext { send };
+        
+        if let Err(e) = self.run_before_handle(rc).await {
+            error!("{id} 启动失败: {:?}", e);
+            exit_reason = ExitReason::Error(e);
+            self.shutdown(exit_reason).await;
+            return;
         }
-    }
-}
 
-pub struct DelayedTask<F> {
-    task: F,
-    state: DelayedTaskState,
-    cancel: CancelToken,
-}
-
-impl<U, F> DelayedTask<F>
-where
-    U: Default + Send + 'static,
-    F: Future<Output = U> + Send + 'static,
-{
-    pub fn new(delay: Duration, task: F) -> Self {
-        Self {
-            task,
-            state: DelayedTaskState::Wait(Box::pin(tokio::time::sleep(delay))),
-            cancel: CancelToken::new(None),
-        }
-    }
-    
-    /// 获取取消 token
-    pub fn cancel_token(&self) -> CancelToken {
-        self.cancel.clone()
-    }
-}
-
-impl<U, F> Future for DelayedTask<F>
-where
-    F: Future<Output = U> + Send + 'static,
-{
-    type Output = Option<U>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        while !this.cancel.is_cancel() {
-            this.cancel.update_waker(cx.waker().clone());
-            match &mut this.state {
-                DelayedTaskState::Wait(sleep) => match Pin::new(sleep).poll(cx) {
-                    Poll::Ready(_) => {
-                        this.state = DelayedTaskState::Ready;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                },
-                DelayedTaskState::Ready => {
-                    return match unsafe { Pin::new_unchecked(&mut this.task).poll(cx) } {
-                        Poll::Ready(u) => {
-                            this.state = DelayedTaskState::Finished;
-                            Poll::Ready(Some(u))
-                        }
-                        Poll::Pending => Poll::Pending,
-                    };
+        let mut futures = self.register_lt_future();
+        
+        loop {
+            tokio::select! {
+                _ = self.cancelled() => {
+                    exit_reason = ExitReason::Normal;
+                    break;
                 }
-                DelayedTaskState::Finished => return Poll::Ready(None),
+                cmd = recv.recv() => {
+                    match cmd {
+                        Some(cmd) => {
+                            match self.command_handle(cmd).await {
+                                Ok(CommandHandleResult::Continue) => {}
+                                Ok(CommandHandleResult::Exit(reason)) => {
+                                    exit_reason = reason;
+                                    break;
+                                }
+                                Err(e) => {
+                                    exit_reason = ExitReason::Error(e);
+                                    break;
+                                }
+                            } 
+                        }
+                        None => {
+                            exit_reason = ExitReason::Error(anyhow!("Command channel closed"));
+                            break;
+                        }
+                    }
+                }
+                // 运行实现者自定义的异步任务
+                lt_future = futures.next(), if !futures.is_empty() => {
+                    match lt_future {
+                        Some(CustomTaskResult::Continue(task)) => {
+                            futures.push(task);
+                        }
+                        Some(CustomTaskResult::Finished) => {
+                            // 什么都不需要做
+                        }
+                        Some(CustomTaskResult::Exit(reason)) => {
+                            exit_reason = reason;
+                            break;
+                        }
+                        None => {
+                            warn!("lt_future 还没有准备好！");
+                        }
+                    }
+                }
             }
         }
-        Poll::Ready(None)
+
+        // 移除命令通道，然后执行清理操作
+        debug!("[{id}] - 退出原因: {:?}", exit_reason);
+        self.shutdown(exit_reason).await;
+        emitter.remove(&id);
+        debug!("[{id}] - 已退出");
     }
+    
+    /// 获取 Emitter 实例
+    fn emitter(&self) -> &Emitter;
+    
+    /// 获取 TransferId
+    fn get_transfer_id<T: ToString>(suffix: T) -> String;
+    
+    /// 获取实例的后缀
+    fn get_suffix(&self) -> String {
+        String::new()
+    } 
+    
+    /// 注册长时间运行的异步任务
+    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
+        FuturesUnordered::default()
+    }
+    
+    /// 运行前置准备
+    #[allow(async_fn_in_trait)]
+    async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
+        Ok(())
+    }
+    
+    /// 中止信号
+    fn cancelled(&self) -> WaitForCancellationFuture<'_>;
+    
+    /// 持续运行实例
+    #[allow(async_fn_in_trait)]
+    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult>;
+    
+    /// 结束运行
+    #[allow(async_fn_in_trait)]
+    async fn shutdown(&mut self, _reason: ExitReason) {}
 }

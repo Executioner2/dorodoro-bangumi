@@ -2,7 +2,6 @@ use core::fmt::{Display, Formatter};
 use crate::command_system;
 use crate::peer_manager::gasket::{Gasket, PeerInfo};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tracing::{debug, info, trace};
 use crate::mapper::torrent::TorrentStatus;
 use anyhow::Result;
@@ -45,7 +44,7 @@ impl<'a> CommandHandler<'a, Result<()>> for DiscoverPeerAddr {
     async fn handle(self, ctx: Self::Target) -> Result<()> {
         info!("通过 [{}] 的方式发现了 peer addr: {:?}", self.source, self.peers);
         for addr in self.peers {
-            ctx.start_peer(Arc::new(addr)).await
+            ctx.start_peer(addr).await
         }
         Ok(())
     }

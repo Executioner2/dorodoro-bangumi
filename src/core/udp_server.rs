@@ -13,7 +13,6 @@
 use crate::buffer::ByteBuffer;
 use crate::context::Context;
 use crate::dht::entity::DHTBase;
-use crate::runtime::Runnable;
 use bendy::decoding::FromBencode;
 use bendy::value::Value;
 use bytes::Bytes;
@@ -126,8 +125,8 @@ impl UdpServer {
     }
 }
 
-impl Runnable for UdpServer {
-    async fn run(self) {
+impl UdpServer {
+    pub async fn run(self) {
         let mut recv_buf = ByteBuffer::new(self.packet_size());
         loop {
             tokio::select! {

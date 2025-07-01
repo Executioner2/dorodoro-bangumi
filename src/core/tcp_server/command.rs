@@ -17,7 +17,7 @@ impl<'a> CommandHandler<'a, Result<()>> for Exit {
 
     async fn handle(self, context: Self::Target) -> Result<()> {
         trace!("Removing connection with id: {}", self.0);
-        let context = context.get_context();
+        let context = context.tsc.clone();
         tokio::spawn(async move {
             context.remove_conn(self.0).await;
         });
