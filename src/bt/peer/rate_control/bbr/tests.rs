@@ -1,9 +1,10 @@
 use crate::bt::peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
 use crate::bytes::Bytes2Int;
 use crate::collection::FixedQueue;
-use crate::{default_logger, log};
 use crate::peer::peer_resp::PeerResp;
+use crate::peer::peer_resp::RespType::*;
 use crate::timer::CountdownTimer;
+use crate::{default_logger, log};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -29,10 +30,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
-use tracing::{error, info, Level};
-use crate::peer::peer_resp::RespType::*;
-
-default_logger!(Level::DEBUG);
+use tracing::{Level, error, info};
 
 const BLOCK_SIZE: u32 = 1 << 14;
 const MSS: u32 = 17;
@@ -511,7 +509,7 @@ async fn test_get_tcp_socket_tcp_info() {
         info.tcpi_options,
         info.tcpi_snd_sbbytes
     );
-    
+
     if let Normal(msg_type, buf) = x {
         info!("msg_type: {:?}", msg_type);
     }

@@ -2,10 +2,6 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 use super::ByteBuffer;
 use bytes::Bytes;
-use tracing::Level;
-use crate::default_logger;
-
-default_logger!(Level::DEBUG);
 
 /// 测试是否能正常回收内存，因为有 println，需要添加 --nocapture 保证不会被兜住
 #[test]

@@ -3,6 +3,7 @@ use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::{AnnounceInfo, Event};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use tracing::info;
 use crate::util;
 
 /// HTTP tracker 握手测试
@@ -22,6 +23,6 @@ async fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let response = tracker.announcing(Event::Started, &info).await?;
-    println!("response: {:?}", response);
+    info!("response: {:?}", response);
     Ok(())
 }

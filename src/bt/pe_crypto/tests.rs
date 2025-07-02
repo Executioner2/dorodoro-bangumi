@@ -1,13 +1,11 @@
-use byteorder::{BigEndian, WriteBytesExt};
 use crate::bt::pe_crypto;
-use crate::{default_logger, util};
-use tokio::net::TcpStream;
-use tracing::{error, info, Level};
 use crate::bt::pe_crypto::CryptoProvide;
 use crate::peer::reserved;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
-
-default_logger!(Level::DEBUG);
+use crate::util;
+use byteorder::{BigEndian, WriteBytesExt};
+use tokio::net::TcpStream;
+use tracing::{error, info};
 
 #[tokio::test]
 async fn test_init_handshake() {
@@ -21,7 +19,7 @@ async fn test_init_handshake() {
         return;
     }
     let mut socket = res.unwrap();
-    
+
     // 发送 peer 握手数据包
     let peer_id = util::rand::gen_peer_id();
     let mut bytes =
@@ -44,10 +42,10 @@ async fn test_init_handshake() {
 
     let protocol_len = u8::from_be_bytes([handshake_resp[0]]) as usize;
     info!("协议长度: {}", protocol_len);
-    
+
     let resp_info_hash = &handshake_resp[1 + protocol_len + 8..1 + protocol_len + 8 + 20];
     let peer_id = &handshake_resp[1 + protocol_len + 8 + 20..];
-    
+
     info!("对端响应的 info_hash: {}", hex::encode(resp_info_hash));
     info!("对端响应的 peer_id: {}", hex::encode(peer_id));
     assert_eq!(info_hash, resp_info_hash, "没有在讨论同一个资源文件");

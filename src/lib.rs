@@ -1,5 +1,9 @@
 extern crate alloc;
 
+/// 单元测试的全局注册
+#[cfg(test)]
+mod test_global_register;
+
 pub mod bt;
 pub mod core;
 pub mod mapper;

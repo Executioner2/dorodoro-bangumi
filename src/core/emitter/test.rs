@@ -2,10 +2,7 @@ use super::*;
 use crate::core::emitter::transfer::TransferPtr;
 use std::{mem, thread};
 use tokio::sync::mpsc::{Receiver, channel};
-use tracing::{info, Level};
-use crate::default_logger;
-
-default_logger!(Level::DEBUG);
+use tracing::info;
 
 trait CommandHandler {
     fn handle(self);

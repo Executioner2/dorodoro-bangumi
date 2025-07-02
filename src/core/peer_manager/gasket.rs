@@ -6,6 +6,8 @@ use crate::core::config::Config;
 use crate::core::emitter::constant::GASKET_PREFIX;
 use crate::core::emitter::Emitter;
 use crate::db::ConnWrapper;
+use crate::dht::DHT;
+use crate::emitter::transfer::TransferPtr;
 use crate::mapper::torrent::{TorrentEntity, TorrentMapper, TorrentStatus};
 use crate::peer::rate_control::probe::Dashbord;
 use crate::peer::rate_control::RateControl;
@@ -18,6 +20,7 @@ use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
 use crate::{if_else, net, peer, util};
+use anyhow::Result;
 use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
@@ -31,9 +34,6 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{debug, error, info, level_enabled, trace, Level};
-use crate::dht::DHT;
-use crate::emitter::transfer::TransferPtr;
-use anyhow::Result;
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum PeerExitReason {
@@ -714,8 +714,7 @@ impl Gasket {
         trace!("启动 {} 的 dht", transfer_id);
         let dht = DHT::new(
             self.id,
-            Arc::new(*NODE_ID),
-            Arc::new(self.ctx.torrent.info_hash),
+            self.ctx.torrent.info_hash,
             self.ctx.emitter.clone(),
             self.ctx.pm_ctx.context.clone(),
             cancel_token,
@@ -734,9 +733,6 @@ impl Gasket {
         self.ctx.wait_queue.lock().await.pop_front()
     }
 }
-
-/// 临时 node id todo - 临时的，记得改
-static NODE_ID: &[u8; 20] = b"adkoqwei123jk3341ks0";
 
 impl Runnable for Gasket {
     fn emitter(&self) -> &Emitter {

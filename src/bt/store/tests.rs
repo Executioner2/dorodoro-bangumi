@@ -7,12 +7,9 @@ use memmap2::MmapMut;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 use tokio::time::Duration;
-use tracing::{info, Level};
+use tracing::info;
 use crate::buffer::ByteBuffer;
-use crate::default_logger;
 use crate::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
-
-default_logger!(Level::DEBUG);
 
 // 包装 File 并记录写入次数
 struct InstrumentedFile {

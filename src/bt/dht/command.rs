@@ -20,8 +20,7 @@ impl<'a> CommandHandler<'a, Result<()>> for Spread {
     type Target = &'a mut DHT;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.spread(self.addr).await;
-        Ok(())
+        ctx.spread(self.addr).await
     }
 }
 

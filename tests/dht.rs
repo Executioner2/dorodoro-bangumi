@@ -7,13 +7,13 @@ use dorodoro_bangumi::buffer::ByteBuffer;
 use dorodoro_bangumi::default_logger;
 use dorodoro_bangumi::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Ping};
 use rand::Rng;
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tracing::{Level, error, info};
+use dorodoro_bangumi::dht::node_id::NodeId;
 
 default_logger!(Level::DEBUG);
 //
@@ -236,17 +236,6 @@ fn test_cycle_id() {
     }
 }
 
-fn distancemetric(a: &[u8], b: &[u8]) -> [u8; 20] {
-    if a.len() != 20 || b.len() != 20 {
-        panic!("长度不等\ta len: {}\tb len: {}", a.len(), b.len());
-    }
-    let mut res = [0u8; 20];
-    for i in 0..20 {
-        res[i] = a[i] ^ b[i];
-    }
-    res
-}
-
 // static NODE_ID: &[u8; 20] = &[0xd9, 0x82, 0x12, 0xf0, 0xb1, 0xdb, 0x7, 0x46, 0x1a, 0x7e, 0x1f, 0x96, 0x50, 0x66, 0x42, 0x51, 0xe7, 0xe1, 0x7d, 0x8d];
 static NODE_ID: &[u8; 20] = b"adkoqwei123jk3341ks0";
 
@@ -277,10 +266,10 @@ async fn test_peer_from_dht() {
     queue.push_back(addr);
     let info_hash = hex::decode("c6bbdb50bd685bacf8c0d615bb58a3a0023986ef").unwrap();
 
-    let node_id = Cow::from(NODE_ID);
-    let info_hash = Cow::from(info_hash);
+    let node_id = NodeId::from(*NODE_ID);
+    let info_hash = NodeId::try_from(info_hash.as_slice()).unwrap();
 
-    let mut min_dist = distancemetric(NODE_ID, &info_hash);
+    let mut min_dist = node_id.distance(&info_hash);
     let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
     let addr = socket.local_addr().unwrap();
     info!("本地监听端口: {:?}", addr);
@@ -290,7 +279,7 @@ async fn test_peer_from_dht() {
         let addr = queue.pop_front().unwrap();
         info!("尝试对{}node的访问", addr);
         let ping = DHTBase::<Ping>::request(
-            Ping::new(Value::Bytes(node_id.clone())),
+            Ping::new(node_id.to_value_bytes()),
             "ping".to_string(),
             cycle_id.next_tran_id(),
         );
@@ -349,8 +338,8 @@ async fn test_peer_from_dht() {
 
         let get_peers = DHTBase::<GetPeersReq>::request(
             GetPeersReq::new(
-                Value::Bytes(node_id.clone()),
-                Value::Bytes(info_hash.clone()),
+                node_id.to_value_bytes(),
+                info_hash.to_value_bytes(),
             ),
             "get_peers".to_string(),
             cycle_id.next_tran_id(),
@@ -399,7 +388,7 @@ async fn test_peer_from_dht() {
             if let Some(nodes) = r.nodes {
                 let mut min = min_dist.clone();
                 for node in nodes {
-                    let dist = distancemetric(&node.id, &info_hash);
+                    let dist = node.id.distance(&info_hash);
                     if min_dist >= dist {
                         queue.push_back(node.addr.into());
                         min = min.min(dist);

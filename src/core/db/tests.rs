@@ -4,10 +4,7 @@ use crate::torrent::{Parse, Torrent};
 use bincode::config;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, Level};
-use crate::default_logger;
-
-default_logger!(Level::DEBUG);
+use tracing::{error, info};
 
 static INIT_SQL: &str = r#"
 CREATE TABLE "torrent" (

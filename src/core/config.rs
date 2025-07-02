@@ -1,20 +1,24 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-
+use bincode::{Decode, Encode};
 // ===========================================================================
 // 写死的配置值，一般也不会改的
 // ===========================================================================
 
 /// channel 大小
-pub const CHANNEL_BUFFER: usize = 100; 
+pub const CHANNEL_BUFFER: usize = 100;
+
+/// 数据库连接池大小
+pub const DATABASE_CONN_LIMIT: usize = 10;
 
 
-#[derive(Clone)]
+#[derive(Clone, Encode, Decode)]
 pub struct Config {
     inner: Arc<ConfigInner>,
 }
 
+#[derive(Encode, Decode)]
 struct ConfigInner {
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
@@ -52,9 +56,6 @@ struct ConfigInner {
     /// 每个 torrent 的临时 peer 配额
     torrent_temp_peer_conn_limit: usize,
     
-    /// 数据库连接池大小
-    database_conn_limit: usize,
-    
     /// peer 链接超时设定
     peer_connection_timeout: Duration,
 }
@@ -76,7 +77,6 @@ impl Config {
                 // torrent_lt_peer_conn_limit: 100,
                 torrent_lt_peer_conn_limit: 5,
                 torrent_temp_peer_conn_limit: 1,
-                database_conn_limit: 10,
                 peer_connection_timeout: Duration::from_secs(5),
             }),
         }
@@ -166,13 +166,6 @@ impl Config {
         self
     }
     
-    pub fn set_database_conn_limit(mut self, limit: usize) -> Self {
-        Arc::get_mut(&mut self.inner).map(|inner| {
-            inner.database_conn_limit = limit;
-        });
-        self
-    }
-    
     pub fn set_peer_connection_timeout(mut self, timeout: Duration) -> Self {
         Arc::get_mut(&mut self.inner).map(|inner| {
             inner.peer_connection_timeout = timeout;
@@ -230,10 +223,6 @@ impl Config {
     
     pub fn torrent_peer_conn_limit(&self) -> usize {
         self.inner.torrent_lt_peer_conn_limit + self.inner.torrent_temp_peer_conn_limit
-    }
-    
-    pub fn database_conn_limit(&self) -> usize {
-        self.inner.database_conn_limit
     }
     
     pub fn peer_connection_timeout(&self) -> Duration {

@@ -1,10 +1,7 @@
 use crate::util::timer::CountdownTimer;
 use std::thread;
 use std::time::Duration;
-use tracing::{info, Level};
-use crate::default_logger;
-
-default_logger!(Level::DEBUG);
+use tracing::info;
 
 /// 测试计时器是否正常工作
 #[test]

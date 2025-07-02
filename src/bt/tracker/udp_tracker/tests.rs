@@ -20,6 +20,7 @@ use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::TcpStream;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
+use tracing::{error, info};
 
 /// 测试是否能发起 connect 请求
 #[tokio::test]
@@ -32,9 +33,9 @@ async fn test_connect() {
         Arc::new(info_hash),
         Arc::new(peer_id),
     );
-    println!("connect before: {:?}", tracker.connect);
+    info!("connect before: {:?}", tracker.connect);
     tracker.update_connect().await.unwrap();
-    println!("connect after: {:?}", tracker.connect);
+    info!("connect after: {:?}", tracker.connect);
 }
 
 /// 测试是否能发起 announce 请求
@@ -56,8 +57,8 @@ async fn test_announce() {
         port: 9987,
     };
     let announce = tracker.announcing(Event::None, &info).await.unwrap();
-    println!("announce result: {:?}", announce);
-    println!("peers length: {}", announce.peers.len());
+    info!("announce result: {:?}", announce);
+    info!("peers length: {}", announce.peers.len());
 }
 
 // ===========================================================================
@@ -100,7 +101,7 @@ fn test_parse_peers() {
             )
         })
         .collect::<Vec<(u8, u8, u8, u8, u32)>>();
-    println!("peers: {:?}", peers);
+    info!("peers: {:?}", peers);
 }
 
 /// 请求 peer 下载分块
@@ -120,15 +121,15 @@ async fn request_download() {
     let retain = 0u64;
     let info_hash = torrent.info_hash;
     let peer_id = b"L4AZCBzQ_h5yo6djjbSL";
-    println!("peer_id: {}", String::from_utf8_lossy(peer_id));
-    println!("info_hash: {}", hex::encode(&info_hash));
+    info!("peer_id: {}", String::from_utf8_lossy(peer_id));
+    info!("info_hash: {}", hex::encode(&info_hash));
 
     let peer = "192.168.2.177:3115";
     // 下面两个是直接从 tracker 中获取到的远端 peer。测试是可以连接上并下载资源的。
     // let peer = "175.0.72.46:63219";
     // let peer = "124.91.148.150:25667";
     let stream = TcpStream::connect(peer).await.unwrap();
-    println!("启动的地址: {:?}", stream.local_addr().unwrap());
+    info!("启动的地址: {:?}", stream.local_addr().unwrap());
     let (mut reader, mut writer) = stream.into_split();
 
     // 发送握手请求
@@ -149,18 +150,18 @@ async fn request_download() {
     let peer_id = &handshake_resp[1 + protocol_len + 8 + 20..];
     let peer_id_str = String::from_utf8_lossy(peer_id);
 
-    println!("请求大小: {}\t响应大小: {}", handshake.len(), size);
-    println!("响应内容: {:?}", handshake_resp);
-    println!("是否在讨论同一个文件？: {}", info_hash == resp_info_hash);
-    println!("对方的peer_id: {}", peer_id_str);
-    println!("文件大小: {}", torrent.info.length);
+    info!("请求大小: {}\t响应大小: {}", handshake.len(), size);
+    info!("响应内容: {:?}", handshake_resp);
+    info!("是否在讨论同一个文件？: {}", info_hash == resp_info_hash);
+    info!("对方的peer_id: {}", peer_id_str);
+    info!("文件大小: {}", torrent.info.length);
 
     if info_hash != resp_info_hash {
-        println!("没有在讨论同一个文件");
+        info!("没有在讨论同一个文件");
         return;
     }
 
-    println!(
+    info!(
         "区块数量: {}",
         (torrent.info.length + torrent.info.piece_length - 1) / torrent.info.piece_length
     );
@@ -171,28 +172,28 @@ async fn request_download() {
         loop {
             match timeout(Duration::from_secs(5), reader.readable()).await {
                 Ok(Ok(())) => {
-                    // println!("reader 可读");
+                    // info!("reader 可读");
                     ()
                 }
                 Ok(Err(e)) => {
-                    println!("reader 读错误: {}", e);
+                    error!("reader 读错误: {}", e);
                     break;
                 }
                 Err(_) => {
-                    println!("reader 读超时");
+                    error!("reader 读超时");
                     break;
                 }
             }
-            // println!("================分割线================");
+            // info!("================分割线================");
 
             let mut length = [0u8; 4];
             reader.read_exact(&mut length).await.unwrap();
             let length = u32::from_be_bytes(length);
-            // println!("对方响应的长度: {}", length);
+            // info!("对方响应的长度: {}", length);
 
             let mut resp = vec![0u8; length as usize];
             reader.read_exact(&mut resp).await.unwrap();
-            // println!("对方响应的内容: {:?}", resp);
+            // info!("对方响应的内容: {:?}", resp);
 
             if let Ok(msg_type) = MsgType::try_from(resp[0]) {
                 match msg_type {
@@ -201,7 +202,7 @@ async fn request_download() {
                         writer_handler(data, &torrent.info.name, torrent.info.piece_length).await;
                     }
                     _ => {
-                        println!("其它响应，暂不处理: {:?}", resp)
+                        info!("其它响应，暂不处理: {:?}", resp)
                     }
                 }
             }
@@ -226,14 +227,14 @@ async fn request_download() {
         file.write_all(data).unwrap();
         file.flush().unwrap();
         // if piece_index == 15 {
-        //     println!("写入文件成功: {}-{}-{}", piece_index, block_offset, data.len());
+        //     info!("写入文件成功: {}-{}-{}", piece_index, block_offset, data.len());
         // }
     }
 
-    println!("================分割线================");
+    info!("================分割线================");
 
     // 告诉对方，我是一点东西都没有
-    println!("告诉对方，我是一点东西都没有");
+    info!("告诉对方，我是一点东西都没有");
     let mut req = vec![];
     // let pieces_len = torrent.info.pieces.len();
     let bitmap = vec![0; 2];
@@ -243,7 +244,7 @@ async fn request_download() {
     writer.write_all(&req).await.unwrap();
     reader_handler(&mut reader, &torrent).await;
 
-    println!("告诉对方允许对方发起请求");
+    info!("告诉对方允许对方发起请求");
     let mut req = vec![];
     WriteBytesExt::write_u32::<BigEndian>(&mut req, 1).unwrap();
     WriteBytesExt::write_u8(&mut req, MsgType::UnChoke as u8).unwrap();
@@ -251,7 +252,7 @@ async fn request_download() {
     reader_handler(&mut reader, &torrent).await;
 
     // 同时再告诉对方，我对你的资源感兴趣
-    println!("同时再告诉对方，我对你的资源感兴趣");
+    info!("同时再告诉对方，我对你的资源感兴趣");
     let mut req = vec![];
     WriteBytesExt::write_u32::<BigEndian>(&mut req, 1).unwrap();
     WriteBytesExt::write_u8(&mut req, MsgType::Interested as u8).unwrap();
@@ -278,7 +279,7 @@ async fn request_download() {
                 .length
                 .saturating_sub(i * torrent.info.piece_length),
         );
-        println!("循环请求区块: {}\t区块大小: {}", i, piece_length);
+        info!("循环请求区块: {}\t区块大小: {}", i, piece_length);
         while sharding_offset < piece_length {
             let mut req = vec![];
             WriteBytesExt::write_u32::<BigEndian>(&mut req, 0).unwrap();
@@ -291,7 +292,7 @@ async fn request_download() {
             )
             .unwrap();
             // if i == piece_num - 1 {
-            //     println!("分片偏移: {}\t下载分片大小: {}", sharding_offset, min(piece_length - sharding_offset, block_size))
+            //     info!("分片偏移: {}\t下载分片大小: {}", sharding_offset, min(piece_length - sharding_offset, block_size))
             // }
             let len = req.len() as u32 - 4;
             req[0..4].copy_from_slice(&len.to_be_bytes());
@@ -306,7 +307,7 @@ async fn request_download() {
             .read(true)
             .open(&torrent.info.name)
             .unwrap();
-        println!(
+        info!(
             "seek: {}\tpiece_length: {}",
             i * torrent.info.piece_length,
             piece_length
@@ -323,9 +324,9 @@ async fn request_download() {
         let hash = &torrent.info.pieces[i as usize * 20..(i as usize + 1) * 20];
         let check = result == hash;
         if check {
-            println!("第{}个区块校验成功", i);
+            info!("第{}个区块校验成功", i);
         } else {
-            eprintln!(
+            error!(
                 "第{}个区块校验不通过\n校验值: {:?}\n实际值: {:?}",
                 i, hash, result
             );
@@ -351,11 +352,11 @@ fn test_parse_peer_handshake() {
     let retain = u64::from_be_slice(&resp[1 + protocol_len..1 + protocol_len + 8]);
     let info_hash = &resp[1 + protocol_len + 8..1 + protocol_len + 8 + 20];
     let peer_id = &resp[1 + protocol_len + 8 + 20..];
-    println!("protocol_len: {}", protocol_len);
-    println!("protocol: {}", protocol);
-    println!("retain: {}", retain); // 1572869
-    println!("info_hash: {}", hex::encode(info_hash));
-    println!("peer_id: {}", String::from_utf8_lossy(peer_id)); // -qB5040-L(ViscGGLXTo
+    info!("protocol_len: {}", protocol_len);
+    info!("protocol: {}", protocol);
+    info!("retain: {}", retain); // 1572869
+    info!("info_hash: {}", hex::encode(info_hash));
+    info!("peer_id: {}", String::from_utf8_lossy(peer_id)); // -qB5040-L(ViscGGLXTo
 }
 
 /// 将数据写入到指定位置的观察测试

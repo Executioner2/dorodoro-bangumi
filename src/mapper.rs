@@ -1,4 +1,5 @@
 pub mod torrent;
+pub mod context;
 
 /// db 保存路径
 pub static DB_SAVE_PATH: &str = "db";
@@ -30,4 +31,11 @@ pub static INIT_SQL: &str = r#"
     ON "torrent" (
       "status"
     );
+    
+    CREATE TABLE "context" (
+      "id" INTEGER NOT NULL,
+      "node_id" blob NOT NULL,
+      "config" blob NOT NULL,
+      PRIMARY KEY ("id")
+    )
 "#;

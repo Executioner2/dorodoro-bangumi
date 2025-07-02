@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 use bendy::decoding::{Error, FromBencode, Object};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
 use crate::dht::entity::Host;
+use crate::dht::node_id::NodeId;
 
 /// bytes 转为具体对象
 pub trait Bytes2Object<T> {
@@ -153,7 +154,7 @@ impl Bytes2Object<Host> for [u8] {
         let mut id = [0u8; 20];
         id.copy_from_slice(&self[..20]);
         let addr = self[20..].to_object()?;
-        Ok(Host { id, addr })
+        Ok(Host { id: NodeId::from(id), addr })
     }
 }
 

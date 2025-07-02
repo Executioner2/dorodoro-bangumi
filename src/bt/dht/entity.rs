@@ -5,10 +5,11 @@ use bendy::value::Value;
 use tracing::warn;
 use crate::bendy_ext::{Bytes2Object, SocketAddrExt};
 use crate::bytes::Bytes2Int;
+use crate::dht::node_id::NodeId;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Host {
-    pub id: [u8; 20],
+    pub id: NodeId,
     pub addr: SocketAddrExt,
 }
 

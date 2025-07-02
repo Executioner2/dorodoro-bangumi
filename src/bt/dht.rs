@@ -10,10 +10,8 @@ use crate::peer_manager::gasket;
 use crate::peer_manager::gasket::command::PeerSource;
 use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
 use crate::udp_server::UdpServer;
-use alloc::borrow::Cow;
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
-use bendy::value::Value;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -21,28 +19,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use futures::stream::FuturesUnordered;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 use crate::bendy_ext::SocketAddrExt;
+use crate::dht::node_id::NodeId;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer_manager::gasket::Gasket;
+use anyhow::Result;
 
 mod command;
 pub mod entity;
+pub mod node_id;
+
+#[cfg(test)]
+mod tests;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVER_MIN: usize = 100;
-
-fn distancemetric(a: &[u8], b: &[u8]) -> [u8; 20] {
-    if a.len() != 20 || b.len() != 20 {
-        error!("长度不等\ta len: {}\tb len: {}", a.len(), b.len());
-        return [0; 20]
-    }
-    let mut res = [0u8; 20];
-    for i in 0..20 {
-        res[i] = a[i] ^ b[i];
-    }
-    res
-}
 
 #[derive(Clone)]
 pub struct DHT {
@@ -50,10 +42,10 @@ pub struct DHT {
     id: u64,
 
     /// 节点 ID
-    node_id: Arc<[u8; 20]>,
+    node_id: Arc<NodeId>,
 
     /// torrent 信息哈希值
-    info_hash: Arc<[u8; 20]>,
+    info_hash: Arc<NodeId>,
 
     /// 全局上下文
     #[allow(dead_code)]
@@ -72,17 +64,17 @@ pub struct DHT {
 impl DHT {
     pub fn new(
         id: u64,
-        node_id: Arc<[u8; 20]>,
-        info_hash: Arc<[u8; 20]>,
+        info_hash: [u8; 20],
         emitter: Emitter,
         ctx: Context,
         cancel_token: CancellationToken,
         udp_server: UdpServer,
     ) -> Self {
+        let node_id = ctx.get_node_id();
         Self {
             id,
             node_id,
-            info_hash,
+            info_hash: Arc::new(NodeId::from(info_hash)),
             emitter,
             ctx,
             cancel_token,
@@ -95,7 +87,7 @@ impl DHT {
         debug!("开始尝试 ping");
         let t = self.udp_server.tran_id();
         let ping = DHTBase::<Ping>::request(
-            Ping::new(Value::Bytes(Cow::from(&*self.node_id))),
+            Ping::new(self.node_id.to_value_bytes()),
             "ping".to_string(),
             t,
         );
@@ -125,8 +117,8 @@ impl DHT {
         let t = self.udp_server.tran_id();
         let get_peers = DHTBase::<GetPeersReq>::request(
             GetPeersReq::new(
-                Value::Bytes(Cow::from(&*self.node_id)),
-                Value::Bytes(Cow::from(&*self.info_hash)),
+                self.node_id.to_value_bytes(),
+                self.info_hash.to_value_bytes(),
             ),
             "get_peers".to_string(),
             t,
@@ -166,13 +158,12 @@ impl DHT {
     }
 
     /// 有一个支持 DHT 的节点，那么根据它发现更多的 peers 和 nodes
-    async fn spread(&self, addr: SocketAddr) {
+    async fn spread(&self, addr: SocketAddr) -> Result<()> {
         debug!("收到一个可以扩散的ip: {}", addr);
         let mut queue = VecDeque::new();
         queue.push_back(addr);
         let mut peers = vec![];
-
-        let mut min_dist = distancemetric(&*self.node_id, &*self.info_hash); // todo - 这个要改
+        let mut min_dist = self.node_id.distance(&*self.info_hash);
 
         while !queue.is_empty() && peers.len() < DISCOVER_MIN {
             let addr = queue.pop_front().unwrap();
@@ -186,7 +177,7 @@ impl DHT {
             let (nodes, mut values) = self.get_peers(addr).await;
             let mut min = min_dist.clone();
             for node in nodes {
-                let dist = distancemetric(&node.id, &*self.info_hash);
+                let dist = node.id.distance(&*self.info_hash);
                 if min_dist >= dist {
                     queue.push_back(node.addr.into());
                     min = min.min(dist);
@@ -199,6 +190,7 @@ impl DHT {
 
         // 告诉 gasket 有新增的 peers
         if !peers.is_empty() {
+            trace!("新增了的peer: {:?}", peers);
             let cmd = gasket::command::DiscoverPeerAddr {
                 peers: peers.iter().map(|p| p.addr.into()).collect(),
                 source: PeerSource::DHT,
@@ -208,6 +200,8 @@ impl DHT {
                 .send(&Gasket::get_transfer_id(self.id), cmd.into())
                 .await;
         }
+        
+        Ok(())
     }
 
     /// 开始扫描 peers
@@ -252,21 +246,9 @@ impl Runnable for DHT {
         self.cancel_token.cancelled()
     }
 
-    async fn command_handle(&mut self, cmd: TransferPtr) -> anyhow::Result<CommandHandleResult> {
+    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
         let cmd: Command = cmd.instance();
         cmd.handle(self).await?;
         Ok(CommandHandleResult::Continue)
     }
 }
-
-// fixme - 测试用
-// let _ = self
-//     .emitter
-//     .send(
-//         &get_transfer_id(self.id),
-//         command::Spread {
-//             addr: SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-//         }
-//         .into(),
-//     )
-//     .await;
