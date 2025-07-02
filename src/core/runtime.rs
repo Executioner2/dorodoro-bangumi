@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 pub trait CustomExitReason: Debug {
     /// 退出代码
     fn exit_code(&self) -> u8;
-    
+
     /// 退出信息
     fn exit_message(&self) -> String {
         String::new()
@@ -24,7 +24,7 @@ pub trait CustomExitReason: Debug {
 pub enum CommandHandleResult {
     /// 正常处理
     Continue,
-    
+
     /// 退出执行
     Exit(ExitReason),
 }
@@ -33,10 +33,10 @@ pub enum CommandHandleResult {
 pub enum CustomTaskResult {
     /// 继续执行
     Continue(Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>),
-    
+
     /// 完成
     Finished,
-    
+
     /// 退出执行
     Exit(ExitReason),
 }
@@ -45,7 +45,7 @@ pub enum CustomTaskResult {
 pub enum ExitReason {
     /// 正常结束
     Normal,
-    
+
     /// 错误退出
     Error(anyhow::Error),
 
@@ -91,7 +91,7 @@ pub trait Runnable {
         }
 
         let mut futures = self.register_lt_future();
-        
+
         loop {
             tokio::select! {
                 _ = self.cancelled() => {
@@ -111,7 +111,7 @@ pub trait Runnable {
                                     exit_reason = ExitReason::Error(e);
                                     break;
                                 }
-                            } 
+                            }
                         }
                         None => {
                             exit_reason = ExitReason::Error(anyhow!("Command channel closed"));
@@ -146,36 +146,36 @@ pub trait Runnable {
         emitter.remove(&id);
         debug!("[{id}] - 已退出");
     }
-    
+
     /// 获取 Emitter 实例
     fn emitter(&self) -> &Emitter;
-    
+
     /// 获取 TransferId
     fn get_transfer_id<T: ToString>(suffix: T) -> String;
-    
+
     /// 获取实例的后缀
     fn get_suffix(&self) -> String {
         String::new()
-    } 
-    
+    }
+
     /// 注册长时间运行的异步任务
     fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
         FuturesUnordered::default()
     }
-    
+
     /// 运行前置准备
     #[allow(async_fn_in_trait)]
     async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
         Ok(())
     }
-    
+
     /// 中止信号
     fn cancelled(&self) -> WaitForCancellationFuture<'_>;
-    
+
     /// 持续运行实例
     #[allow(async_fn_in_trait)]
     async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult>;
-    
+
     /// 结束运行
     #[allow(async_fn_in_trait)]
     async fn shutdown(&mut self, _reason: ExitReason) {}

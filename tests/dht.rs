@@ -34,7 +34,7 @@ default_logger!(Level::DEBUG);
 //     let peer = SocketAddr::from_str(peer)?;
 //
 //     // 创建链接
-//     let mut socket = TcpStream::connect(peer).await?;
+//     let mut socket = TcpStreamExt::connect(peer).await?;
 //
 //     // 发起握手请求
 //     let mut bytes =

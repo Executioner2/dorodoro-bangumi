@@ -55,9 +55,10 @@ impl TryFrom<u8> for PeerExitReason {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(PeerExitReason::NotHasJob),
-            1 => Ok(PeerExitReason::PeriodicPeerReplace),
-            2 => Ok(PeerExitReason::Exception),
+            0 => Ok(PeerExitReason::Normal),
+            1 => Ok(PeerExitReason::NotHasJob),
+            2 => Ok(PeerExitReason::PeriodicPeerReplace),
+            3 => Ok(PeerExitReason::Exception),
             _ => Err(anyhow::anyhow!("unknown peer exit reason: {}", value)),
         }
     }
@@ -325,18 +326,20 @@ impl GasketContext {
 
     /// 归还分块下载
     pub fn give_back_download_pieces(&self, peer_no: u64, give_back: &Vec<(&u32, &Piece)>) {
-        debug!("peer {} 归还下载分块", peer_no);
+        let mut i = 0;
         for (piece_index, piece) in give_back {
             if !piece.is_finish() {
                 self.underway_bytefield
                     .insert(**piece_index, PieceStatus::Pause(piece.block_offset()));
+                i += 1;
             }
         }
+        debug!("peer {} 归还下载分块\t归还的分块数量: {}", peer_no, i);
     }
 
     /// 有 peer 告诉我们没有分块可以下载了。在这里根据下载情况，决定是否让这个 peer 去抢占别人的任务
     pub async fn report_no_downloadable_piece(&self, peer_no: u64) {
-        trace!("peer {} 没有可下载的分块了", peer_no);
+        debug!("peer {} 没有可下载的分块了", peer_no);
         if self.check_finished().await {
             self.store_progress().await;
             self.download_finished_after_handle().await;

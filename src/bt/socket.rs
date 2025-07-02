@@ -16,9 +16,9 @@ pub enum Crypto {
     Rc4(Rc4Cipher)
 }  
 
-/// TcpStream 的扩展
-pub struct TcpStreamExt {
-    /// TcpStream
+/// TcpStreamExt 的扩展
+pub struct TcpStreamWrapper {
+    /// TcpStreamExt
     stream: TcpStream,
     
     /// 本端加密方式
@@ -28,7 +28,7 @@ pub struct TcpStreamExt {
     rc: Crypto
 }
 
-impl TcpStreamExt {
+impl TcpStreamWrapper {
     pub fn new(stream: TcpStream, lc: Crypto, rc: Crypto) -> Self {
         Self {
             stream,

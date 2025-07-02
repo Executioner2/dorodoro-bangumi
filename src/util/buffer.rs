@@ -21,7 +21,7 @@ unsafe impl Send for BufInner {}
 unsafe impl Sync for BufInner {}
 
 impl BufInner {
-    pub fn new(capacity: usize) -> Self {
+    fn new(capacity: usize) -> Self {
         if capacity == 0 {
             Self {
                 ptr: NonNull::dangling(),
@@ -39,12 +39,12 @@ impl BufInner {
         }
     }
 
-    pub fn resize(&mut self, size: usize) {
+    fn resize(&mut self, size: usize) {
         let size = size.min(self.capacity);
         self.size = size;
     }
 
-    pub fn shrink(&mut self, capacity: usize) {
+    fn shrink(&mut self, capacity: usize) {
         if self.size < capacity {
             return;
         }
@@ -54,6 +54,10 @@ impl BufInner {
         self.ptr = NonNull::new(ptr).unwrap();
         self.capacity = capacity;
         self.resize(capacity);
+    }
+    
+    fn clear(&mut self) {
+        self.size = 0;
     }
 }
 
@@ -166,6 +170,10 @@ impl ByteBuffer {
         let mut inner = BufInner::new(0);
         mem::swap(&mut self.inner, &mut inner);
         Bytes::from_owner(inner)
+    }
+    
+    pub fn clear(&mut self) {
+        self.inner.clear()
     }
 }
 

@@ -9,7 +9,7 @@ use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer_manager::PeerManagerContext;
 use crate::peer_manager::gasket::command::{DiscoverPeerAddr, PeerSource};
-use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, RunContext, Runnable};
 use crate::torrent::TorrentArc;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
@@ -330,16 +330,16 @@ impl Tracker {
         use std::str::FromStr;
         let cmd = DiscoverPeerAddr {
             peers: vec![
-                SocketAddr::from_str("192.168.2.242:3115").unwrap(),
+                // SocketAddr::from_str("192.168.2.242:3115").unwrap(),
                 
-                // SocketAddr::from_str("192.168.2.113:6881").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6882").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6883").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6884").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6885").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6886").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6887").unwrap(),
-                // SocketAddr::from_str("192.168.2.113:6888").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6881").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6882").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6883").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6884").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6885").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6886").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6887").unwrap(),
+                SocketAddr::from_str("192.168.2.113:6888").unwrap(),
                 
                 // SocketAddr::from_str("209.141.46.35:15982").unwrap(),
                 // SocketAddr::from_str("123.156.68.196:20252").unwrap(),
@@ -359,10 +359,6 @@ impl Tracker {
 
     /// 创建定时扫描任务
     fn create_scan_task(&self) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
-        // fixme - 正式记得注释掉下面这行
-        // let mut delay = delay;
-        // delay += self.local_env_test().await;
-
         let trackers = self.trackers.clone();
         let scan_time = self.scan_time;
         let info = self.info.clone();
@@ -400,8 +396,15 @@ impl Runnable for Tracker {
 
     fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
         let futures = FuturesUnordered::new();        
+        // fixme - 正式记得取消下面这行注释
         futures.push(self.create_scan_task());
         futures
+    }
+
+    async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
+        // fixme - 正式记得注释掉下面这行
+        // self.local_env_test().await;
+        Ok(())
     }
 
     fn cancelled(&self) -> WaitForCancellationFuture<'_> {

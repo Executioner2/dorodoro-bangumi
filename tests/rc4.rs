@@ -283,7 +283,7 @@ fn test_generate_local_key() {
 /// 测试发送公钥，看看有没有响应
 #[tokio::test]
 async fn test_send_peer() {
-    // let mut socket = TcpStream::connect("192.168.2.242:3115").await.unwrap();
+    // let mut socket = TcpStreamExt::connect("192.168.2.242:3115").await.unwrap();
     let mut socket = TcpStream::connect("106.73.62.197:40370").await.unwrap();
     let (lprk, lpuk) = generate_key_pair();
     let data = send_secret(&lpuk);

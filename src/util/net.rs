@@ -81,17 +81,32 @@ pub fn rate_formatting<T: Into<u64>>(bw: T) -> (f64, &'static str) {
 }
 
 /// 异步读取扩展的扩展
+#[allow(async_fn_in_trait)]
 pub trait AsyncReadExtExt: AsyncRead {
-    fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> impl Future<Output = io::Result<usize>>;
+    /// 超时读取
+    async fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
 
-    fn read_exact_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> impl Future<Output = io::Result<usize>>;
-    
-    fn has_data_available(&mut self) -> impl Future<Output = io::Result<bool>>;
+    /// 超时读取
+    async fn read_buf_with_timeout<B: BufMut + ?Sized>(&mut self, buf: &mut B, timeout: Duration) -> io::Result<usize>;
+
+    /// 超时读取指定的长度
+    async fn read_exact_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+
+    /// 判断是否有数据可读
+    async fn has_data_available(&mut self) -> io::Result<bool>;
 }
 
 impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
     async fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read(buf)).await {
+            Ok(Ok(size)) => Ok(size),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
+        }
+    }
+
+    async fn read_buf_with_timeout<B: BufMut + ?Sized>(&mut self, buf: &mut B, timeout: Duration) -> io::Result<usize> {
+        match tokio::time::timeout(timeout, self.read_buf(buf)).await {
             Ok(Ok(size)) => Ok(size),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
@@ -105,10 +120,44 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
             Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
         }
     }
-    
+
     async fn has_data_available(&mut self) -> io::Result<bool> {
         let mut data = [0u8; 1];
         let size = self.read(&mut data).await?;
         Ok(size != 0)
+    }
+}
+
+
+#[allow(async_fn_in_trait)]
+pub trait TcpStreamExt {
+    /// 超时读取指定的长度，并清空缓冲区
+    async fn read_extra_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+}
+
+impl TcpStreamExt for tokio::net::TcpStream {
+    async fn read_extra_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        match tokio::time::timeout(timeout, self.read_exact(buf)).await {
+            Ok(Ok(_)) => {
+                let mut total_size = 0;
+                let mut buf = BytesMut::with_capacity(4096);
+                loop {
+                    match self.try_read_buf(&mut buf) {
+                        Ok(0) => break,
+                        Ok(size) => {
+                            buf.clear();
+                            total_size += size;
+                        },
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            break;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(total_size)
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
+        }
     }
 }

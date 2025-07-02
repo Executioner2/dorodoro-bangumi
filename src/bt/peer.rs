@@ -47,7 +47,7 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info, trace};
 use crate::bt::pe_crypto;
 use crate::bt::pe_crypto::CryptoProvide;
-use crate::bt::socket::TcpStreamExt;
+use crate::bt::socket::TcpStreamWrapper;
 use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 
 const MSS: u32 = 17;
@@ -444,14 +444,14 @@ impl Peer {
     }
     
     /// 加密握手
-    async fn crypto_handshake(&mut self, stream: TcpStream) -> Result<TcpStreamExt> {
+    async fn crypto_handshake(&mut self, stream: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.no());
         let tse= pe_crypto::init_handshake(stream, &self.ctx.torrent().info_hash, CryptoProvide::Rc4).await?;
         Ok(tse)
     }
     
     /// 握手
-    async fn handshake(&mut self, stream: &mut TcpStreamExt) -> Result<()> {
+    async fn handshake(&mut self, stream: &mut TcpStreamWrapper) -> Result<()> {
         trace!("发送握手信息 peer_no: {}", self.no());
         let mut bytes =
             Vec::with_capacity(1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN);
@@ -872,7 +872,7 @@ impl Peer {
     /// 启动套接字监听
     fn start_listener(
         &mut self,
-        stream: TcpStreamExt,
+        stream: TcpStreamWrapper,
         peer_send: Sender<TransferPtr>,
         cancel: CancellationToken,
     ) -> (JoinHandle<()>, JoinHandle<()>) {

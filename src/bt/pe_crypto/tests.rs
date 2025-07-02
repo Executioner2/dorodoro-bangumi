@@ -11,7 +11,7 @@ default_logger!(Level::DEBUG);
 
 #[tokio::test]
 async fn test_init_handshake() {
-    // let socket = TcpStream::connect("106.73.62.197:40370").await.unwrap();
+    // let socket = TcpStreamExt::connect("106.73.62.197:40370").await.unwrap();
     let socket = TcpStream::connect("192.168.2.242:3115").await.unwrap();
     let info_hash = hex::decode("c6bbdb50bd685bacf8c0d615bb58a3a0023986ef").unwrap();
     info!("开始握手");
