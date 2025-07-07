@@ -9,9 +9,9 @@ use crate::core::tcp_server::TcpServer;
 use crate::core::udp_server::UdpServer;
 use crate::db::Db;
 use crate::mapper;
-use crate::mapper::context::{ContextEntity, ContextMapper};
 use tracing::{info, trace};
-use crate::dht::node_id;
+use crate::dht::DHT;
+use crate::dht::routing::{NodeId, RoutingTable};
 
 pub async fn start() {
     info!("dorodoro-bangumi 启动中...");
@@ -31,9 +31,14 @@ pub async fn start() {
     trace!("启动 udp server");
     let udp_server = UdpServer::new(context.clone()).await.unwrap();
     let udp_server_handle = tokio::spawn(udp_server.clone().run());
+    
+    trace!("启动 dht");
+    let (routing_table, bootstrap_nodes) = load_routing_table(&context).await;
+    let dht_server = DHT::new(emitter.clone(), context.clone(), udp_server, routing_table, bootstrap_nodes);
+    let dht_server_handle = tokio::spawn(dht_server.run());
 
     trace!("启动 peer 管理器");
-    let peer_manager = PeerManager::new(context.clone(), emitter.clone(), udp_server);
+    let peer_manager = PeerManager::new(context.clone(), emitter.clone());
     let peer_manager_handle = tokio::spawn(peer_manager.run());
 
     trace!("启动调度器");
@@ -42,6 +47,7 @@ pub async fn start() {
 
     info!("等待资源关闭中...");
     peer_manager_handle.await.unwrap();
+    dht_server_handle.await.unwrap();
     udp_server_handle.await.unwrap();
     tcp_server_handle.await.unwrap();
 
@@ -49,22 +55,45 @@ pub async fn start() {
 }
 
 pub async fn load_context(db: Db) -> Context {
+    use crate::mapper::context::{ContextEntity, ContextMapper};
     let conn = db.get_conn().await.unwrap();
     let cen = conn.load_context();
     let not_init = cen.is_none();
     
     let ce = cen.unwrap_or(ContextEntity::init());
-    let node_id = ce.node_id.unwrap_or(node_id::generate_node_id());
     let config = ce.config.unwrap_or(Config::new());
     
     if not_init {
         let ce = ContextEntity {
-            node_id: Some(node_id.clone()),
             config: Some(config.clone()),
             ..Default::default()
         };
         conn.store_context(ce);  
     }
 
-    Context::new(db, config, node_id)
+    Context::new(db, config)
+}
+
+pub async fn load_routing_table(context: &Context) -> (RoutingTable, Vec<String>) {
+    use crate::mapper::dht::{DHTEntity, DHTMapper, DEFAULT_BOOTSTRAP_NODES};
+    let conn = context.get_conn().await.unwrap();
+    let dhte = conn.load_dht_entity();
+    let not_init = dhte.is_none();
+    
+    let dhte = dhte.unwrap_or(DHTEntity::init());
+    let own_id = dhte.own_id.unwrap_or(NodeId::random());
+    let routing_table = dhte.routing_table.unwrap_or(RoutingTable::new(own_id.clone()));
+    let bootstrap_nodes = dhte.bootstrap_nodes.unwrap_or(DEFAULT_BOOTSTRAP_NODES.clone());
+    
+    if not_init {
+        let dhte = DHTEntity {
+            own_id: Some(own_id.clone()),
+            routing_table: Some(routing_table.clone()),
+            bootstrap_nodes: Some(bootstrap_nodes.clone()),
+            ..Default::default()
+        };
+        conn.store_dht_entity(dhte);
+    }
+
+    (routing_table, bootstrap_nodes)
 }

@@ -4,8 +4,11 @@ use bendy::encoding::{SingleItemEncoder, ToBencode};
 use bendy::value::Value;
 use tracing::warn;
 use crate::bendy_ext::{Bytes2Object, SocketAddrExt};
-use crate::bytes::Bytes2Int;
-use crate::dht::node_id::NodeId;
+use crate::bytes_util::Bytes2Int;
+use crate::dht::routing::NodeId;
+
+/// bencode 编码的最大深度
+const MAX_DEPTH: usize = 10;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Host {
@@ -147,7 +150,7 @@ impl<'a, T: FromBencode> FromBencode for DHTBase<'a, T> {
 }
 
 impl<'a, T: ToBencode> ToBencode for DHTBase<'a, T> {
-    const MAX_DEPTH: usize = 10;
+    const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
         encoder.emit_dict(|mut e| {
@@ -173,22 +176,22 @@ impl<'a, T: ToBencode> ToBencode for DHTBase<'a, T> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Ping<'a> {
-    pub id: Value<'a>,
+    pub id: Cow<'a, NodeId>,
     pub port: Option<u16>,
 }
 
 impl<'a> Ping<'a> {
-    pub fn new(id: Value<'a>) -> Self {
+    pub fn new(id: Cow<'a, NodeId>) -> Self {
         Self { id, port: None }
     }
 }
 
 impl<'a> ToBencode for Ping<'a> {
-    const MAX_DEPTH: usize = 10;
+    const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
         encoder.emit_dict(|mut e| {
-            e.emit_pair(b"id", &self.id)?;
+            e.emit_pair(b"id", self.id.as_ref())?;
             if let Some(port) = self.port {
                 e.emit_pair(b"port", &port)?;
             }
@@ -209,7 +212,7 @@ impl<'a> FromBencode for Ping<'a> {
         while let Some(pair) = dict.next_pair()? {
             match pair {
                 (b"id", value) => {
-                    id = Value::decode_bencode_object(value)
+                    id = NodeId::decode_bencode_object(value)
                         .context("id")
                         .map(Some)?;
                 }
@@ -224,7 +227,7 @@ impl<'a> FromBencode for Ping<'a> {
             }
         }
 
-        let id = id.ok_or_else(|| Error::missing_field("id"))?;
+        let id = Cow::Owned(id.ok_or_else(|| Error::missing_field("id"))?);
 
         Ok(Ping { id, port })
     }
@@ -232,7 +235,7 @@ impl<'a> FromBencode for Ping<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct GetPeersResp<'a> {
-    pub id: Value<'a>,
+    pub id: NodeId,
     pub nodes: Option<Vec<Host>>,
     pub values: Option<Vec<SocketAddrExt>>,
     pub token: Value<'a>,
@@ -254,7 +257,7 @@ impl<'a> FromBencode for GetPeersResp<'a> {
         while let Some(pair) = dict.next_pair()? {
             match pair {
                 (b"id", value) => {
-                    id = Value::decode_bencode_object(value)
+                    id = NodeId::decode_bencode_object(value)
                         .context("id")
                         .map(Some)?;
                 }
@@ -295,24 +298,89 @@ impl<'a> FromBencode for GetPeersResp<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct GetPeersReq<'a> {
-    pub id: Value<'a>,
-    pub info_hash: Value<'a>,
+    pub id: Cow<'a, NodeId>,
+    pub info_hash: Cow<'a, NodeId>,
 }
 
 impl<'a> GetPeersReq<'a> {
-    pub fn new(id: Value<'a>, info_hash: Value<'a>) -> Self {
+    pub fn new(id: Cow<'a, NodeId>, info_hash: Cow<'a, NodeId>) -> Self {
         Self { id, info_hash }
     }
 }
 
 impl<'a> ToBencode for GetPeersReq<'a> {
-    const MAX_DEPTH: usize = 10;
+    const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
         encoder.emit_dict(|mut e| {
-            e.emit_pair(b"id", &self.id)?;
-            e.emit_pair(b"info_hash", &self.info_hash)?;
+            e.emit_pair(b"id", self.id.as_ref())?;
+            e.emit_pair(b"info_hash", self.info_hash.as_ref())?;
             Ok(())
+        })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct FindNodeReq<'a> {
+    pub id: Cow<'a, NodeId>,
+    pub target: Cow<'a, NodeId>,
+}
+
+impl<'a> FindNodeReq<'a> {
+    pub fn new(id: Cow<'a, NodeId>, target: Cow<'a, NodeId>) -> Self {
+        Self { id, target }
+    }
+}
+
+impl<'a> ToBencode for FindNodeReq<'a> {
+    const MAX_DEPTH: usize = MAX_DEPTH;
+
+    fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
+        encoder.emit_dict(|mut e| {
+            e.emit_pair(b"id", self.id.as_ref())?;
+            e.emit_pair(b"target", self.target.as_ref())?;
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct FindNodeResp<'a> {
+    pub id: Cow<'a, NodeId>,
+    pub nodes: Vec<Host>,
+}
+
+impl<'a> FromBencode for FindNodeResp<'a> {
+    fn decode_bencode_object(object: Object) -> Result<Self, Error>
+    where
+        Self: Sized
+    {
+        let mut id = None;
+        let mut nodes = None;
+        
+        let mut dict = object.try_into_dictionary()?;
+        while let Some(pair) = dict.next_pair()? {
+            match pair {
+                (b"id", value) => {
+                    id = NodeId::decode_bencode_object(value)
+                        .context("id")
+                        .map(Some)?;
+                }
+                (b"nodes", Object::Bytes(value)) => {
+                    nodes = Some(value.to_object()?);
+                }
+                (unknown_field, _) => {
+                    warn!("未知的字段: {:?}", String::from_utf8_lossy(unknown_field));
+                }
+            }
+        }
+
+        let id = id.ok_or_else(|| Error::missing_field("id"))?;
+        let nodes = nodes.ok_or_else(|| Error::missing_field("nodes"))?;
+
+        Ok(FindNodeResp {
+            id: Cow::Owned(id),
+            nodes
         })
     }
 }

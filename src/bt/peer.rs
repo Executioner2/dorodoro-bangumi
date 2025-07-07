@@ -11,7 +11,7 @@ mod listener;
 pub mod rate_control;
 pub mod reserved;
 
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use crate::command::CommandHandler;
 use crate::config::{Config, CHANNEL_BUFFER};
 use crate::core::protocol::{
@@ -249,12 +249,12 @@ impl Piece {
             return;
         }
         let bo_idx = Self::block_offset_idx(block_offset, self.block_size);
-        let (idx, offset) = util::bytes::bitmap_offset(bo_idx as usize);
+        let (idx, offset) = util::bytes_util::bitmap_offset(bo_idx as usize);
         self.bitmap.get_mut(idx).map(|val| *val |= offset);
 
         // 更新连续块偏移
         let bo_idx = Self::block_offset_idx(self.block_offset, self.block_size);
-        let (idx, mut offset) = util::bytes::bitmap_offset(bo_idx as usize);
+        let (idx, mut offset) = util::bytes_util::bitmap_offset(bo_idx as usize);
         'first_loop: for i in idx..self.bitmap.len() {
             let mut k = offset;
             while k != 0 {
@@ -592,7 +592,7 @@ impl Peer {
         }
 
         for piece_index in 0..self.ctx.torrent().piece_num() {
-            let (idx, offset) = util::bytes::bitmap_offset(piece_index);
+            let (idx, offset) = util::bytes_util::bitmap_offset(piece_index);
             
             let item = self.opposite_peer_bitfield
                 .get(idx) 
@@ -717,7 +717,7 @@ impl Peer {
         anyhow_eq!(bytes.len(), 4, "对端的 Have 消息长度不正确");
         
         let bit = u32::from_be_slice(&bytes[..4]);
-        let (idx, offset) = util::bytes::bitmap_offset(bit as usize);
+        let (idx, offset) = util::bytes_util::bitmap_offset(bit as usize);
 
         self.opposite_peer_bitfield
             .get_mut(idx)

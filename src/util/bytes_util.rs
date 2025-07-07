@@ -1,3 +1,5 @@
+use bincode::{config, de, enc};
+
 /// 字节数组转无符号整数
 macro_rules! impl_bytes2int {
     ($($t:ty),+) => {
@@ -29,7 +31,7 @@ pub trait Bytes2Int<T> {
     ///
     /// Examples:
     /// ```
-    /// use dorodoro_bangumi::util::bytes::Bytes2Int;
+    /// use dorodoro_bangumi::util::bytes_util::Bytes2Int;
     ///
     /// assert_eq!(u32::from_be_slice(&[0x12, 0x34, 0x56, 0x78]), 0x12345678);
     /// assert_eq!(u32::from_be_slice(&[0x56, 0x78]), 0x00005678); // 高位补零
@@ -48,7 +50,7 @@ pub trait Bytes2Int<T> {
     ///
     /// Examples:
     /// ```
-    /// use dorodoro_bangumi::util::bytes::Bytes2Int;
+    /// use dorodoro_bangumi::util::bytes_util::Bytes2Int;
     ///
     /// assert_eq!(u32::from_le_slice(&[0x78, 0x56, 0x34, 0x12]), 0x12345678);
     /// assert_eq!(u32::from_le_slice(&[0x78, 0x56]), 0x00005678); // 低位补零
@@ -70,4 +72,14 @@ impl_bytes2int!(u8, u16, u32, u64, u128);
 pub fn bitmap_offset<T: Into<usize> + Copy>(size: T) -> (usize, u8) {
     let index = size.into();
     (index >> 3, 1 << (7 - (index & 7) as u8))
+}
+
+/// 解码二进制数据
+pub fn decode<D: de::Decode<()>>(src: &[u8]) -> D {
+    bincode::decode_from_slice(src, config::standard()).unwrap().0
+}
+
+/// 编码二进制数据
+pub fn encode<T: enc::Encode>(src: &T) -> Vec<u8> {
+    bincode::encode_to_vec(src, config::standard()).unwrap()
 }

@@ -5,7 +5,6 @@ use crate::core::context::Context;
 use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::emitter::Emitter;
 use crate::core::runtime::Runnable;
-use crate::core::udp_server::UdpServer;
 use crate::emitter::transfer::TransferPtr;
 use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
 use crate::peer_manager::command::Command;
@@ -53,9 +52,6 @@ pub struct PeerManagerContext {
 
     // 当前 peer 链接数
     // peer_conn_num: Arc<AtomicUsize>,
-
-    /// dht 服务器
-    udp_server: UdpServer,
 }
 
 impl PeerManagerContext {
@@ -86,7 +82,7 @@ pub struct PeerManager {
 }
 
 impl PeerManager {
-    pub fn new(context: Context, emitter: Emitter, udp_server: UdpServer) -> Self {
+    pub fn new(context: Context, emitter: Emitter) -> Self {
         let store = Store::new(context.get_config().clone(), emitter.clone());
         let pmc = PeerManagerContext {
             context,
@@ -96,7 +92,6 @@ impl PeerManager {
             store,
             peer_id_pool: Arc::new(DashSet::new()),
             // peer_conn_num: Arc::new(AtomicUsize::new(0)),
-            udp_server
         };
             
         Self {

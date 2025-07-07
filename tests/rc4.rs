@@ -1,7 +1,7 @@
 //! rc4 加密解密实现 demo
 
 use byteorder::{BigEndian, WriteBytesExt};
-use dorodoro_bangumi::bytes::Bytes2Int;
+use dorodoro_bangumi::bytes_util::Bytes2Int;
 use dorodoro_bangumi::peer::reserved;
 use dorodoro_bangumi::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use dorodoro_bangumi::{default_logger, util};

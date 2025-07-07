@@ -144,7 +144,7 @@ impl Coordinator {
         }
         let len: usize = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                self.ctx.wait_queue.lock().await.len()    
+                self.ctx.wait_queue.lock().await.len()
             })
         });
         debug!("\n当前 peer 状态: {} [wait num: {}]", str, len);

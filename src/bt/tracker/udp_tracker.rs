@@ -6,7 +6,7 @@ pub mod socket;
 mod tests;
 
 use crate::bt::constant::udp_tracker::*;
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use crate::tracker::{AnnounceInfo, Event};
 use crate::util::buffer::ByteBuffer;
 use crate::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime, tracker, util};

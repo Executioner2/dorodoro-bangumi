@@ -1,5 +1,5 @@
 use crate::bt::peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use crate::collection::FixedQueue;
 use crate::peer::peer_resp::PeerResp;
 use crate::peer::peer_resp::RespType::*;

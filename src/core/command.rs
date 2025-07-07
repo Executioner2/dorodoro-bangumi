@@ -8,7 +8,8 @@ use crate::config::CHANNEL_BUFFER;
 pub trait CommandHandler<'a, Return = ()> {
     type Target;
 
-    fn handle(self, ctx: Self::Target) -> impl Future<Output = Return> + Send;
+    #[allow(async_fn_in_trait)]
+    async fn handle(self, ctx: Self::Target) -> Return;
 }
 
 /// 通信令牌    

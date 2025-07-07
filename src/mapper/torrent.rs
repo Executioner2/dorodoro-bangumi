@@ -4,7 +4,6 @@ use crate::db::ConnWrapper;
 use anyhow::{anyhow, Error, Result};
 use crate::peer_manager::gasket::PieceStatus;
 use crate::torrent::TorrentArc;
-use bincode::config;
 use bytes::BytesMut;
 use dashmap::DashMap;
 use rusqlite::params;
@@ -12,6 +11,7 @@ use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::warn;
+use crate::bytes_util;
 
 /// 种子状态
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,7 +140,7 @@ impl TorrentMapper for ConnWrapper {
             .unwrap();
         stmt.execute((
             bytefield,
-            bincode::encode_to_vec(ub, config::standard()).unwrap(),
+            bytes_util::encode(&ub),
             info_hash,
         ))
         .unwrap();
@@ -150,19 +150,17 @@ impl TorrentMapper for ConnWrapper {
     fn recover_from_db(&self, info_hash: &[u8]) -> TorrentEntity {
         let mut stmt = self.prepare_cached("select download, uploaded, save_path, bytefield, underway_bytefield, status from torrent where info_hash = ?1").unwrap();
         stmt.query_row([&info_hash], |row| {
-            let ub: Vec<(u32, PieceStatus)> = bincode::decode_from_slice(
-                row.get::<_, Vec<u8>>(4)?.as_slice(),
-                config::standard(),
-            )
-            .unwrap()
-            .0;
+            let ub: Vec<(u32, PieceStatus)> = {
+                let serial: Vec<u8> = row.get(4)?;
+                bytes_util::decode(&serial)
+            };
             Ok(TorrentEntity {
-                download: Some(row.get::<_, u64>(0)?),
-                uploaded: Some(row.get::<_, u64>(1)?),
+                download: Some(row.get(0)?),
+                uploaded: Some(row.get(1)?),
                 save_path: Some(PathBuf::from(row.get::<_, String>(2)?)),
                 bytefield: Some(BytesMut::from(row.get::<_, Vec<u8>>(3)?.as_slice())),
                 underway_bytefield: Some(ub),
-                status: Some(TorrentStatus::try_from(row.get::<_, usize>(5)? as u8).unwrap()),
+                status: Some(TorrentStatus::try_from(row.get::<_, u8>(5)?).unwrap()),
                 ..Default::default()
             })
         })
@@ -176,7 +174,7 @@ impl TorrentMapper for ConnWrapper {
             entity.download,
             entity.uploaded,
             entity.bytefield.unwrap().as_ref(),
-            bincode::encode_to_vec(entity.underway_bytefield.unwrap(), config::standard()).unwrap(),
+            bytes_util::encode(&entity.underway_bytefield.unwrap()),
             entity.status.map(|x| x as usize),
             entity.info_hash
         ])
@@ -197,11 +195,10 @@ impl TorrentMapper for ConnWrapper {
         }
 
         let mut stmt = self.prepare_cached("insert into torrent(info_hash, serial, status, bytefield, underway_bytefield, save_path) values (?1, ?2, ?3, ?4, ?5, ?6)").unwrap();
-        let serial = bincode::encode_to_vec(torrent.inner(), config::standard()).unwrap();
+        let serial = bytes_util::encode(&torrent.inner());
         let bytefield = vec![0u8; torrent.bitfield_len()];
         let underway_bytefield: Vec<(u32, PieceStatus)> = vec![];
-        let underway_bytefield =
-            bincode::encode_to_vec(underway_bytefield, config::standard()).unwrap();
+        let underway_bytefield = bytes_util::encode(&underway_bytefield);
         stmt.execute(params![
             torrent.info_hash,
             &serial,
@@ -220,9 +217,9 @@ impl TorrentMapper for ConnWrapper {
         let mut rows = stmt.query([]).unwrap();
         let mut list = vec![];
         while let Some(row) = rows.next().unwrap() {
-            let serial = row.get::<_, Vec<u8>>(0).unwrap();
-            let status = TorrentStatus::try_from(row.get::<_, usize>(1).unwrap() as u8).unwrap();
-            let torrent = bincode::decode_from_slice(serial.as_slice(), config::standard()).unwrap().0;
+            let serial: Vec<u8> = row.get(0).unwrap();
+            let status = TorrentStatus::try_from(row.get::<_, u8>(1).unwrap()).unwrap();
+            let torrent = bytes_util::decode(serial.as_slice());
             list.push(TorrentEntity {
                 serail: Some(TorrentArc::new(torrent)),
                 status: Some(status),

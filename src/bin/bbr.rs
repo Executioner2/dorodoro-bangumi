@@ -910,7 +910,7 @@ pub mod rd {
     use crate::{BBRReadCallback, LoadSendPackage, PacketId};
     use byteorder::{BigEndian, WriteBytesExt};
     use bytes::Bytes;
-    use dorodoro_bangumi::bytes::Bytes2Int;
+    use dorodoro_bangumi::bytes_util::Bytes2Int;
     use dorodoro_bangumi::collection::FixedQueue;
     use dorodoro_bangumi::peer::MsgType;
     use dorodoro_bangumi::peer::peer_resp::PeerResp;

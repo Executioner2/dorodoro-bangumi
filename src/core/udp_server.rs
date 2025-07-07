@@ -77,7 +77,7 @@ impl UdpServer {
         &self,
         tran_id: u16,
         data: &[u8],
-        addr: SocketAddr,
+        addr: &SocketAddr,
     ) -> Result<Response, std::io::Error> {
         if self.inflight.contains_key(&tran_id) {
             return Err(std::io::Error::new(

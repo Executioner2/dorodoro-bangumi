@@ -6,7 +6,6 @@ use crate::core::config::Config;
 use crate::core::emitter::constant::GASKET_PREFIX;
 use crate::core::emitter::Emitter;
 use crate::db::ConnWrapper;
-use crate::dht::DHT;
 use crate::emitter::transfer::TransferPtr;
 use crate::mapper::torrent::{TorrentEntity, TorrentMapper, TorrentStatus};
 use crate::peer::rate_control::probe::Dashbord;
@@ -15,7 +14,7 @@ use crate::peer::{Peer, Piece};
 use crate::peer_manager::gasket::command::{Command, SaveProgress, StartWaittingAddr};
 use crate::peer_manager::gasket::coordinator::Coordinator;
 use crate::peer_manager::PeerManagerContext;
-use crate::runtime::{CommandHandleResult, CustomExitReason, ExitReason, RunContext, Runnable};
+use crate::runtime::{CommandHandleResult, CustomExitReason, CustomTaskResult, ExitReason, RunContext, Runnable};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
@@ -28,12 +27,27 @@ use fnv::FnvHashSet;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+use futures::stream::FuturesUnordered;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{debug, error, info, level_enabled, trace, Level};
+use crate::dht::command::FindPeers;
+use crate::dht::DHT;
+use crate::dht::routing::NodeId;
+
+/// 每间隔一分钟扫描一次 peers
+const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
+
+/// 等待的 peer 上限，如果超过这个数量，就不会进行 dht 扫描
+const DHT_WAIT_PEER_LIMIT: usize = 20;
+
+/// 期望每次 dht 扫描能找到 15 个 peer
+const DHT_EXPECT_PEERS: usize = 15;
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum PeerExitReason {
@@ -213,6 +227,10 @@ impl GasketContext {
             status: Arc::new(Mutex::from(status)),
         }
     }
+    
+    pub fn gtid(&self) -> &str {
+        &self.gtid
+    }
 
     pub fn cancel_token(&self) -> WaitForCancellationFuture {
         self.pm_ctx.context.cancelled()
@@ -298,7 +316,7 @@ impl GasketContext {
         trace!("peer {} 申请下载分块", peer_no);
         let mut res = None;
 
-        let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
+        let (index, offset) = util::bytes_util::bitmap_offset(piece_index as usize);
         let mut bytefield = self.bytefield.lock().await;
         if *bytefield.get_mut(index)? & offset == 0 {
             self.underway_bytefield
@@ -348,7 +366,7 @@ impl GasketContext {
                 let mut str = String::new();
                 self.peers.iter().for_each(|item| {
                     let (bw, unit) = net::rate_formatting(item.dashbord.bw());
-                    str.push_str(&format!("{}-{}: {}{} {:?}\n",
+                    str.push_str(&format!("{}-{}: {:.2}{} {:?}\n",
                                       item.no, item.addr.port(), bw, unit, 
                                       item.download_piece.clone())
                     );
@@ -392,7 +410,7 @@ impl GasketContext {
 
                 let mut free_piece = vec![];
                 item.download_piece.retain(|piece_index| {
-                    let (idx, ost) = util::bytes::bitmap_offset(*piece_index as usize);
+                    let (idx, ost) = util::bytes_util::bitmap_offset(*piece_index as usize);
                     let res = peer.2.get(idx).map(|val| val & ost != 0).unwrap_or(false);
                     if res { free_piece.push(*piece_index); }
                     !res
@@ -475,7 +493,7 @@ impl GasketContext {
 
     /// 上报分块下载完成
     pub async fn reported_piece_finished(&self, peer_no: u64, piece_index: u32) {
-        let (index, offset) = util::bytes::bitmap_offset(piece_index as usize);
+        let (index, offset) = util::bytes_util::bitmap_offset(piece_index as usize);
         self.bytefield
             .lock()
             .await
@@ -598,6 +616,7 @@ impl Gasket {
     async fn start_peer(&self, addr: SocketAddr) {
         debug!("启动peer: {}", addr);
         if self.ctx.unstart_host.contains(&addr) || self.ctx.check_finished().await {
+            debug!("[{addr}] 已在启动队列中，或下载任务已完成，忽略启动请求");
             return;
         }
 
@@ -709,20 +728,6 @@ impl Gasket {
         tokio::spawn(tracker.run())
     }
     
-    fn start_dht(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
-        let transfer_id = Self::get_transfer_id(self.id);
-        trace!("启动 {} 的 dht", transfer_id);
-        let dht = DHT::new(
-            self.id,
-            self.ctx.torrent.info_hash,
-            self.ctx.emitter.clone(),
-            self.ctx.pm_ctx.context.clone(),
-            cancel_token,
-            self.ctx.pm_ctx.udp_server.clone()
-        );
-        tokio::spawn(dht.run())
-    }
-    
     fn start_coordinator(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
         let coor = Coordinator::new(self.ctx.clone(), cancel_token);
         tokio::spawn(coor.run())
@@ -731,6 +736,37 @@ impl Gasket {
     #[inline]
     async fn pop_wait_peer(&self) -> Option<PeerInfo> {
         self.ctx.wait_queue.lock().await.pop_front()
+    }
+    
+    /// 定时从 dht 中发现 peer
+    fn interval_find_peers_from_dht(&self) -> Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>> {
+        let context = self.ctx.clone();
+        let info_hash = NodeId::new(self.ctx.torrent.info_hash.clone());
+        let gakset_id = self.id;
+        let resp_tx = self.emitter().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
+        let status = self.ctx.status.clone();
+        
+        Box::pin(async move {
+            
+            loop {
+                if *status.lock().await == TorrentStatus::Finished {
+                    break;
+                }
+                if context.wait_queue.lock().await.len() < DHT_WAIT_PEER_LIMIT {
+                    let cmd = FindPeers {
+                        info_hash: info_hash.clone(),
+                        resp_tx: resp_tx.clone(),
+                        gasket_id: gakset_id,
+                        expect_peers: DHT_EXPECT_PEERS,
+                    }.into();
+                    let emitter = &context.pm_ctx.emitter;
+                    let _ = emitter.send(&DHT::get_transfer_id(""), cmd).await;
+                }
+                tokio::time::sleep(DHT_FIND_PEERS_INTERVAL).await;
+            }
+            info!("DHT 定时发现任务结束！");
+            CustomTaskResult::Finished
+        })
     }
 }
 
@@ -747,11 +783,16 @@ impl Runnable for Gasket {
         self.id.to_string()
     }
 
+    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
+        let futures = FuturesUnordered::new();
+        futures.push(self.interval_find_peers_from_dht());
+        futures
+    }
+
     async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
         let cancel_token = self.future_token.0.clone();
         self.future_token.1 = vec![
             self.start_tracker(cancel_token.clone()),
-            self.start_dht(cancel_token.clone()),
             self.start_coordinator(cancel_token.clone())
         ];
         Ok(())

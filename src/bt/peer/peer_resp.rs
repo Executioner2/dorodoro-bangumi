@@ -1,4 +1,4 @@
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use crate::net::ReaderHandle;
 use crate::peer::MsgType;
 use bytes::Bytes;

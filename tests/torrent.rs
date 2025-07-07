@@ -6,7 +6,7 @@ use dorodoro_bangumi::bt::torrent::Torrent;
 use dorodoro_bangumi::default_logger;
 use dorodoro_bangumi::torrent::Parse;
 use dorodoro_bangumi::tracker::http_tracker::Announce;
-use dorodoro_bangumi::util::bytes::Bytes2Int;
+use dorodoro_bangumi::util::bytes_util::Bytes2Int;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
 use std::fs;

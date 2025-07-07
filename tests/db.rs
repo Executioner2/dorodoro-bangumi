@@ -3,7 +3,10 @@ use dashmap::DashMap;
 use dorodoro_bangumi::peer_manager::gasket::PieceStatus;
 use rusqlite::Connection;
 use tracing::{info, Level};
-use dorodoro_bangumi::default_logger;
+use dorodoro_bangumi::db::Db;
+use dorodoro_bangumi::{default_logger, mapper};
+use dorodoro_bangumi::config::DATABASE_CONN_LIMIT;
+use dorodoro_bangumi::mapper::dht::DHTMapper;
 
 default_logger!(Level::DEBUG);
 
@@ -22,4 +25,12 @@ fn test_db() {
 
     let ub: DashMap<u32, PieceStatus> = ub.into_iter().collect();
     info!("ub: {:?}", ub);
+}
+
+#[tokio::test]
+async fn test_load_dht() {
+    let db = Db::new(mapper::DB_SAVE_PATH, mapper::DB_NAME, mapper::INIT_SQL, DATABASE_CONN_LIMIT).unwrap();
+    let conn = db.get_conn().await.unwrap();
+    let de = conn.load_dht_entity().unwrap();
+    info!("{:?}", de.routing_table);
 }

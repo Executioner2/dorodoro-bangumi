@@ -37,7 +37,7 @@
 mod tests;
 
 use std::time::Duration;
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use num_traits::Num;

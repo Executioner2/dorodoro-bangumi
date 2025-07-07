@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use bendy::decoding::{Error, FromBencode, Object};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
 use crate::dht::entity::Host;
-use crate::dht::node_id::NodeId;
+use crate::dht::routing::NodeId;
 
 /// bytes 转为具体对象
 pub trait Bytes2Object<T> {

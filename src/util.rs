@@ -1,5 +1,5 @@
 pub mod buffer;
-pub mod bytes;
+pub mod bytes_util;
 pub mod collection;
 pub mod datetime;
 pub mod log;
@@ -10,3 +10,4 @@ pub mod fs;
 pub mod win_minmax;
 pub mod timer;
 pub mod bendy_ext;
+pub mod sync;

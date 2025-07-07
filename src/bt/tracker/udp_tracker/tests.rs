@@ -1,7 +1,7 @@
 //! udp_tracker 的单元测试
 
 use crate::bt::peer::MsgType;
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::udp_tracker::UdpTracker;
 use crate::tracker::{AnnounceInfo, Event};

@@ -1,19 +1,12 @@
 //! DHT 测试
 
-use bendy::decoding::FromBencode;
-use bendy::encoding::ToBencode;
-use bendy::value::Value;
-use dorodoro_bangumi::buffer::ByteBuffer;
 use dorodoro_bangumi::default_logger;
-use dorodoro_bangumi::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Ping};
 use rand::Rng;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::Duration;
-use tokio::net::UdpSocket;
-use tracing::{Level, error, info};
-use dorodoro_bangumi::dht::node_id::NodeId;
+use std::time::{Duration, Instant};
+use rand::prelude::IteratorRandom;
+use tracing::Level;
 
 default_logger!(Level::DEBUG);
 //
@@ -211,202 +204,338 @@ default_logger!(Level::DEBUG);
 // ===========================================================================
 // DHT
 // ===========================================================================
-/// 循环 id
-struct CycleId {
-    val: AtomicU16,
+
+// 定义常量
+const K_BUCKET_SIZE: usize = 8; // Kademlia K 值
+const REFRESH_INTERVAL: Duration = Duration::from_secs(900); // 桶刷新间隔
+
+// 节点 ID 类型 (160 位)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId([u8; 20]);
+
+impl NodeId {
+    /// 生成随机 Node ID
+    pub fn random() -> Self {
+        let mut bytes = [0u8; 20];
+        rand::rng().fill(&mut bytes);
+        NodeId(bytes)
+    }
+
+    /// 计算与另一个节点的异或距离
+    pub fn distance(&self, other: &NodeId) -> [u8; 20] {
+        let mut res = [0u8; 20];
+        for i in 0..20 {
+            res[i] = self.0[i] ^ other.0[i];
+        }
+        res
+    }
+
+    /// 获取指定比特位的值 (0 或 1)
+    pub fn bit(&self, index: usize) -> u8 {
+        let byte_index = index / 8;
+        let bit_index = 7 - (index % 8); // 最高位为 bit0
+        (self.0[byte_index] >> bit_index) & 1
+    }
 }
 
-impl CycleId {
-    fn new() -> Self {
+// DHT 节点结构
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub id: NodeId,
+    pub addr: SocketAddr,
+    pub last_seen: Instant,
+    pub last_responded: bool,
+}
+
+impl Node {
+    pub fn new(id: NodeId, addr: SocketAddr) -> Self {
         Self {
-            val: AtomicU16::new(0),
+            id,
+            addr,
+            last_seen: Instant::now(),
+            last_responded: true,
         }
     }
 
-    fn next_tran_id(&mut self) -> u16 {
-        self.val.fetch_add(1, Ordering::Relaxed)
-    }
-}
-
-#[test]
-fn test_cycle_id() {
-    let mut cycle_id = CycleId::new();
-    for _ in 0..u16::MAX as usize + 10 {
-        info!("next id: {}", cycle_id.next_tran_id());
+    /// 更新最后可见时间
+    pub fn touch(&mut self) {
+        self.last_seen = Instant::now();
+        self.last_responded = true;
     }
 }
 
-// static NODE_ID: &[u8; 20] = &[0xd9, 0x82, 0x12, 0xf0, 0xb1, 0xdb, 0x7, 0x46, 0x1a, 0x7e, 0x1f, 0x96, 0x50, 0x66, 0x42, 0x51, 0xe7, 0xe1, 0x7d, 0x8d];
-static NODE_ID: &[u8; 20] = b"adkoqwei123jk3341ks0";
-
-// 生成有效的 DHT 节点 ID
-fn generate_node_id() -> [u8; 20] {
-    let mut rng = rand::rng();
-    let mut id = [0u8; 20];
-    rng.fill(&mut id);
-
-    // 确保 ID 不为全零（常见验证要求）
-    if id.iter().all(|&b| b == 0) {
-        id[0] = 1; // 设置非零值
-    }
-    id
+// Kademlia 桶结构
+#[derive(Debug, Clone)]
+struct KBucket {
+    prefix: NodeId,        // 桶的前缀
+    prefix_len: usize,     // 前缀长度（位）
+    nodes: VecDeque<Node>, // 使用双端队列以便于移动节点
+    last_accessed: Instant,
+    can_split: bool,       // 桶是否可以分裂（包含自身节点）
 }
 
-/// 从 DHT 中获取 peer
-#[tokio::test]
-async fn test_peer_from_dht() {
-    let mut cycle_id = CycleId::new();
-    let _node_id = generate_node_id();
-
-    let mut queue = VecDeque::new();
-    // let addr = "192.168.2.242:3115".parse::<SocketAddr>().unwrap();
-    // let addr = "123.156.68.196:20252".parse::<SocketAddr>().unwrap();
-    let addr = "37.48.64.31:28015".parse::<SocketAddr>().unwrap();
-
-    queue.push_back(addr);
-    let info_hash = hex::decode("c6bbdb50bd685bacf8c0d615bb58a3a0023986ef").unwrap();
-
-    let node_id = NodeId::from(*NODE_ID);
-    let info_hash = NodeId::try_from(info_hash.as_slice()).unwrap();
-
-    let mut min_dist = node_id.distance(&info_hash);
-    let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
-    let addr = socket.local_addr().unwrap();
-    info!("本地监听端口: {:?}", addr);
-    let mut peers = vec![];
-
-    while !queue.is_empty() && peers.len() < 10 {
-        let addr = queue.pop_front().unwrap();
-        info!("尝试对{}node的访问", addr);
-        let ping = DHTBase::<Ping>::request(
-            Ping::new(node_id.to_value_bytes()),
-            "ping".to_string(),
-            cycle_id.next_tran_id(),
-        );
-        let data = ping.to_bencode().unwrap();
-
-        info!("向[{}]发送一个ping", addr);
-        let res = tokio::time::timeout(Duration::from_secs(10), socket.send_to(&data, addr)).await;
-        if res.is_err() {
-            error!("访问超时");
-            continue;
+impl KBucket {
+    fn new(prefix: NodeId, prefix_len: usize, can_split: bool) -> Self {
+        Self {
+            prefix,
+            prefix_len,
+            nodes: VecDeque::new(),
+            last_accessed: Instant::now(),
+            can_split,
         }
-        let res = res.unwrap();
-        if res.is_err() {
-            error!("拒绝了ping");
-            continue;
+    }
+
+    /// 检查节点是否属于此桶
+    pub fn contains(&self, node_id: &NodeId) -> bool {
+        // 检查前 prefix_len 位是否匹配
+        for i in 0..self.prefix_len {
+            if self.prefix.bit(i) != node_id.bit(i) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// 检查桶是否已满
+    fn is_full(&self) -> bool {
+        self.nodes.len() >= K_BUCKET_SIZE
+    }
+
+    /// 尝试将节点添加到桶中
+    fn add_node(&mut self, node: Node) -> (AddResult, Option<Node>) {
+        // 检查节点是否已存在
+        if let Some(pos) = self.nodes.iter().position(|n| n.id == node.id) {
+            // 更新现有节点
+            self.nodes[pos] = node;
+            self.move_to_end(pos);
+            return (AddResult::Updated, None);
         }
 
-        info!("从{}那里读取ping的数据", addr);
-        let mut buff = ByteBuffer::new(5120);
-        let res =
-            tokio::time::timeout(Duration::from_secs(10), socket.recv_from(buff.as_mut())).await;
-        if res.is_err() {
-            error!("读取ping失败超时");
-            continue;
-        }
-        let res = res.unwrap();
-        if res.is_err() {
-            error!("读取ping失败");
-            continue;
+        // 如果桶未满，直接添加
+        if !self.is_full() {
+            self.nodes.push_back(node);
+            self.last_accessed = Instant::now();
+            return (AddResult::Added, None);
         }
 
-        let (n, _) = res.unwrap();
-        buff.resize(n);
-        let resp = DHTBase::<Ping>::from_bencode(buff.as_ref());
-        if resp.is_err() {
-            error!("ping 的响应结果不符合预期\tping: {:?}", resp);
-            continue;
-        }
-        let resp = resp.unwrap();
-        if resp.r.is_none() {
-            error!("ping 的响应没有 r 字段: {:?}", resp);
-            continue;
-        }
-        let id = if let Value::Bytes(id) = &resp.r.as_ref().unwrap().id {
-            hex::encode(id.as_ref())
-        } else {
-            String::new()
-        };
-        info!(
-            "这个[{}]老表罗觉，可以连通\nresp: {:?}\nnode id: {}",
-            addr, resp, id
-        );
-
-        // 告诉我这个种子的peers
-        info!("查询peers");
-
-        let get_peers = DHTBase::<GetPeersReq>::request(
-            GetPeersReq::new(
-                node_id.to_value_bytes(),
-                info_hash.to_value_bytes(),
-            ),
-            "get_peers".to_string(),
-            cycle_id.next_tran_id(),
-        );
-
-        let data = get_peers.to_bencode().unwrap();
-
-        if socket.send_to(&data, addr).await.is_err() {
-            continue;
+        // 桶已满时检查是否有不响应节点
+        if let Some(pos) = self.find_stale_node() {
+            self.nodes.remove(pos);
+            self.nodes.push_back(node);
+            self.last_accessed = Instant::now();
+            return (AddResult::ReplacedStale, None);
         }
 
-        if socket.readable().await.is_err() {
-            continue;
+        (AddResult::BucketFull, Some(node))
+    }
+
+    /// 查找可能失效的节点
+    fn find_stale_node(&self) -> Option<usize> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .find(|(_, n)| !n.last_responded && n.last_seen.elapsed() > Duration::from_secs(3600))
+            .map(|(i, _)| i)
+    }
+
+    /// 将节点移动到桶的末尾（表示最近使用）
+    fn move_to_end(&mut self, index: usize) {
+        if let Some(node) = self.nodes.remove(index) {
+            self.nodes.push_back(node);
         }
+    }
 
-        let mut buff = ByteBuffer::new(5120);
+    /// 随机选择一个节点用于刷新
+    fn random_node(&self) -> Option<&Node> {
+        self.nodes.iter().choose(&mut rand::rng())
+    }
 
-        let res = tokio::time::timeout(
-            Duration::from_secs(10),
-            socket.recv_from(&mut buff.as_mut()),
+    /// 分裂桶为两个新桶
+    fn split(&self) -> (KBucket, KBucket) {
+        let mut prefix0 = self.prefix;
+        let mut prefix1 = self.prefix;
+
+        // 设置新前缀的第 prefix_len 位
+        let byte_index = self.prefix_len / 8;
+        let bit_index = 7 - (self.prefix_len % 8);
+        prefix0.0[byte_index] &= !(1 << bit_index); // 设置为0
+        prefix1.0[byte_index] |= 1 << bit_index;   // 设置为1
+
+        let new_prefix_len = self.prefix_len + 1;
+
+        // 创建新桶 - 只有包含自身节点的桶才能继续分裂
+        let can_split0 = self.can_split;
+        let can_split1 = self.can_split;
+
+        (
+            KBucket::new(prefix0, new_prefix_len, can_split0),
+            KBucket::new(prefix1, new_prefix_len, can_split1)
         )
-        .await;
-        if res.is_err() {
-            error!("读取 peers 响应超时");
-            continue;
+    }
+}
+
+// 节点添加结果
+#[derive(Debug, PartialEq)]
+enum AddResult {
+    Added,
+    Updated,
+    ReplacedStale,
+    BucketFull,
+}
+
+// DHT 路由表
+#[derive(Debug)]
+pub struct RoutingTable {
+    own_id: NodeId,
+    buckets: Vec<KBucket>,
+}
+
+impl RoutingTable {
+    pub fn new(own_id: NodeId) -> Self {
+        // 初始状态：单个桶覆盖整个ID空间
+        let bucket = KBucket::new(NodeId([0; 20]), 0, true);
+
+        Self {
+            own_id,
+            buckets: vec![bucket],
         }
-        let res = res.unwrap();
-        if res.is_err() {
-            error!("读取 peers 响应错误");
-            continue;
-        }
-
-        let (n, _) = res.unwrap();
-        buff.resize(n);
-
-        let resp = DHTBase::<GetPeersResp>::from_bencode(buff.as_ref());
-        if resp.is_err() {
-            error!("get_peers 的响应结果不符合预期\tget_peers: {:?}", resp);
-            continue;
-        }
-
-        let resp = resp.unwrap();
-        info!("resp: {:?}", resp);
-
-        if let Some(r) = resp.r {
-            if let Some(nodes) = r.nodes {
-                let mut min = min_dist.clone();
-                for node in nodes {
-                    let dist = node.id.distance(&info_hash);
-                    if min_dist >= dist {
-                        queue.push_back(node.addr.into());
-                        min = min.min(dist);
-                    }
-                }
-                min_dist = min;
-            }
-
-            if let Some(mut values) = r.values {
-                info!("===================================================");
-                info!("peers: {:?}", values);
-                info!("===================================================");
-                peers.append(&mut values);
-            }
-        }
-
-        info!("queue len: {}", queue.len());
     }
 
-    info!("peers: {:?}", peers);
+    /// 查找节点所属的桶
+    fn find_bucket_for_node(&self, node_id: &NodeId) -> Option<usize> {
+        self.buckets.iter().position(|b| b.contains(node_id))
+    }
+
+    /// 查找节点所属的桶（或创建新桶）
+    fn find_or_create_bucket(&mut self, node_id: &NodeId) -> usize {
+        if let Some(index) = self.find_bucket_for_node(node_id) {
+            return index;
+        }
+
+        // 需要创建新桶（由于分裂）
+        // 实际实现中这种情况不应该发生
+        panic!("No bucket found for node - routing table inconsistency!");
+    }
+
+    /// 添加节点到路由表
+    pub fn add_node(&mut self, node: Node) -> bool {
+        // 跳过自身节点
+        if node.id == self.own_id {
+            return false;
+        }
+
+        // 找到节点所属桶
+        let bucket_index = self.find_or_create_bucket(&node.id);
+        let (result, node) = self.buckets[bucket_index].add_node(node);
+
+        // 处理桶满的情况（如果可以分裂）
+        if result == AddResult::BucketFull {
+            let bucket = &self.buckets[bucket_index];
+
+            if bucket.can_split {
+                // 执行桶分裂
+                self.split_bucket(bucket_index);
+
+                // 重新尝试添加节点
+                let node = node.unwrap();
+                let new_bucket_index = self.find_or_create_bucket(&node.id);
+                return self.buckets[new_bucket_index].add_node(node).0 != AddResult::BucketFull;
+            } else {
+                // 对于不包含自身节点的桶，只替换失效节点
+                // 这里我们不做特殊处理，因为 add_node 已经尝试过替换失效节点
+            }
+        }
+
+        result != AddResult::BucketFull
+    }
+
+    /// 分裂指定的桶
+    fn split_bucket(&mut self, index: usize) {
+        let bucket = self.buckets.remove(index);
+        let (mut bucket0, mut bucket1) = bucket.split();
+
+        // 重新分配节点
+        for node in bucket.nodes {
+            if bucket0.contains(&node.id) {
+                bucket0.add_node(node);
+            } else {
+                bucket1.add_node(node);
+            }
+        }
+
+        // 更新桶的分裂能力（只有包含自身节点的桶才能分裂）
+        bucket0.can_split = bucket0.contains(&self.own_id);
+        bucket1.can_split = bucket1.contains(&self.own_id);
+
+        // 添加新桶
+        self.buckets.push(bucket0);
+        self.buckets.push(bucket1);
+    }
+
+    /// 查找最近的邻居节点
+    pub fn find_closest_nodes(&self, target_id: &NodeId, count: usize) -> Vec<Node> {
+        // 收集所有节点
+        let mut nodes: Vec<Node> = self.buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes.iter().cloned())
+            .collect();
+
+        // 按距离排序（使用实际的异或距离计算）
+        nodes.sort_by_cached_key(|node| node.id.distance(target_id));
+
+        // 取最近的count个节点
+        nodes.truncate(count);
+        nodes
+    }
+
+    /// 刷新路由表（定期调用）
+    pub fn refresh(&mut self) {
+        for bucket in &mut self.buckets {
+            // 只刷新长时间未访问的桶
+            if bucket.last_accessed.elapsed() > REFRESH_INTERVAL {
+                if let Some(node) = bucket.random_node() {
+                    // 在实际应用中，这里会发送PING请求
+                    println!("Refreshing bucket with prefix len {} with node {}",
+                             bucket.prefix_len, node.addr);
+                }
+                bucket.last_accessed = Instant::now();
+            }
+        }
+    }
+
+    /// 标记节点为响应状态
+    pub fn mark_node_responded(&mut self, node_id: &NodeId) {
+        if let Some(index) = self.find_bucket_for_node(node_id) {
+            if let Some(pos) = self.buckets[index]
+                .nodes
+                .iter()
+                .position(|n| n.id == *node_id)
+            {
+                self.buckets[index].nodes[pos].touch();
+                self.buckets[index].move_to_end(pos);
+            }
+        }
+    }
+
+    /// 标记节点为未响应状态
+    pub fn mark_node_unresponsive(&mut self, node_id: &NodeId) {
+        if let Some(index) = self.find_bucket_for_node(node_id) {
+            if let Some(pos) = self.buckets[index]
+                .nodes
+                .iter()
+                .position(|n| n.id == *node_id)
+            {
+                self.buckets[index].nodes[pos].last_responded = false;
+            }
+        }
+    }
+
+    /// 打印路由表状态（用于调试）
+    pub fn print_state(&self) {
+        println!("Routing Table ({} buckets):", self.buckets.len());
+        for (i, bucket) in self.buckets.iter().enumerate() {
+            println!("Bucket {}: prefix_len={}, nodes={}, can_split={}",
+                     i, bucket.prefix_len, bucket.nodes.len(), bucket.can_split);
+        }
+    }
 }

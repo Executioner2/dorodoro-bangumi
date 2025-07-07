@@ -1,5 +1,6 @@
 pub mod torrent;
 pub mod context;
+pub mod dht;
 
 /// db 保存路径
 pub static DB_SAVE_PATH: &str = "db";
@@ -34,8 +35,15 @@ pub static INIT_SQL: &str = r#"
     
     CREATE TABLE "context" (
       "id" INTEGER NOT NULL,
-      "node_id" blob NOT NULL,
       "config" blob NOT NULL,
       PRIMARY KEY ("id")
-    )
+    );
+    
+    CREATE TABLE "dht" (
+      "id" INTEGER NOT NULL,
+      "own_id" blob NOT NULL,
+      "routing_table" blob NOT NULL,
+      "bootstrap_nodes" blob NOT NULL,
+      PRIMARY KEY ("id")
+    );
 "#;

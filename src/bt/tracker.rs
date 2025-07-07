@@ -2,7 +2,7 @@ pub mod command;
 pub mod http_tracker;
 pub mod udp_tracker;
 
-use crate::bytes::Bytes2Int;
+use crate::bytes_util::Bytes2Int;
 use crate::{anyhow_eq, datetime};
 use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
