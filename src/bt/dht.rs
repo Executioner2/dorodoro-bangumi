@@ -24,6 +24,8 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use futures::StreamExt;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, trace};
@@ -40,6 +42,13 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 期望的就近节点数量
 const EXPECT_CLOSEST_NODE_NUM: usize = 30;
+
+/// 并发进行的 get_peers 任务数量
+const GET_PEERS_CONCURRENCY: usize = 10;
+
+type RoutingTableAM = Arc<Mutex<RoutingTable>>;
+
+type DHTRequestA = Arc<DHTRequest>;
 
 struct DHTRequest {
     /// 请求的节点 ID
@@ -130,7 +139,7 @@ pub struct DHT {
     own_id: Arc<NodeId>,
 
     /// dht 请求
-    dht_request: Arc<DHTRequest>,
+    dht_request: DHTRequestA,
 
     /// 全局上下文
     ctx: Context,
@@ -139,10 +148,13 @@ pub struct DHT {
     emitter: Emitter,
 
     /// 路由表
-    routing_table: Arc<Mutex<RoutingTable>>,
+    routing_table: RoutingTableAM,
 
     /// 启动节点
     bootstrap_nodes: Vec<String>,
+
+    /// 并行查询 get_peers 任务的信号量
+    gpcs: Arc<Semaphore>,
 }
 
 impl DHT {
@@ -162,28 +174,56 @@ impl DHT {
             ctx,
             routing_table: Arc::new(Mutex::new(routing_table)),
             bootstrap_nodes,
+            gpcs: Arc::new(Semaphore::new(GET_PEERS_CONCURRENCY)),
         }
     }
 
-    /// 有一个支持 DHT 的节点，那么根据它发现更多的 peers 和 nodes
-    async fn spread(
-        &self,
+    async fn domain_resolve(&self, domain: &str) -> Option<SocketAddr> {
+        tokio::net::lookup_host(domain).await.ok()?.next()
+    }
+
+    /// 检查队列中的 nodes 是否可用，并加入到路由表中
+    async fn check_add_node(
+        rt: &RoutingTableAM,
+        dr: &DHTRequestA,
         node_id: Option<NodeId>,
         addr: &SocketAddr,
-        info_hash: &NodeId,
+    ) -> bool {
+        let ping_resp = dr.ping(&addr).await;
+        if ping_resp.is_none() || ping_resp.as_ref().unwrap().r.is_none() {
+            node_id.map(|node_id| rt.lock_pe().mark_node_unresponsive(&node_id));
+            debug!("ping 不通[{}]", addr);
+            return false;
+        }
+
+        // 能 ping 通，那么加入到路由表中
+        let ping_resp = ping_resp.unwrap();
+        let mut routing_table = rt.lock_pe();
+        let node_id = ping_resp.r.unwrap().id.into_owned();
+        routing_table.add_node(Node::new(node_id, addr.clone()));
+        true // 只要能 ping 通，就认为是可用节点（和有没有成功加入到路由表无关）
+    }
+
+    /// 异步寻找 peers
+    async fn async_find_peers(
+        rt: RoutingTableAM,
+        dr: DHTRequestA,
+        node_id: Option<NodeId>,
+        addr: SocketAddr,
+        info_hash: Arc<NodeId>,
         resp_tx: Sender<TransferPtr>,
-        min_dist: &[u8; 20],
+        min_dist: Arc<[u8; 20]>,
     ) -> Option<(VecDeque<(Option<NodeId>, SocketAddr)>, [u8; 20], usize)> {
         debug!("向 [{addr}] 查询 peers");
         let mut queue = VecDeque::new();
-        
-        if !self.check_add_node(node_id, addr).await {
+
+        if !Self::check_add_node(&rt, &dr, node_id, &addr).await {
             return None;
         }
 
         // 可以连通，那么开始广播查询 peers
-        let (nodes, values) = self.dht_request.get_peers(addr, &info_hash).await;
-        let mut min = min_dist.clone();
+        let (nodes, values) = dr.get_peers(&addr, &info_hash).await;
+        let mut min = *min_dist.clone();
         for node in nodes {
             let dist = node.id.distance(&info_hash);
             if *min_dist >= dist {
@@ -204,27 +244,6 @@ impl DHT {
         }
 
         Some((queue, min, values.len()))
-    }
-
-    async fn domain_resolve(&self, domain: &str) -> Option<SocketAddr> {
-        tokio::net::lookup_host(domain).await.ok()?.next()
-    }
-    
-    /// 检查队列中的 nodes 是否可用，并加入到路由表中
-    async fn check_add_node(&self, node_id: Option<NodeId>, addr: &SocketAddr) -> bool {
-        let ping_resp = self.dht_request.ping(&addr).await;
-        if ping_resp.is_none() || ping_resp.as_ref().unwrap().r.is_none() {
-            node_id.map(|node_id| self.routing_table.lock_pe().mark_node_unresponsive(&node_id));
-            debug!("ping 不通[{}]", addr);
-            return false;
-        }
-
-        // 能 ping 通，那么加入到路由表中
-        let ping_resp = ping_resp.unwrap();
-        let mut routing_table = self.routing_table.lock_pe();
-        let node_id = ping_resp.r.unwrap().id.into_owned();
-        routing_table.add_node(Node::new(node_id, addr.clone()));
-        true // 只要能 ping 通，就认为是可用节点（和有没有成功加入到路由表无关）
     }
 
     /// 寻找 peers
@@ -250,8 +269,10 @@ impl DHT {
         let mut used_bootstrap_num = 0; // 使用过的 bootstrap 节点数量
         let mut min_dist = self.own_id.distance(&info_hash);
         let mut count = 0;
+        let mut futures = FuturesUnordered::new();
+        let info_hash = Arc::new(info_hash);
 
-        loop {
+        'LOOP: loop {
             if queue.is_empty() {
                 while used_bootstrap_num < self.bootstrap_nodes.len() {
                     let domain = &self.bootstrap_nodes[used_bootstrap_num];
@@ -263,24 +284,42 @@ impl DHT {
                 }
             }
 
-            if let Some((node_id, addr)) = queue.pop_front() {
-                if let Some((mut nodes, md, find)) = self
-                    .spread(node_id, &addr, &info_hash, resp_tx.clone(), &min_dist)
-                    .await
-                {
+            if self.gpcs.available_permits() == 0 || queue.is_empty() {
+                if let Some(Ok(Some((mut nodes, md, find)))) = futures.next().await {
                     queue.append(&mut nodes);
                     count += find;
                     if count >= expect_peers {
                         debug!("通过 dht 找到了足够的 peers");
                         while let Some((node_id, addr)) = queue.pop_front() {
-                            self.check_add_node(node_id, &addr).await;
+                            Self::check_add_node(
+                                &self.routing_table,
+                                &self.dht_request,
+                                node_id,
+                                &addr,
+                            )
+                            .await;
                         }
-                        break;
+                        break 'LOOP;
                     }
                     min_dist = md;
                 }
-            } else {
-                debug!("用尽了 node 也没有找到 peers");
+            }
+
+            if let Some((node_id, addr)) = queue.pop_front() {
+                let permit = self.gpcs.clone().acquire_owned().await.unwrap();
+                let rt = self.routing_table.clone();
+                let dr = self.dht_request.clone();
+                let info_hash = info_hash.clone();
+                let resp_tx = resp_tx.clone();
+                let md = Arc::new(min_dist.clone());
+
+                futures.push(tokio::spawn(async move {
+                    let res = Self::async_find_peers(rt, dr, node_id, addr, info_hash, resp_tx, md).await;
+                    drop(permit);
+                    res
+                }));    
+            } else if futures.is_empty() {
+                debug!("没有可用的节点");
                 break;
             }
         }

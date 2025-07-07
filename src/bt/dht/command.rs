@@ -1,9 +1,10 @@
-use std::net::SocketAddr;
 use crate::command_system;
 use crate::dht::DHT;
-use anyhow::Result;
-use tokio::sync::mpsc::Sender;
 use crate::dht::routing::NodeId;
+use anyhow::Result;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
 
 command_system! {
     ctx: DHT,
@@ -27,7 +28,16 @@ impl<'a> CommandHandler<'a, Result<()>> for Spread {
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
         let min_dist = ctx.own_id.distance(&self.info_hash);
-        ctx.spread(self.node_id, &self.addr, &self.info_hash, self.resp_tx, &min_dist).await;
+        DHT::async_find_peers(
+            ctx.routing_table.clone(),
+            ctx.dht_request.clone(),
+            self.node_id,
+            self.addr,
+            Arc::new(self.info_hash),
+            self.resp_tx,
+            Arc::new(min_dist),
+        )
+        .await;
         Ok(())
     }
 }
@@ -44,7 +54,13 @@ impl<'a> CommandHandler<'a, Result<()>> for FindPeers {
     type Target = &'a mut DHT;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.find_peers(self.info_hash, self.resp_tx, self.gasket_id, self.expect_peers).await;
+        ctx.find_peers(
+            self.info_hash,
+            self.resp_tx,
+            self.gasket_id,
+            self.expect_peers,
+        )
+        .await;
         Ok(())
     }
 }

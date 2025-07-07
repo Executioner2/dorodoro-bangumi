@@ -792,6 +792,7 @@ impl Runnable for Gasket {
     async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
         let cancel_token = self.future_token.0.clone();
         self.future_token.1 = vec![
+            // fixme - 正式取消注释
             self.start_tracker(cancel_token.clone()),
             self.start_coordinator(cancel_token.clone())
         ];
@@ -816,16 +817,14 @@ impl Runnable for Gasket {
         
         // 先把任务句柄读取出来，避免在循环中等待任务结束，以免和 peer_exit 中的 remove peer 操作形成死锁
         debug!("等待 peers 关闭");
-        let handles = self
+        let mut handles = self
             .ctx
             .peers
             .iter_mut()
             .map(|mut item| item.join_handle.take())
             .collect::<Vec<Option<JoinHandle<()>>>>();
-        for handle in handles {
-            if let Some(handle) = handle {
-                handle.await.unwrap();
-            }
+        while let Some(Some(handle)) = handles.pop() {
+            handle.await.unwrap();
         }
         self.save_progress(None).await;
     }

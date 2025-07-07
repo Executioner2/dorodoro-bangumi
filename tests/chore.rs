@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
@@ -229,4 +231,26 @@ fn test_option() {
     }
     let v = f();
     info!("{:?}", v);
+}
+
+async fn test_fu(id: u32, name: &str, delay: u64) -> u32 {
+    info!("{name} start");
+    tokio::time::sleep(Duration::from_secs(delay)).await;
+    info!("{name} end");
+    id
+}
+
+/// 测试 futures
+#[tokio::test]
+#[ignore]
+#[cfg_attr(miri, ignore)]
+async fn test_futures_unordered() {
+    let mut futures = FuturesUnordered::new();
+    futures.push(test_fu(1, "task1", 10));
+    futures.push(test_fu(2, "task2", 3));
+    futures.push(test_fu(3, "task3", 5));
+
+    while let Some(res) = futures.next().await {
+        info!("result: {}", res);
+    }
 }
