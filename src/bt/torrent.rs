@@ -13,6 +13,7 @@ use std::fs;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
+use bytes::Bytes;
 use tracing::warn;
 
 /// 种子，多线程共享
@@ -456,6 +457,17 @@ impl Parse<Vec<u8>> for Torrent {
     }
 }
 
+impl Parse<Bytes> for Torrent {
+    fn parse_torrent(data: Bytes) -> Result<Self> {
+        match Torrent::from_bencode(&data) {
+            Ok(torrent) => Ok(torrent),
+            Err(e) => {
+                Err(anyhow!("解析种子文件失败: {}", e))
+            }
+        }
+    }
+}
+
 /// 传入文件路径
 impl Parse<&str> for Torrent {
     fn parse_torrent(data: &str) -> Result<Torrent> {
@@ -478,6 +490,14 @@ impl Parse<Vec<u8>> for TorrentArc {
     fn parse_torrent(data: Vec<u8>) -> Result<TorrentArc> {
         Ok(TorrentArc {
             inner: Arc::new(Torrent::parse_torrent(data)?),
+        })
+    }
+}
+
+impl Parse<Bytes> for TorrentArc {
+    fn parse_torrent(data: Bytes) -> Result<Self> {
+        Ok(TorrentArc {
+            inner: Arc::new(Torrent::parse_torrent(data.to_vec())?),
         })
     }
 }

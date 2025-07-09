@@ -15,6 +15,7 @@ use tokio::select;
 use tokio::sync::mpsc::channel;
 use tracing::{info, trace, warn};
 use crate::config::CHANNEL_BUFFER;
+use crate::scheduler::command::TorrentSource;
 
 /// 响应给客户端的内容
 pub struct _RespClient {}
@@ -82,7 +83,8 @@ impl Controller {
                             let torrent = TorrentArc::parse_torrent(data).unwrap();
                             let cmd = command::TorrentAdd {
                                 torrent,
-                                path
+                                path,
+                                source: TorrentSource::LocalFile
                             };
                             self.emitter.send(SCHEDULER, cmd.into()).await.unwrap();
                             break;

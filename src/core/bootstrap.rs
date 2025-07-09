@@ -57,7 +57,7 @@ pub async fn start() {
 pub async fn load_context(db: Db) -> Context {
     use crate::mapper::context::{ContextEntity, ContextMapper};
     let conn = db.get_conn().await.unwrap();
-    let cen = conn.load_context();
+    let cen = conn.load_context().unwrap();
     let not_init = cen.is_none();
     
     let ce = cen.unwrap_or(ContextEntity::init());
@@ -68,7 +68,7 @@ pub async fn load_context(db: Db) -> Context {
             config: Some(config.clone()),
             ..Default::default()
         };
-        conn.store_context(ce);  
+        conn.store_context(ce).unwrap();  
     }
 
     Context::new(db, config)
@@ -77,7 +77,7 @@ pub async fn load_context(db: Db) -> Context {
 pub async fn load_routing_table(context: &Context) -> (RoutingTable, Vec<String>) {
     use crate::mapper::dht::{DHTEntity, DHTMapper, DEFAULT_BOOTSTRAP_NODES};
     let conn = context.get_conn().await.unwrap();
-    let dhte = conn.load_dht_entity();
+    let dhte = conn.load_dht_entity().unwrap();
     let not_init = dhte.is_none();
     
     let dhte = dhte.unwrap_or(DHTEntity::init());
@@ -92,7 +92,7 @@ pub async fn load_routing_table(context: &Context) -> (RoutingTable, Vec<String>
             bootstrap_nodes: Some(bootstrap_nodes.clone()),
             ..Default::default()
         };
-        conn.store_dht_entity(dhte);
+        conn.store_dht_entity(dhte).unwrap();
     }
 
     (routing_table, bootstrap_nodes)

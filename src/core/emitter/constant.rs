@@ -21,3 +21,6 @@ pub static TRACKER: &str = "tracker";
 
 /// dht 服务
 pub static DHT: &str = "dht";
+
+/// rss 服务
+pub static RSS: &str = "rss";

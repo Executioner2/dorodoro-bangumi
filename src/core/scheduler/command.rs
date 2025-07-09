@@ -9,6 +9,7 @@ use crate::torrent::TorrentArc;
 use core::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use anyhow::Result;
+use crate::mapper::rss::RSSMapper;
 
 command_system! {
     ctx: Scheduler,
@@ -32,10 +33,24 @@ impl<'a> CommandHandler<'a, Result<()>> for Shutdown {
     }
 }
 
+/// 种子添加源
+#[derive(Eq, PartialEq, Hash)]
+pub enum TorrentSource {
+    /// 本地文件
+    LocalFile,
+
+    /// 磁力链接
+    MagnetURI,
+
+    /// RSS 订阅
+    RSSFeed(u64, String),
+}
+
 /// 添加种子
 pub struct TorrentAdd {
     pub torrent: TorrentArc,
     pub path: PathBuf,
+    pub source: TorrentSource
 }
 impl Debug for TorrentAdd {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
@@ -57,9 +72,13 @@ impl<'a> CommandHandler<'a, Result<()>> for TorrentAdd {
         }
 
         let sc = ctx.get_context();
-        let conn = sc.context.get_conn().await.unwrap();
-        if conn.add_torrent(self.torrent.clone(), self.path) {
+        let mut conn = sc.context.get_conn().await?;
+        if conn.add_torrent(self.torrent.clone(), self.path)? {
             tokio::spawn(task(self.torrent, sc));
+        }
+
+        if let TorrentSource::RSSFeed(rss_id, guid) = self.source {
+            conn.mark_read(rss_id, &guid)?;
         }
 
         Ok(())

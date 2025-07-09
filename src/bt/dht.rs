@@ -18,13 +18,13 @@ use crate::udp_server::UdpServer;
 use anyhow::Result;
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
+use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use futures::StreamExt;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::WaitForCancellationFuture;
@@ -314,10 +314,11 @@ impl DHT {
                 let md = Arc::new(min_dist.clone());
 
                 futures.push(tokio::spawn(async move {
-                    let res = Self::async_find_peers(rt, dr, node_id, addr, info_hash, resp_tx, md).await;
+                    let res =
+                        Self::async_find_peers(rt, dr, node_id, addr, info_hash, resp_tx, md).await;
                     drop(permit);
                     res
-                }));    
+                }));
             } else if futures.is_empty() {
                 debug!("没有可用的节点");
                 break;
@@ -335,37 +336,44 @@ impl DHT {
         tokio::task::spawn(async move {
             debug!("开始刷新 dht 路由表");
             loop {
-                let update_traget = {
+                let mut update_traget = None;
+                {
                     let mut routing_table = routing_table.lock_pe();
                     if let Some(bucket) = routing_table.next_refresh_bucket() {
-                        debug!(
-                            "获取到要刷新的桶: {:?}\tprefix len: {}",
+                        trace!(
+                            "获取到要刷新的桶: {:?}\tprefix len: {}\t可用的节点: {}",
                             bucket.get_prefix(),
-                            bucket.get_prefix_len()
+                            bucket.get_prefix_len(),
+                            bucket.get_node_len()
                         );
                         bucket.update_lastchange(); // 即便没有节点，也要更新 bucket 的 lastchange
-                        bucket.random_node()
-                    } else {
-                        debug!("没有需要刷新的桶");
-                        break;
+                        let target_id = bucket.random_node();
+                        update_traget = routing_table
+                            .find_closest_nodes(&target_id, 1)
+                            .get(0)
+                            .map(|node| (target_id, node.addr()))
                     }
-                };
+                }
 
                 if let Some((info_hash, addr)) = update_traget {
-                    debug!("开始刷新路由表节点 [{info_hash}]");
                     let (nodes, _) = dht_request.get_peers(&addr, &info_hash).await;
+                    trace!(
+                        "开始刷新路由表节点 [{info_hash}]\t获取到的节点数量: {}",
+                        nodes.len()
+                    );
                     let mut routing_table = routing_table.lock_pe();
                     for node in nodes {
                         routing_table.add_node(Node::new(node.id, node.addr.into()));
                     }
                 } else {
+                    trace!("没有需要刷新的桶");
                     break;
                 }
             }
             // 更新路由表
             let routing_table = routing_table.lock_pe();
             debug!("更新 dht 路由表到本地");
-            conn.update_routing_table(&*routing_table);
+            conn.update_routing_table(&*routing_table).unwrap();
             let node_num = routing_table.get_node_num();
             debug!("刷新 dht 路由表结束\t当前已知节点数: {}", node_num);
         });

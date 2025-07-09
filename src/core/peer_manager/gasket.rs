@@ -592,7 +592,7 @@ impl Gasket {
         store: Store,
     ) -> Self {
         let conn = pm_ctx.context.get_conn().await.unwrap();
-        let entity = conn.recover_from_db(&torrent.info_hash);
+        let entity = conn.recover_from_db(&torrent.info_hash).unwrap();
         let ctx = GasketContext::new(
             Self::get_transfer_id(id),
             pm_ctx,
@@ -704,7 +704,7 @@ impl Gasket {
             status,
             ..Default::default()
         };
-        conn.save_progress(entity);
+        conn.save_progress(entity).unwrap();
     }
 
     fn start_tracker(&self, cancel_token: CancellationToken) -> JoinHandle<()> {

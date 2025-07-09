@@ -73,7 +73,7 @@ pub trait Runnable {
         // 注册命令通道
         let mut emitter = self.emitter().clone();
         let id = Self::get_transfer_id(self.get_suffix());
-        info!("{id} 启动中...");
+        debug!("{id} 启动中...");
         let (send, mut recv) = {
             let (send, recv) = channel(CHANNEL_BUFFER);
             emitter.register(id.clone(), send.clone());
@@ -91,6 +91,7 @@ pub trait Runnable {
         }
 
         let mut futures = self.register_lt_future();
+        info!("{id} 运行中...");
 
         loop {
             tokio::select! {

@@ -3,6 +3,7 @@ use rusqlite::OptionalExtension;
 use crate::bytes_util;
 use crate::db::ConnWrapper;
 use crate::dht::routing::{NodeId, RoutingTable};
+use anyhow::Result;
 
 lazy_static! {
     pub static ref DEFAULT_BOOTSTRAP_NODES: Vec<String> = vec![
@@ -48,26 +49,26 @@ pub trait DHTMapper {
     /// # Returns
     ///
     /// * `DHTEntity` - 载入的 DHT 实体
-    fn load_dht_entity(&self) -> Option<DHTEntity>;
+    fn load_dht_entity(&self) -> Result<Option<DHTEntity>>;
 
     /// 保存 DHT 实体
     ///
     /// # Parameters
     ///
     /// * `dht_entity` - 要保存的 DHT 实体
-    fn store_dht_entity(&self, dht_entity: DHTEntity);
+    fn store_dht_entity(&self, dht_entity: DHTEntity) -> Result<usize>;
     
     /// 更新路由表
     ///
     /// # Parameters
     ///
     /// * `routing_table` - 要更新的路由表
-    fn update_routing_table(&self, routing_table: &RoutingTable);
+    fn update_routing_table(&self, routing_table: &RoutingTable) -> Result<usize>;
 }
 
 impl DHTMapper for ConnWrapper {
-    fn load_dht_entity(&self) -> Option<DHTEntity> {
-        let mut stmt = self.prepare_cached("select id, own_id, routing_table, bootstrap_nodes from dht order by id desc limit 1").unwrap();
+    fn load_dht_entity(&self) -> Result<Option<DHTEntity>> {
+        let mut stmt = self.prepare_cached("select id, own_id, routing_table, bootstrap_nodes from dht order by id desc limit 1")?;
         stmt.query_one([], |row| {
             let own_id = {
                 let serial = row.get::<_, Vec<u8>>(1)?;
@@ -87,25 +88,25 @@ impl DHTMapper for ConnWrapper {
                 routing_table: Some(routing_table),
                 bootstrap_nodes: Some(bootstrap_nodes),
             })
-        }).optional().unwrap()
+        }).optional().map_err(Into::into)
     }
 
-    fn store_dht_entity(&self, dht_entity: DHTEntity) {
+    fn store_dht_entity(&self, dht_entity: DHTEntity) -> Result<usize> {
         let own_id = dht_entity.own_id.unwrap();
         let routing_table = dht_entity.routing_table.unwrap();
         let bootstrap_nodes = dht_entity.bootstrap_nodes.unwrap();
         let own_id = bytes_util::encode(&own_id);
         let routing_table = bytes_util::encode(&routing_table);
         let bootstrap_nodes = bytes_util::encode(&bootstrap_nodes);
-        let mut stmt = self.prepare_cached("insert into dht (own_id, routing_table, bootstrap_nodes) values (?, ?, ?)").unwrap();
-        stmt.execute([&own_id, &routing_table, &bootstrap_nodes]).unwrap();   
+        let mut stmt = self.prepare_cached("insert into dht (own_id, routing_table, bootstrap_nodes) values (?, ?, ?)")?;
+        stmt.execute([&own_id, &routing_table, &bootstrap_nodes]).map_err(Into::into)   
     }
     
-    fn update_routing_table(&self, routing_table: &RoutingTable) {
+    fn update_routing_table(&self, routing_table: &RoutingTable) -> Result<usize> {
         let routing_table = bytes_util::encode(routing_table);
         let mut stmt = self.prepare_cached(r#"
             update dht set routing_table = ? where id = (select max(id) from dht)
-        "#).unwrap();
-        stmt.execute([&routing_table]).unwrap();
+        "#)?;
+        stmt.execute([&routing_table]).map_err(Into::into)
     }
 }

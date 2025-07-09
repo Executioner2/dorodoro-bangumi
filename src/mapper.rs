@@ -1,6 +1,7 @@
 pub mod torrent;
 pub mod context;
 pub mod dht;
+pub mod rss;
 
 /// db 保存路径
 pub static DB_SAVE_PATH: &str = "db";
@@ -45,5 +46,26 @@ pub static INIT_SQL: &str = r#"
       "routing_table" blob NOT NULL,
       "bootstrap_nodes" blob NOT NULL,
       PRIMARY KEY ("id")
+    );
+
+    CREATE TABLE "rss" (
+        "id" INTEGER NOT NULL,
+        "title" text NOT NULL,
+        "url" text NOT NULL,
+        "hash" text NOT NULL,
+        "last_update" INTEGER NOT NULL,
+        PRIMARY KEY ("id")
+    );
+
+    CREATE TABLE "rss_mark_read" (
+        "id" INTEGER NOT NULL,
+        "rss_id" INTEGER NOT NULL,
+        "guid" text NOT NULL,
+        PRIMARY KEY ("id")
+    );
+    
+    CREATE UNIQUE INDEX "guid_idx"
+    ON "rss_mark_read" (
+      "guid"
     );
 "#;

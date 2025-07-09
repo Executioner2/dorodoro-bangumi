@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use bincode::{Decode, Encode};
@@ -58,6 +59,9 @@ struct ConfigInner {
     
     /// peer 链接超时设定
     peer_connection_timeout: Duration,
+    
+    /// 默认下载目录
+    default_download_dir: PathBuf,
 }
 
 impl Config {
@@ -78,6 +82,7 @@ impl Config {
                 torrent_lt_peer_conn_limit: 5,
                 torrent_temp_peer_conn_limit: 1,
                 peer_connection_timeout: Duration::from_secs(5),
+                default_download_dir: PathBuf::from("./downloads/")
             }),
         }
     }
@@ -172,6 +177,13 @@ impl Config {
         });
         self
     }
+    
+    pub fn set_default_download_dir(mut self, dir: PathBuf) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.default_download_dir = dir;
+        });
+        self
+    }
 
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
@@ -227,5 +239,9 @@ impl Config {
     
     pub fn peer_connection_timeout(&self) -> Duration {
         self.inner.peer_connection_timeout
+    }
+    
+    pub fn default_download_dir(&self) -> &PathBuf {
+        &self.inner.default_download_dir
     }
 }

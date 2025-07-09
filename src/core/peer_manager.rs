@@ -2,23 +2,24 @@
 
 use crate::core::command::CommandHandler;
 use crate::core::context::Context;
-use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::PEER_MANAGER;
 use crate::core::runtime::Runnable;
 use crate::emitter::transfer::TransferPtr;
 use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
 use crate::peer_manager::command::Command;
 use crate::peer_manager::gasket::Gasket;
+use crate::rss::RSS;
 use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use crate::util;
 use anyhow::Result;
 use dashmap::{DashMap, DashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task::JoinHandle;
-use tokio_util::sync::WaitForCancellationFuture;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info};
 
 pub mod command;
@@ -49,7 +50,6 @@ pub struct PeerManagerContext {
 
     /// 存储器，所有 peer 接收到 piece 后由 store 统一处理持久化事项
     store: Store,
-
     // 当前 peer 链接数
     // peer_conn_num: Arc<AtomicUsize>,
 }
@@ -78,7 +78,11 @@ impl PeerManagerContext {
 }
 
 pub struct PeerManager {
+    /// 上下文
     pmc: PeerManagerContext,
+
+    /// 异步任务
+    future_token: (CancellationToken, Vec<JoinHandle<()>>),
 }
 
 impl PeerManager {
@@ -93,9 +97,10 @@ impl PeerManager {
             peer_id_pool: Arc::new(DashSet::new()),
             // peer_conn_num: Arc::new(AtomicUsize::new(0)),
         };
-            
+
         Self {
-            pmc
+            pmc,
+            future_token: (CancellationToken::new(), vec![]),
         }
     }
 
@@ -116,7 +121,8 @@ impl PeerManager {
             peer_id.clone(),
             emitter,
             context.store.clone(),
-        ).await;
+        )
+        .await;
 
         let join_handle = tokio::spawn(gasket.run());
         let gasket_info = GasketInfo {
@@ -131,12 +137,24 @@ impl PeerManager {
     /// 从数据库中加载任务
     async fn load_task_from_db(&self) {
         let conn = self.pmc.context.get_conn().await.unwrap();
-        let torrents = conn.list_torrent();
+        let torrents = conn.list_torrent().unwrap();
         for torrent in torrents {
             if torrent.status == Some(TorrentStatus::Download) && torrent.serail.is_some() {
                 self.start_gasket(torrent.serail.unwrap()).await;
             }
         }
+    }
+
+    /// 启动 rss。因为启动 rss 之后会扫描订阅源，并将订阅源中的种子加入下载队列，
+    /// 所以必须在启动 rss 之前启动 peer manager
+    fn start_rss(&mut self) {
+        let rss = RSS::new(
+            self.pmc.context.clone(),
+            self.pmc.emitter.clone(),
+            self.future_token.0.clone(),
+        );
+        let rss_handle = tokio::spawn(rss.run());
+        self.future_token.1.push(rss_handle);
     }
 }
 
@@ -151,6 +169,7 @@ impl Runnable for PeerManager {
 
     async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
         self.load_task_from_db().await;
+        self.start_rss();
         Ok(())
     }
 
@@ -165,13 +184,18 @@ impl Runnable for PeerManager {
     }
 
     async fn shutdown(&mut self, _reason: ExitReason) {
+        self.future_token.0.cancel();
+        for handle in self.future_token.1.iter_mut() {
+            handle.await.unwrap();
+        }
+
         for mut item in self.pmc.gaskets.iter_mut() {
             let handle = &mut item.join_handle;
             handle.await.unwrap()
         }
         match self.pmc.store.flush_all() {
             Ok(_) => info!("关机前 flush 数据到存储设备成功"),
-            Err(e) => error!("flush 数据到存储设备失败！！！\t{}", e)
+            Err(e) => error!("flush 数据到存储设备失败！！！\t{}", e),
         }
     }
 }

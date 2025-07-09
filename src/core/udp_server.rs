@@ -127,6 +127,7 @@ impl UdpServer {
 
 impl UdpServer {
     pub async fn run(self) {
+        info!("udp server 已启动");
         let mut recv_buf = ByteBuffer::new(self.packet_size());
         loop {
             tokio::select! {

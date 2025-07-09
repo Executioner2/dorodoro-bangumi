@@ -6,6 +6,7 @@ use alloc::borrow::Cow;
 use anyhow::{Error, anyhow};
 use bincode::{Decode, Encode};
 use core::fmt::Formatter;
+use core::str::FromStr;
 use rand::{Rng, RngCore};
 use sha1::{Digest, Sha1};
 use std::cmp::Ordering;
@@ -15,13 +16,14 @@ use std::ops::{Range, RangeFrom};
 use std::time::Duration;
 use bendy::decoding::{FromBencode, Object};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
+use tracing::trace;
 
 /// Kademlia K 值
 const K_BUCKET_SIZE: usize = 8;
 
 /// 桶刷新间隔
-// pub const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
+// pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Eq, PartialEq, Encode, Decode, Default)]
 pub struct NodeId([u8; 20]);
@@ -121,7 +123,7 @@ impl std::fmt::Debug for NodeId {
     }
 }
 
-impl std::str::FromStr for NodeId {
+impl FromStr for NodeId {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = hex::decode(s).map_err(|e| anyhow!("Invalid hex string: {}", e))?;
@@ -253,8 +255,13 @@ impl Bucket {
         true
     }
 
+    pub fn get_node_len(&self) -> usize {
+        self.nodes.len()
+    }
+
     fn add_node(&mut self, node: Node) -> AddResult {
         if let Some(pos) = self.nodes.iter().position(|n| n.id == node.id) {
+            trace!("桶[{}]节点[{}]更新", self.prefix, node.id);
             self.nodes[pos] = node;
             self.move_to_end(pos);
             self.lastchange = now_secs();
@@ -262,33 +269,34 @@ impl Bucket {
         }
 
         if !self.is_full() {
+            trace!("桶[{}]节点[{}]新增", self.prefix, node.id);
             self.nodes.push_back(node);
             self.lastchange = now_secs();
             return AddResult::Added;
         }
 
         if let Some(pos) = self.pop_stale_node() {
+            trace!("桶[{}]节点[{}]替换\t被替换的节点: {}", self.prefix, node.id, self.nodes[pos].id);
             self.nodes.remove(pos);
             self.nodes.push_back(node);
             self.lastchange = now_secs();
             return AddResult::ReplacedStale;
         }
 
+        trace!("桶[{}]节点[{}]添加失败，桶满了", self.prefix, node.id);
         AddResult::BucketFull(node)
     }
 
-    pub fn random_node(&self) -> Option<(NodeId, SocketAddr)> {
-        self.nodes.iter().last().map(|node| {
-            let mut info_hash = self.prefix.clone();
-            let (index, offset) = util::bytes_util::bitmap_offset(self.prefix_len);
-            let mut rng = rand::rng();
-            if index + 1 < 20 {
-                rng.fill_bytes(&mut info_hash[index + 1..]);
-            }
-            info_hash[index] =
-                (info_hash[index] & u8::MAX - (offset - 1)) | rng.random_range(..offset);
-            (info_hash, node.addr)
-        })
+    pub fn random_node(&self) -> NodeId {
+        let mut info_hash = self.prefix.clone();
+        let (index, offset) = util::bytes_util::bitmap_offset(self.prefix_len);
+        let mut rng = rand::rng();
+        if index + 1 < 20 {
+            rng.fill_bytes(&mut info_hash[index + 1..]);
+        }
+        info_hash[index] =
+            (info_hash[index] & u8::MAX - (offset - 1)) | rng.random_range(..offset);
+        info_hash
     }
 
     fn split(&self) -> (Bucket, Bucket) {
@@ -395,6 +403,7 @@ impl RoutingTable {
                 // 这里什么都不做，桶满了，但是不能分裂。我们尝试过更新
                 // 节点和替换节点，但是此node都不满足更新节点和替换节点
                 // 的条件。
+                trace!("桶[{}]不能分裂，因为 own_id [{}] 不在桶内", bucket.prefix, self.own_id);
             }
         }
 

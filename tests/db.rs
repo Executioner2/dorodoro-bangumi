@@ -31,6 +31,6 @@ fn test_db() {
 async fn test_load_dht() {
     let db = Db::new(mapper::DB_SAVE_PATH, mapper::DB_NAME, mapper::INIT_SQL, DATABASE_CONN_LIMIT).unwrap();
     let conn = db.get_conn().await.unwrap();
-    let de = conn.load_dht_entity().unwrap();
+    let de = conn.load_dht_entity().unwrap().unwrap();
     info!("{:?}", de.routing_table);
 }
