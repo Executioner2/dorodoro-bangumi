@@ -1,8 +1,9 @@
 //! 全局上下文
 
+use core::fmt::Formatter;
 use crate::config::Config;
 use crate::db::{ConnWrapper, Db};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use anyhow::Result;
 
@@ -13,14 +14,26 @@ pub struct Context {
     cancel_token: CancellationToken,
 }
 
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Context").finish()
+    }
+}
+
+static CONTEXT: OnceLock<Context> = OnceLock::new();
+
 impl Context {
     /// 实例化全局上下文
-    pub fn new(db: Db, config: Config) -> Self {
-        Self {
+    pub fn init(db: Db, config: Config) {
+        CONTEXT.set(Self {
             db: Arc::new(db),
             config,
             cancel_token: CancellationToken::new(),
-        }
+        }).unwrap();
+    }
+
+    pub fn global() -> &'static Self {
+        CONTEXT.get().unwrap()
     }
 
     /// 返回全局配置信息

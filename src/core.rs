@@ -12,3 +12,4 @@ pub mod emitter;
 pub mod db;
 pub mod udp_server;
 pub mod rss;
+pub mod router;

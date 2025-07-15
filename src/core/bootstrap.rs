@@ -71,7 +71,8 @@ pub async fn load_context(db: Db) -> Context {
         conn.store_context(ce).unwrap();  
     }
 
-    Context::new(db, config)
+    Context::init(db, config);
+    Context::global().clone()
 }
 
 pub async fn load_routing_table(context: &Context) -> (RoutingTable, Vec<String>) {
