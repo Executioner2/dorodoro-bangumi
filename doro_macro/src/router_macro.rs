@@ -64,12 +64,12 @@
 //! 结构中必须存在对应 key 名的值。`#[body]` 则从 json 数据结构中取得整个结构体的值。两者可以混合使用。
 //! 默认为 `#[body]`，因此可以省略。
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use std::mem;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{parse_macro_input, Meta, Token};
-use syn::{parse_quote, Expr, ExprLit, FnArg, Result};
+use syn::{Expr, ExprLit, FnArg, Result, parse_quote};
+use syn::{Meta, Token, parse_macro_input};
 
 #[derive(Debug)]
 struct Attributes {
@@ -103,9 +103,9 @@ fn parse_code(attrs: &Attributes, item_fn: &mut syn::ItemFn) -> Result<u32> {
         if let Meta::NameValue(meta) = attr {
             if meta.path.is_ident("code") {
                 if let Expr::Lit(ExprLit {
-                                     lit: syn::Lit::Int(el),
-                                     ..
-                                 }) = &meta.value
+                    lit: syn::Lit::Int(el),
+                    ..
+                }) = &meta.value
                 {
                     if code.is_some() {
                         return Err(syn::Error::new_spanned(meta, "duplicate code attribute"));
@@ -155,7 +155,7 @@ fn get_ident_from_fn_arg(fn_arg: &FnArg) -> Result<&syn::Ident> {
             } else {
                 Err(syn::Error::new_spanned(pat_ty, "unsupported pattern"))
             }
-        },
+        }
     }
 }
 
@@ -163,14 +163,17 @@ fn is_option_ty_from_fn_arg(fn_arg: &FnArg) -> Result<bool> {
     let ty = get_ty_from_fn_arg(fn_arg)?;
     if let syn::Type::Path(path) = ty {
         let path = path_to_string(&path.path);
-        return Ok(path == "Option" || path == "std::option::Option")
+        return Ok(path == "Option" || path == "std::option::Option");
     }
     Ok(false)
 }
 
 fn has_param_attr(arg: &FnArg) -> Result<bool> {
     let attrs = get_attrs_from_fn_arg(arg)?;
-    Ok(attrs.iter().find(|a| path_to_string(&a.path()) == "param").is_some())
+    Ok(attrs
+        .iter()
+        .find(|a| path_to_string(&a.path()) == "param")
+        .is_some())
 }
 
 fn replace_fn_args(
