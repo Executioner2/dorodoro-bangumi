@@ -52,6 +52,11 @@ impl Context {
         self.cancel_token.cancelled()
     }
 
+    /// 停机令牌
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
+    }
+    
     /// 关机
     pub fn cancel(&self) {
         self.cancel_token.cancel()

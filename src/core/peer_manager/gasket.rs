@@ -747,7 +747,6 @@ impl Gasket {
         let status = self.ctx.status.clone();
         
         Box::pin(async move {
-            
             loop {
                 if *status.lock().await == TorrentStatus::Finished {
                     break;

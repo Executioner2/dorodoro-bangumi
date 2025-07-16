@@ -8,10 +8,12 @@ pub mod bt;
 pub mod core;
 pub mod mapper;
 pub mod util;
+pub mod client;
 
 pub use bt::*;
 pub use core::*;
 pub use util::*;
+pub use client::*;
 
 pub trait Integer: Copy + Sized {}
 impl Integer for i8 {}

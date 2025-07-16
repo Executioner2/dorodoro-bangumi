@@ -22,9 +22,14 @@ pub enum RespType {
 }
 
 enum State {
-    Head,     // Length + MsgType 的长度
-    Content,  // 等待内容数据
-    Finished, // Future 已完成
+    /// Length + MsgType 的长度
+    Head,
+
+    /// 等待内容数据
+    Content,
+
+    /// Future 已完成
+    Finished,
 }
 
 /// peer 响应处理

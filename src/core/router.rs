@@ -8,6 +8,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use async_trait::async_trait;
 use json_value::JsonValue;
 
+pub type Code = u32;
+
 #[async_trait]
 pub trait RouteHandler: Send + Sync {
     async fn handle(&self, body: Option<&[u8]>) -> Result<Vec<u8>>;
@@ -89,11 +91,13 @@ impl Router {
         ROUTER.get_or_init(Router::default)
     }
 
-    pub fn register_handler(&self, code: u32, handler: Arc<dyn RouteHandler>) {
-        self.routes.write().unwrap().insert(code, handler);
+    pub fn register_handler(&self, code: Code, handler: Arc<dyn RouteHandler>) {
+        if self.routes.write().unwrap().insert(code, handler).is_some() {
+            panic!("Route for code {} already registered", code)
+        }
     }
 
-    pub async fn handle_request(&self, code: u32, body: Option<&[u8]>) -> Result<Vec<u8>> {
+    pub async fn handle_request(&self, code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
         let handler = self.routes.read().unwrap()
             .get(&code)
             .ok_or_else(|| anyhow!("No handler for code {}", code))
@@ -132,6 +136,6 @@ macro_rules! register_route {
     };
 }
 
-pub async fn handle_request(code: u32, body: Option<&[u8]>) -> Result<Vec<u8>> {
+pub async fn handle_request(code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
     Router::global().handle_request(code, body).await
 }

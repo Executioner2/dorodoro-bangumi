@@ -1,6 +1,6 @@
 use crate::core::command::CommandHandler;
 use crate::core::context::Context;
-use crate::core::controller::Controller;
+use crate::core::control::Dispatcher;
 use crate::core::emitter::Emitter;
 use crate::core::emitter::constant::TCP_SERVER;
 use crate::core::protocol::{Identifier, Protocol};
@@ -118,8 +118,8 @@ impl TcpServer {
                 let id = tc
                     .conn_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let controller = Controller::new(id, socket, tc.context, tc.emitter);
-                controller.run().await;
+                let dispatcher = Dispatcher::new(id, socket, tc.emitter);
+                dispatcher.run().await;
             }
         }
     }

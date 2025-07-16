@@ -3,7 +3,8 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::Level;
-use dorodoro_bangumi::default_logger;
+use dorodoro_bangumi::{default_logger};
+use dorodoro_bangumi::controller::task;
 
 default_logger!(Level::DEBUG);
 
@@ -82,7 +83,7 @@ async fn test_lazy_send() {
         .await
         .unwrap();
     socket0.write(&bytes).await.unwrap(); // socket0 连接上
-    drop(socket0); // 观察 controller 是否会将 Exit 事件送达给 Tcp Server
+    drop(socket0); // 观察 client 是否会将 Exit 事件送达给 Tcp Server
 
     let mut socket1 = TcpStream::connect("127.0.0.1:3300").await.unwrap();
     let mut bytes = vec![];
@@ -117,19 +118,30 @@ async fn test_lazy_send() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 async fn test_add_torrent() {
+    use byteorder::{BigEndian, WriteBytesExt};
     let mut socket = TcpStream::connect("127.0.0.1:3300").await.unwrap();
     let mut bytes = vec![];
-    bytes
-        .write_u8(protocol::REMOTE_CONTROL_PROTOCOL.len() as u8)
-        .await
-        .unwrap();
+    WriteBytesExt::write_u8(&mut bytes, protocol::REMOTE_CONTROL_PROTOCOL.len() as u8).unwrap();
     bytes
         .write(protocol::REMOTE_CONTROL_PROTOCOL)
         .await
         .unwrap();
     socket.write(&bytes).await.unwrap(); // socket 连接上
 
-    socket.write(&[1u8]).await.unwrap();
+    let request = task::Task {
+          task_name: Some("好东西".to_string()),
+          download_path: Some("./download".to_string()),
+          file_path: "./resources/test1.torrent".to_string(),
+    };
+    let data = serde_json::to_vec(&request).unwrap();
+
+    let mut btyes = vec![];
+    WriteBytesExt::write_u32::<BigEndian>(&mut btyes, 1001).unwrap();
+    WriteBytesExt::write_u32::<BigEndian>(&mut btyes, data.len() as u32).unwrap();
+    btyes.extend_from_slice(&data);
+    socket.write(&btyes).await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(1050)).await;
 }
 
 /// 发送关机指令
