@@ -1,24 +1,24 @@
 use crate::bytes_util::Bytes2Int;
-use crate::net::ReaderHandle;
+use crate::net::{FutureRet, ReaderHandle};
 use crate::peer::MsgType;
+use crate::peer::peer_resp::RespType::{Heartbeat, Normal};
+use crate::pin_poll;
 use bytes::Bytes;
+use std::io;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 use tokio::io::AsyncRead;
 use tracing::{error, trace};
-use crate::peer::peer_resp::RespType::{Heartbeat, Normal, Unoknown};
 
 #[derive(Debug)]
 pub enum RespType {
     /// 普通消息
     Normal(MsgType, Bytes),
-    
+
     /// 心跳包
     Heartbeat,
-    
-    /// 未知消息
-    Unoknown,
 }
 
 enum State {
@@ -50,21 +50,18 @@ impl<'a, T: AsyncRead + Unpin> PeerResp<'a, T> {
 }
 
 impl<T: AsyncRead + Unpin> Future for PeerResp<'_, T> {
-    type Output = RespType;
+    type Output = FutureRet<RespType>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        let buf = match pin!(&mut this.reader_handle).poll(cx) {
-            Poll::Ready(Ok(buf)) => buf,
-            Poll::Ready(Err(_e)) => return Poll::Ready(Unoknown),
-            Poll::Pending => return Poll::Pending,
-        };
+        let buf = pin_poll!(&mut this.reader_handle, cx);
 
         match this.state {
             State::Head => {
-                if buf.len() < 5 { // 视为心跳包
-                    return Poll::Ready(Heartbeat)
+                if buf.len() < 5 {
+                    // 视为心跳包
+                    return Poll::Ready(FutureRet::Ok(Heartbeat));
                 }
                 let length = u32::from_be_slice(&buf[..4]);
                 if let Ok(msg_type) = MsgType::try_from(buf[4]) {
@@ -74,19 +71,25 @@ impl<T: AsyncRead + Unpin> Future for PeerResp<'_, T> {
                         this.msg_type = Some(msg_type);
                         this.state = State::Content;
                     } else {
-                        return Poll::Ready(Normal(msg_type, Bytes::new()));
+                        return Poll::Ready(FutureRet::Ok(Normal(msg_type, Bytes::new())));
                     }
                 } else {
                     error!("未知的消息类型\tmsg_type value: {}", buf[0]);
-                    return Poll::Ready(Unoknown);
+                    return Poll::Ready(FutureRet::Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "unknown message type",
+                    )));
                 }
             }
             State::Content => {
                 this.state = State::Finished;
-                return Poll::Ready(Normal(this.msg_type.take().unwrap(), buf));
+                return Poll::Ready(FutureRet::Ok(Normal(this.msg_type.take().unwrap(), buf)));
             }
             State::Finished => {
-                return Poll::Ready(Unoknown);
+                return Poll::Ready(FutureRet::Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "parse finished",
+                )));
             }
         }
         pin!(this).poll(cx)

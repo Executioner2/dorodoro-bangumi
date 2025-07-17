@@ -3,14 +3,13 @@
 mod command;
 mod request_parse;
 
-use std::io;
 use crate::command::CommandHandler;
 use crate::core::context::Context;
 use crate::core::control::command::{Command, Response};
 use crate::core::emitter::constant::CONTROLLER_PREFIX;
 use crate::core::emitter::Emitter;
 use crate::emitter::transfer::TransferPtr;
-use crate::router;
+use crate::{is_disconnect, router};
 use crate::router::Code;
 use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, Runnable};
 use anyhow::Result;
@@ -22,16 +21,24 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::info;
-use crate::core::control::request_parse::{Request, RequestParse};
+use crate::core::control::request_parse::RequestParse;
+use crate::net::FutureRet;
 
 /// code 字段占用字节数
-const CODE_SIZE: usize = 4;
+pub const CODE_SIZE: usize = 4;
+
+/// tran_id 字段占用字节数
+pub const TRAN_ID_SIZE: usize = 4;
 
 /// length 字段占用字节数
-const LENGTH_SIZE: usize = 4;
+pub const LENGTH_SIZE: usize = 4;
 
 /// 状态码占用字节数
-const STATUS_SIZE: usize = 4;
+pub const STATUS_SIZE: usize = 4;
+
+pub type TranId = u32;
+
+pub type Status = u32;
 
 enum ControlStatus {
     /// 成功
@@ -43,10 +50,10 @@ enum ControlStatus {
 
 enum ControlResponsePacket {
     /// 成功的响应
-    Ok(Code, Vec<u8>),
+    Ok(Code, TranId, Vec<u8>),
 
     /// 错误的响应
-    Error(Code, ControlStatus, String),
+    Error(Code, TranId, ControlStatus, String),
 }
 
 pub struct Dispatcher {
@@ -78,7 +85,7 @@ impl Dispatcher {
         self.socket_write.write_all(data).await.map_err(|e| e.into())
     }
 
-    fn dispatch(&self, code: Code, data: Option<Bytes>) {
+    fn dispatch(&self, code: Code, tran_id: TranId, data: Option<Bytes>) {
         let send = self
             .emitter
             .get(&Self::get_transfer_id(self.get_suffix()))
@@ -87,9 +94,10 @@ impl Dispatcher {
             let data = data.as_ref().map(|d| d.as_ref());
             let crp = {
                 match router::handle_request(code, data).await {
-                    Ok(data) => ControlResponsePacket::Ok(code, data),
+                    Ok(data) => ControlResponsePacket::Ok(code, tran_id, data),
                     Err(e) => ControlResponsePacket::Error(
                         code,
+                        tran_id,
                         ControlStatus::ServerError,
                         e.to_string(),
                     ),
@@ -103,19 +111,21 @@ impl Dispatcher {
 
     fn pack_response(crp: ControlResponsePacket) -> Vec<u8> {
         match crp {
-            ControlResponsePacket::Ok(code, data) => {
+            ControlResponsePacket::Ok(code, tran_id, data) => {
                 let len = data.len();
-                let mut packet = Vec::with_capacity(CODE_SIZE + STATUS_SIZE + LENGTH_SIZE + len);
+                let mut packet = Vec::with_capacity(CODE_SIZE + TRAN_ID_SIZE + STATUS_SIZE + LENGTH_SIZE + len);
                 packet.extend_from_slice(&code.to_be_bytes());
+                packet.extend_from_slice(&tran_id.to_be_bytes());
                 packet.extend_from_slice(&(ControlStatus::Ok as u32).to_be_bytes());
                 packet.extend_from_slice(&(len as u32).to_be_bytes());
                 packet.extend(data);
                 packet
             }
-            ControlResponsePacket::Error(code, control_status, message) => {
+            ControlResponsePacket::Error(code, tran_id, control_status, message) => {
                 let mut packet =
-                    Vec::with_capacity(CODE_SIZE + STATUS_SIZE + LENGTH_SIZE + message.len());
+                    Vec::with_capacity(CODE_SIZE + TRAN_ID_SIZE + STATUS_SIZE + LENGTH_SIZE + message.len());
                 packet.extend_from_slice(&code.to_be_bytes());
+                packet.extend_from_slice(&tran_id.to_be_bytes());
                 packet.extend_from_slice(&(control_status as u32).to_be_bytes());
                 packet.extend_from_slice(&(message.len() as u32).to_be_bytes());
                 packet.extend_from_slice(message.as_bytes());
@@ -140,13 +150,12 @@ impl Dispatcher {
                     }
                     result = &mut request_parse => {
                         match result {
-                            Request::Noraml(code, data) => {
-                                let cmd = command::Request { code, data };
+                            FutureRet::Ok((code, tran_id, data)) => {
+                                let cmd = command::Request { code, tran_id, data };
                                 send.send(cmd.into()).await.unwrap();
                             }
-                            Request::Err(e) => {
-                                if e.kind() == io::ErrorKind::ConnectionAborted ||
-                                    e.kind() == io::ErrorKind::ConnectionReset {
+                            FutureRet::Err(e) => {
+                                if is_disconnect!(e) {
                                     info!("控制器断开链接");
                                     return CustomTaskResult::Exit(ExitReason::Normal);
                                 }

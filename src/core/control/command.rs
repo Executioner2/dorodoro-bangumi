@@ -1,5 +1,5 @@
 use crate::command_system;
-use crate::core::control::Dispatcher;
+use crate::core::control::{Dispatcher, TranId};
 use anyhow::Result;
 use bytes::Bytes;
 use crate::router::Code;
@@ -15,13 +15,14 @@ command_system! {
 #[derive(Debug)]
 pub struct Request {
     pub code: Code,
+    pub tran_id: TranId,
     pub data: Option<Bytes>,
 }
 impl<'a> CommandHandler<'a, Result<()>> for Request {
     type Target = &'a mut Dispatcher;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.dispatch(self.code, self.data);
+        ctx.dispatch(self.code, self.tran_id, self.data);
         Ok(())
     }
 }

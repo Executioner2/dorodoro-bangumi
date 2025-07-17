@@ -21,6 +21,7 @@ use crate::emitter::transfer::TransferPtr;
 use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext};
 use anyhow::{anyhow, Result};
 use futures::stream::FuturesUnordered;
+use crate::net::FutureRet;
 
 pub mod command;
 mod future;
@@ -95,11 +96,11 @@ impl TcpServer {
             },
             result = &mut accept => {
                 match result {
-                    Some(protocol) => {
+                    FutureRet::Ok(protocol) => {
                         Self::protocol_dispatch(tc, socket, protocol).await;
                     },
-                    None => {
-                        trace!("accpet socket 接收到关闭信号");
+                    res => {
+                        trace!("断开此链接，因为得到了预期之外的结果: {:?}", res);
                     }
                 }
             }
@@ -115,6 +116,7 @@ impl TcpServer {
             }
             Identifier::RemoteControl => {
                 trace!("接收到 RemoteControl 协议");
+                // 解析 RemoteControl 的握手协议附加数据
                 let id = tc
                     .conn_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

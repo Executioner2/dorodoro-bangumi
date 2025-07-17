@@ -53,6 +53,9 @@ const DHT_EXPECT_PEERS: usize = 15;
 pub enum PeerExitReason {
     /// 正常退出
     Normal,
+
+    /// 客户端主动退出
+    ClientExit,
     
     /// 没有任务的退出
     NotHasJob,

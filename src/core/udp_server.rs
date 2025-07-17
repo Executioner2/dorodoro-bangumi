@@ -51,7 +51,7 @@ pub struct UdpServer {
     inflight: Arc<DashMap<u16, Option<Waker>>>,
 
     /// 响应结果
-    result_sotre: Arc<DashMap<u16, (Bytes, SocketAddr)>>,
+    result_store: Arc<DashMap<u16, (Bytes, SocketAddr)>>,
 
     /// 全局上下文
     context: Context,
@@ -67,7 +67,7 @@ impl UdpServer {
         Ok(Self {
             socket: Arc::new(socket),
             inflight: Arc::new(DashMap::new()),
-            result_sotre: Arc::new(DashMap::new()),
+            result_store: Arc::new(DashMap::new()),
             context,
             cycle_id: Arc::new(CycleId::new()),
         })
@@ -95,7 +95,7 @@ impl UdpServer {
         Ok(Response::new(
             tran_id,
             self.inflight.clone(),
-            self.result_sotre.clone(),
+            self.result_store.clone(),
         ))
     }
 
@@ -114,7 +114,7 @@ impl UdpServer {
                 // todo - 这里可以优化，重复解析了
                 let id = base.t();
                 if let Some((_, resp)) = self.inflight.remove(&id) {
-                    self.result_sotre.insert(id, (data, addr));
+                    self.result_store.insert(id, (data, addr));
                     resp.map(|waker| waker.wake());
                 }
             }
@@ -157,7 +157,7 @@ impl UdpServer {
 pub struct Response {
     tran_id: u16,
     inflight: Arc<DashMap<u16, Option<Waker>>>,
-    result_sotre: Arc<DashMap<u16, (Bytes, SocketAddr)>>,
+    result_store: Arc<DashMap<u16, (Bytes, SocketAddr)>>,
 }
 
 impl Response {
@@ -169,7 +169,7 @@ impl Response {
         Self {
             tran_id,
             inflight,
-            result_sotre,
+            result_store: result_sotre,
         }
     }
 }
@@ -179,7 +179,7 @@ impl Future for Response {
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        match this.result_sotre.remove(&this.tran_id) {
+        match this.result_store.remove(&this.tran_id) {
             Some((_, addr)) => Poll::Ready(addr),
             None => {
                 this.inflight.insert(this.tran_id, Some(cx.waker().clone()));
@@ -192,6 +192,6 @@ impl Future for Response {
 impl Drop for Response {
     fn drop(&mut self) {
         self.inflight.remove(&self.tran_id);
-        self.result_sotre.remove(&self.tran_id);
+        self.result_store.remove(&self.tran_id);
     }
 }

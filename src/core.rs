@@ -2,7 +2,7 @@ pub mod bootstrap;
 pub mod command;
 pub mod config;
 pub mod context;
-mod control;
+pub mod control;
 pub mod peer_manager;
 pub mod protocol;
 pub mod runtime;

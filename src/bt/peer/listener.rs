@@ -9,7 +9,9 @@ use crate::peer_manager::gasket::PeerExitReason;
 use std::net::SocketAddr;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace};
+use crate::is_disconnect;
+use crate::net::FutureRet;
 
 pub struct WriteFuture {
     pub(super) no: u64,
@@ -64,7 +66,7 @@ impl<T: PacketAck + Send> ReadFuture<T> {
                 }
                 result = &mut bt_resp => {
                     match result {
-                        Normal(msg_type, buf) => {
+                        FutureRet::Ok(Normal(msg_type, buf)) => {
                             let buf_len = buf.len() as u64;
                             if msg_type == MsgType::Piece {
                                 self.rc.ack((5 + buf_len) as u32);
@@ -75,12 +77,18 @@ impl<T: PacketAck + Send> ReadFuture<T> {
                                 read_size: 5 + buf_len
                             }.into()).await.unwrap();
                         },
-                        Heartbeat => {
+                        FutureRet::Ok(Heartbeat) => {
                             self.peer_sender.send(command::Heartbeat.into()).await.unwrap();
                         }
-                        Unoknown => {
-                            warn!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
-                            let reason = PeerExitReason::Exception;
+                        FutureRet::Err(e) => {
+                            let reason;
+                            if is_disconnect!(e) {
+                                trace!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
+                                reason = PeerExitReason::ClientExit;
+                            } else {
+                                error!("{} - {} 的数据监听出错: {}", self.no, self.addr, e);
+                                reason = PeerExitReason::Exception;
+                            }
                             self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
                             break;
                         }

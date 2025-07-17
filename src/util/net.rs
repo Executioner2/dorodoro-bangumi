@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use core::fmt::Debug;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -87,10 +88,18 @@ pub trait AsyncReadExtExt: AsyncRead {
     async fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
 
     /// 超时读取
-    async fn read_buf_with_timeout<B: BufMut + ?Sized>(&mut self, buf: &mut B, timeout: Duration) -> io::Result<usize>;
+    async fn read_buf_with_timeout<B: BufMut + ?Sized>(
+        &mut self,
+        buf: &mut B,
+        timeout: Duration,
+    ) -> io::Result<usize>;
 
     /// 超时读取指定的长度
-    async fn read_exact_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+    async fn read_exact_with_timeout(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> io::Result<usize>;
 
     /// 判断是否有数据可读
     async fn has_data_available(&mut self) -> io::Result<bool>;
@@ -105,7 +114,11 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
         }
     }
 
-    async fn read_buf_with_timeout<B: BufMut + ?Sized>(&mut self, buf: &mut B, timeout: Duration) -> io::Result<usize> {
+    async fn read_buf_with_timeout<B: BufMut + ?Sized>(
+        &mut self,
+        buf: &mut B,
+        timeout: Duration,
+    ) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read_buf(buf)).await {
             Ok(Ok(size)) => Ok(size),
             Ok(Err(e)) => Err(e),
@@ -113,7 +126,11 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
         }
     }
 
-    async fn read_exact_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+    async fn read_exact_with_timeout(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read_exact(buf)).await {
             Ok(Ok(size)) => Ok(size),
             Ok(Err(e)) => Err(e),
@@ -128,15 +145,22 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
     }
 }
 
-
 #[allow(async_fn_in_trait)]
 pub trait TcpStreamExt {
     /// 超时读取指定的长度，并清空缓冲区
-    async fn read_extra_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+    async fn read_extra_with_timeout(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> io::Result<usize>;
 }
 
 impl TcpStreamExt for tokio::net::TcpStream {
-    async fn read_extra_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+    async fn read_extra_with_timeout(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read_exact(buf)).await {
             Ok(Ok(_)) => {
                 let mut total_size = 0;
@@ -147,7 +171,7 @@ impl TcpStreamExt for tokio::net::TcpStream {
                         Ok(size) => {
                             buf.clear();
                             total_size += size;
-                        },
+                        }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                             break;
                         }
@@ -160,4 +184,29 @@ impl TcpStreamExt for tokio::net::TcpStream {
             Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum FutureRet<T: Debug> {
+    Ok(T),
+    Err(io::Error),
+}
+
+#[macro_export]
+macro_rules! pin_poll {
+    ($reader_handle:expr, $cx:expr) => {
+        match pin!($reader_handle).poll($cx) {
+            Poll::Ready(Ok(data)) => data,
+            Poll::Ready(Err(e)) => return Poll::Ready(FutureRet::Err(e.into())),
+            Poll::Pending => return Poll::Pending,
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! is_disconnect {
+    ($e:expr) => {
+        $e.kind() == std::io::ErrorKind::ConnectionAborted ||
+        $e.kind() == std::io::ErrorKind::ConnectionReset 
+    };
 }

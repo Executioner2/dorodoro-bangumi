@@ -83,7 +83,7 @@ async fn test_lazy_send() {
         .await
         .unwrap();
     socket0.write(&bytes).await.unwrap(); // socket0 连接上
-    drop(socket0); // 观察 client 是否会将 Exit 事件送达给 Tcp Server
+    drop(socket0); // 观察 base 是否会将 Exit 事件送达给 Tcp Server
 
     let mut socket1 = TcpStream::connect("127.0.0.1:3300").await.unwrap();
     let mut bytes = vec![];

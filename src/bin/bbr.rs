@@ -922,6 +922,7 @@ pub mod rd {
     use std::time::{Duration, Instant};
     use tokio::net::tcp::OwnedReadHalf;
     use tracing::info;
+    use dorodoro_bangumi::net::FutureRet;
     use dorodoro_bangumi::peer::peer_resp::RespType::Normal;
 
     pub struct ReqDataFactory {
@@ -1039,7 +1040,7 @@ pub mod rd {
             addr: &'a SocketAddr,
         ) -> BoxFuture<'a, (MsgType, BytesWrapper)> {
             Box::pin(async move {
-                if let Normal(msg_type, data) = PeerResp::new(read, addr).await {
+                if let FutureRet::Ok(Normal(msg_type, data)) = PeerResp::new(read, addr).await {
                     (msg_type, BytesWrapper { inner: data })
                 } else {
                     panic!("不是正常的响应")

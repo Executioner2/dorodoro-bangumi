@@ -31,6 +31,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
 use tracing::{Level, error, info};
+use crate::net::FutureRet;
 
 const BLOCK_SIZE: u32 = 1 << 14;
 const MSS: u32 = 17;
@@ -135,7 +136,7 @@ async fn do_async_read(
             res = &mut bt_resp => {
                 // let i = Instant::now();
                 match res {
-                    Normal(_msg_type, buf) => {
+                    FutureRet::Ok(Normal(_msg_type, buf)) => {
                         let packet_size = buf.len() as u32 + 13;
                         // if let Some(key) = get_packet_id(&buf) {
                             // if let Some((_, instant)) = inflight.remove(&key) {
@@ -152,10 +153,10 @@ async fn do_async_read(
                         rc.ack(packet_size as u64, fd);
                         tx.send(packet_size).await.unwrap();
                     },
-                    Heartbeat => {
+                    FutureRet::Ok(Heartbeat) => {
                         info!("心跳包");
                     }
-                    Unoknown => {
+                    _ => {
                         eprintln!("断开了链接");
                         break;
                     }
@@ -295,16 +296,16 @@ async fn do_normal_async_read(
         tokio::select! {
             res = &mut bt_resp => {
                 match res {
-                    Normal(_msg_type, buf) => {
+                    FutureRet::Ok(Normal(_msg_type, buf)) => {
                         let size = buf.len() as u64 + 13;
                         inflight.fetch_sub(1, Ordering::Relaxed);
                         read_size.fetch_add(size, Ordering::Relaxed);
                         tx.send(size).await.unwrap();
                     },
-                    Heartbeat => {
+                    FutureRet::Ok(Heartbeat) => {
                         info!("心跳包");
                     }
-                    Unoknown => {
+                    _ => {
                         error!("断开了链接");
                         break;
                     }
@@ -510,7 +511,7 @@ async fn test_get_tcp_socket_tcp_info() {
         info.tcpi_snd_sbbytes
     );
 
-    if let Normal(msg_type, buf) = x {
+    if let FutureRet::Ok(Normal(msg_type, buf)) = x {
         info!("msg_type: {:?}", msg_type);
     }
 }

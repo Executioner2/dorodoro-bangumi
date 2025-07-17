@@ -1,6 +1,8 @@
+use std::io;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
-use crate::net::ReaderHandle;
-use crate::protocol;
+use crate::net::{FutureRet, ReaderHandle};
+use crate::{pin_poll, protocol};
 use crate::protocol::{Identifier, Protocol};
 use bytes::Bytes;
 use std::pin::{Pin, pin};
@@ -49,16 +51,11 @@ impl<'a> Accept<'a> {
 }
 
 impl<'a> Future for Accept<'_> {
-    type Output = Option<Protocol>;
+    type Output = FutureRet<Protocol>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-
-        let buf = match pin!(&mut this.reader_handle).poll(cx) {
-            Poll::Ready(Ok(buf)) => buf,
-            Poll::Ready(Err(_e)) => return Poll::Ready(None),
-            Poll::Pending => return Poll::Pending,
-        };
+        let buf = pin_poll!(&mut this.reader_handle, cx);
 
         match this.state {
             State::ProtocolLen => {
@@ -74,17 +71,23 @@ impl<'a> Future for Accept<'_> {
                     this.protocol_id = Some(id);
                 } else {
                     warn!("未知协议: {}", String::from_utf8_lossy(protocol));
-                    return Poll::Ready(None);
+                    return Poll::Ready(FutureRet::Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                       "unknown protocol",
+                    )));
                 }
             }
             State::ParseProtocol => {
                 let id = this.protocol_id.take().unwrap();
                 let protocol = Protocol { id, payload: buf };
                 this.state = State::Finished;
-                return Poll::Ready(Some(protocol));
+                return Poll::Ready(FutureRet::Ok(protocol));
             }
             State::Finished => {
-                return Poll::Ready(None);
+                return Poll::Ready(FutureRet::Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "parse finished",
+                )));
             }
         }
         pin!(this).poll(cx)
