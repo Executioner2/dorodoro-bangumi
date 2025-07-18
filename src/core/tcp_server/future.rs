@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use std::net::SocketAddr;
 use crate::net::{FutureRet, ReaderHandle};
 use crate::{pin_poll, protocol};
-use crate::protocol::{Identifier, Protocol};
+use crate::protocol::{Identifier, Protocol, PROTOCOL_SIZE};
 use bytes::Bytes;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
@@ -28,7 +28,7 @@ enum State {
 impl<'a> Accept<'a> {
     pub fn new(socket: &'a mut TcpStream, addr: &'a SocketAddr) -> Self {
         Self {
-            reader_handle: ReaderHandle::new(socket, addr, 1),
+            reader_handle: ReaderHandle::new(socket, addr, PROTOCOL_SIZE),
             protocol: None,
             protocol_id: None,
             state: State::ProtocolLen,

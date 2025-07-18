@@ -20,6 +20,21 @@ pub struct Config {
 }
 
 #[derive(Encode, Decode)]
+pub struct ClientAuth {
+    pub username: String,
+    pub password: String,
+}
+
+impl ClientAuth {
+    pub fn init() -> Self {
+        Self {
+            username: "admin".to_string(),
+            password: "admin".to_string(),
+        }
+    }
+}
+
+#[derive(Encode, Decode)]
 struct ConfigInner {
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
@@ -62,6 +77,9 @@ struct ConfigInner {
     
     /// 默认下载目录
     default_download_dir: PathBuf,
+
+    /// 认证信息
+    client_auth: ClientAuth,
 }
 
 impl Config {
@@ -82,7 +100,8 @@ impl Config {
                 torrent_lt_peer_conn_limit: 5,
                 torrent_temp_peer_conn_limit: 1,
                 peer_connection_timeout: Duration::from_secs(5),
-                default_download_dir: PathBuf::from("./downloads/")
+                default_download_dir: PathBuf::from("./downloads/"),
+                client_auth: ClientAuth::init(),
             }),
         }
     }
@@ -184,6 +203,13 @@ impl Config {
         });
         self
     }
+    
+    pub fn set_client_auth(mut self, auth: ClientAuth) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.client_auth = auth;
+        });
+        self
+    }
 
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
@@ -243,5 +269,9 @@ impl Config {
     
     pub fn default_download_dir(&self) -> &PathBuf {
         &self.inner.default_download_dir
+    }
+    
+    pub fn client_auth(&self) -> &ClientAuth {
+        &self.inner.client_auth
     }
 }

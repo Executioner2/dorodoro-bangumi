@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
-mod bit_torrent;
-mod remote_control;
+pub mod bit_torrent;
+pub mod remote_control;
 
 /// The BitTorrent protocol identifier.
 pub const BIT_TORRENT_PROTOCOL: &[u8] = b"BitTorrent protocol";
@@ -20,6 +20,9 @@ pub const REMOTE_CONTROL_PROTOCOL_LEN: u8 = 23;
 
 /// The length of the Remote Control payload.
 pub const REMOTE_CONTROL_PAYLOAD_LEN: usize = 0;
+
+/// 协议名长度占用字节数
+pub const PROTOCOL_SIZE: usize = 1;
 
 #[derive(Debug)]
 pub enum Identifier {

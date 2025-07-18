@@ -40,9 +40,12 @@ pub type TranId = u32;
 
 pub type Status = u32;
 
-enum ControlStatus {
+pub enum ControlStatus {
     /// 成功
     Ok = 200,
+
+    /// 认证失败，未认证
+    AuthFailed = 401,
 
     /// 服务器错误
     ServerError = 500,

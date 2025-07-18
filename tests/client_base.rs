@@ -1,11 +1,15 @@
+use anyhow::{Result, anyhow};
+use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dashmap::DashMap;
 use dorodoro_bangumi::bytes_util::Bytes2Int;
-use dorodoro_bangumi::control::{
-    CODE_SIZE, LENGTH_SIZE, STATUS_SIZE, Status, TRAN_ID_SIZE, TranId,
-};
+use dorodoro_bangumi::control::{CODE_SIZE, LENGTH_SIZE, STATUS_SIZE, Status, TRAN_ID_SIZE, TranId, ControlStatus};
 use dorodoro_bangumi::net::{FutureRet, ReaderHandle};
+use dorodoro_bangumi::protocol::remote_control::{PASSWORD_LEN_SIZE, USERNAME_LEN_SIZE};
+use dorodoro_bangumi::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
 use dorodoro_bangumi::router::Code;
+use dorodoro_bangumi::{is_disconnect, pin_poll};
+use serde::Serialize;
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -13,15 +17,16 @@ use std::pin::{Pin, pin};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, Waker};
-use byteorder::{BigEndian, WriteBytesExt};
-use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use anyhow::{anyhow, Result};
-use dorodoro_bangumi::{is_disconnect, pin_poll};
+
+pub struct Auth {
+    pub username: String,
+    pub password: String,
+}
 
 /// 循环 id
 struct CycleId {
@@ -40,11 +45,11 @@ impl CycleId {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct Ret {
     pub code: Code,
     pub status: Status,
-    pub inner: Bytes,
+    pub body: Bytes,
 }
 
 pub struct Client {
@@ -110,8 +115,10 @@ pub struct ClientHandle {
 }
 
 impl ClientHandle {
-    pub async fn new(addr: SocketAddr) -> Result<Client> {
-        let stream = TcpStream::connect(addr).await?;
+    pub async fn new(addr: SocketAddr, auth: Auth) -> Result<Client> {
+        let mut stream = TcpStream::connect(addr).await?;
+        Self::handshake(&mut stream, &auth).await?;
+
         let (read, write) = stream.into_split();
         let cycle_id = Arc::new(CycleId::new());
         let inflight = Arc::new(DashMap::new());
@@ -136,14 +143,32 @@ impl ClientHandle {
         })
     }
 
-    #[allow(dead_code)]
-    async fn handshake(_stream: &mut TcpStream) -> Result<()> {
-        todo!("待实现");
-        // let mut bytes = vec![];
-        // WriteBytesExt::write_u8(&mut bytes, protocol::REMOTE_CONTROL_PROTOCOL.len() as u8)?;
-        // bytes.write(protocol::REMOTE_CONTROL_PROTOCOL).await?;
-        // stream.write(&bytes).await?; // socket 连接上
-        // Ok(())
+    async fn handshake(stream: &mut TcpStream, auth: &Auth) -> Result<()> {
+        let username = auth.username.as_bytes();
+        let password = auth.password.as_bytes();
+        let mut buf = Vec::with_capacity(
+            PROTOCOL_SIZE
+                + REMOTE_CONTROL_PROTOCOL.len()
+                + USERNAME_LEN_SIZE
+                + username.len()
+                + PASSWORD_LEN_SIZE
+                + password.len(),
+        );
+
+        WriteBytesExt::write_u8(&mut buf, REMOTE_CONTROL_PROTOCOL.len() as u8)?;
+        buf.extend_from_slice(REMOTE_CONTROL_PROTOCOL);
+        WriteBytesExt::write_u16::<BigEndian>(&mut buf, username.len() as u16)?;
+        buf.extend_from_slice(username);
+        WriteBytesExt::write_u16::<BigEndian>(&mut buf, password.len() as u16)?;
+        buf.extend_from_slice(password);
+        stream.write_all(&buf).await?;
+
+        let addr = stream.peer_addr()?;
+        if let FutureRet::Err(e) = HandshakeParse::new(stream, &addr).await {
+            return Err(e.into());
+        }
+
+        Ok(())
     }
 
     pub async fn run(mut self) {
@@ -178,7 +203,7 @@ impl ClientHandle {
     }
 }
 
-enum State {
+enum ResponseParseState {
     /// 等待 code + tran_id + status + length 头部
     Head,
 
@@ -191,7 +216,7 @@ enum State {
 
 pub struct ResponseParse<'a, T: AsyncRead + Unpin> {
     reader_handle: ReaderHandle<'a, T>,
-    state: State,
+    state: ResponseParseState,
     code: Option<Code>,
     tran_id: Option<TranId>,
     status: Option<Status>,
@@ -205,7 +230,7 @@ impl<'a, T: AsyncRead + Unpin> ResponseParse<'a, T> {
                 addr,
                 CODE_SIZE + TRAN_ID_SIZE + STATUS_SIZE + LENGTH_SIZE,
             ),
-            state: State::Head,
+            state: ResponseParseState::Head,
             code: None,
             tran_id: None,
             status: None,
@@ -222,7 +247,7 @@ impl<T: AsyncRead + Unpin> Future for ResponseParse<'_, T> {
         let buf = pin_poll!(&mut this.reader_handle, cx);
 
         match this.state {
-            State::Head => {
+            ResponseParseState::Head => {
                 let mut offset: usize = 0;
                 let code = Code::from_be_slice(&buf[offset..CODE_SIZE]);
                 offset += CODE_SIZE;
@@ -233,17 +258,17 @@ impl<T: AsyncRead + Unpin> Future for ResponseParse<'_, T> {
                 let length = u32::from_be_slice(&buf[offset..offset + LENGTH_SIZE]);
 
                 if length == 0 {
-                    this.state = State::Finished;
+                    this.state = ResponseParseState::Finished;
                     return Poll::Ready(FutureRet::Ok((code, tran_id, status, Bytes::new())));
                 }
                 this.code = Some(code);
                 this.tran_id = Some(tran_id);
                 this.status = Some(status);
                 this.reader_handle.reset(length as usize);
-                this.state = State::Content;
+                this.state = ResponseParseState::Content;
             }
-            State::Content => {
-                this.state = State::Finished;
+            ResponseParseState::Content => {
+                this.state = ResponseParseState::Finished;
                 return Poll::Ready(FutureRet::Ok((
                     this.code.unwrap(),
                     this.tran_id.unwrap(),
@@ -251,7 +276,7 @@ impl<T: AsyncRead + Unpin> Future for ResponseParse<'_, T> {
                     buf,
                 )));
             }
-            State::Finished => {
+            ResponseParseState::Finished => {
                 return Poll::Ready(FutureRet::Err(io::Error::new(
                     ErrorKind::PermissionDenied,
                     "parse finished",
@@ -291,7 +316,7 @@ impl Future for ResponseFuture {
             Some((_, (code, status, data))) => Poll::Ready(Ret {
                 code,
                 status,
-                inner: data,
+                body: data,
             }),
             None => {
                 this.inflight.insert(this.tran_id, Some(cx.waker().clone()));
@@ -305,5 +330,95 @@ impl Drop for ResponseFuture {
     fn drop(&mut self) {
         self.inflight.remove(&self.tran_id);
         self.result_store.remove(&self.tran_id);
+    }
+}
+
+enum HandshakeState {
+    ProtocolLen,
+    Protocol,
+    Status,
+    ErrorMsgLen,
+    ErrorMsg,
+    Finished,
+}
+
+struct HandshakeParse<'a, T: AsyncRead + Unpin> {
+    reader_handle: ReaderHandle<'a, T>,
+    state: HandshakeState,
+}
+
+impl<'a, T: AsyncRead + Unpin> HandshakeParse<'a, T> {
+    pub fn new(read: &'a mut T, addr: &'a SocketAddr) -> Self {
+        Self {
+            reader_handle: ReaderHandle::new(read, addr, PROTOCOL_SIZE),
+            state: HandshakeState::ProtocolLen,
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> Future for HandshakeParse<'_, T> {
+    type Output = FutureRet<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        let buf: Bytes = pin_poll!(&mut this.reader_handle, cx);
+
+        match this.state {
+            HandshakeState::ProtocolLen => {
+                let protocol_len = buf[0] as usize;
+                this.reader_handle.reset(protocol_len);
+                this.state = HandshakeState::Protocol;
+            }
+            HandshakeState::Protocol => {
+                let protocol = buf.as_ref();
+                if protocol != REMOTE_CONTROL_PROTOCOL {
+                    return Poll::Ready(FutureRet::Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "协议错误"
+                    )));
+                }
+                this.reader_handle.reset(STATUS_SIZE);
+                this.state = HandshakeState::Status;
+            }
+            HandshakeState::Status => {
+                let status = Status::from_be_slice(&buf);
+                if status == ControlStatus::Ok as u32 {
+                    return Poll::Ready(FutureRet::Ok(()))
+                }
+                this.reader_handle.reset(LENGTH_SIZE);
+                this.state = HandshakeState::ErrorMsgLen;
+            }
+            HandshakeState::ErrorMsgLen => {
+                let error_msg_len = u32::from_be_slice(&buf);
+                this.reader_handle.reset(error_msg_len as usize);
+                this.state = HandshakeState::ErrorMsg;
+            }
+            HandshakeState::ErrorMsg => {
+                this.state = HandshakeState::Finished;
+                return match String::from_utf8(buf.to_vec()) {
+                    Ok(error_msg) => {
+                        Poll::Ready(FutureRet::Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            error_msg
+                        )))
+                    }
+                    Err(_) => {
+                        Poll::Ready(FutureRet::Err(io::Error::new(
+                            ErrorKind::InvalidData,
+                            "错误信息格式错误"
+                        )))
+                    }
+                }
+            }
+            HandshakeState::Finished => {
+                return Poll::Ready(FutureRet::Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "parse finished",
+                )));
+            }
+        }
+
+        pin!(this).poll(cx)
     }
 }

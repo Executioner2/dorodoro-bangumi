@@ -1,3 +1,4 @@
+use crate::control::ControlStatus;
 use crate::core::command::CommandHandler;
 use crate::core::context::Context;
 use crate::core::control::Dispatcher;
@@ -7,21 +8,23 @@ use crate::core::protocol::{Identifier, Protocol};
 use crate::core::runtime::Runnable;
 use crate::core::tcp_server::command::Command;
 use crate::core::tcp_server::future::Accept;
+use crate::emitter::transfer::TransferPtr;
+use crate::net::FutureRet;
+use crate::protocol::remote_control;
+use crate::protocol::remote_control::HandshakeParse;
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext};
+use anyhow::{Result, anyhow};
 use dashmap::DashMap;
+use futures::stream::FuturesUnordered;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinHandle;
 use tokio_util::sync::WaitForCancellationFuture;
-use tracing::{info, trace, warn};
-use crate::emitter::transfer::TransferPtr;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext};
-use anyhow::{anyhow, Result};
-use futures::stream::FuturesUnordered;
-use crate::net::FutureRet;
+use tracing::{error, info, trace, warn};
 
 pub mod command;
 mod future;
@@ -44,7 +47,7 @@ pub struct TcpServerContext {
 
     /// 全局上下文
     context: Context,
-    
+
     /// 命令发射器
     emitter: Emitter,
 }
@@ -56,9 +59,9 @@ impl TcpServerContext {
             conns: Arc::new(DashMap::default()),
             context,
             emitter,
-        }    
+        }
     }
-    
+
     pub async fn remove_conn(&self, conn_id: ConnId) {
         self.conns.remove(&conn_id);
     }
@@ -67,19 +70,19 @@ impl TcpServerContext {
 pub struct TcpServer {
     /// tcp server 上下文
     tsc: TcpServerContext,
-    
+
     /// 监听地址
     addr: SocketAddr,
 
     /// Tcp Server 监听器
-    listener: Option<TcpListener>
+    listener: Option<TcpListener>,
 }
 
 impl TcpServer {
     pub fn new(context: Context, emitter: Emitter) -> Self {
         let addr = context.get_config().tcp_server_addr();
         let tsc = TcpServerContext::new(context, emitter);
-        
+
         TcpServer {
             tsc,
             addr,
@@ -97,7 +100,9 @@ impl TcpServer {
             result = &mut accept => {
                 match result {
                     FutureRet::Ok(protocol) => {
-                        Self::protocol_dispatch(tc, socket, protocol).await;
+                        if let Err(e) = Self::protocol_dispatch(tc, socket, protocol).await {
+                            error!("处理协议失败: {}", e);
+                        }
                     },
                     res => {
                         trace!("断开此链接，因为得到了预期之外的结果: {:?}", res);
@@ -109,7 +114,11 @@ impl TcpServer {
 
     /// 协议分发，根据协议 ID 分发到不同的处理函数
     #[inline(always)]
-    async fn protocol_dispatch(tc: TcpServerContext, socket: TcpStream, protocol: Protocol) {
+    async fn protocol_dispatch(
+        tc: TcpServerContext,
+        mut socket: TcpStream,
+        protocol: Protocol,
+    ) -> Result<()> {
         match protocol.id {
             Identifier::BitTorrent => {
                 trace!("接收到 BitTorrent 协议");
@@ -117,17 +126,38 @@ impl TcpServer {
             Identifier::RemoteControl => {
                 trace!("接收到 RemoteControl 协议");
                 // 解析 RemoteControl 的握手协议附加数据
-                let id = tc
-                    .conn_id
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let dispatcher = Dispatcher::new(id, socket, tc.emitter);
-                dispatcher.run().await;
+                let addr = socket.peer_addr()?;
+                match HandshakeParse::new(&mut socket, &addr).await {
+                    #[rustfmt::skip]
+                    FutureRet::Ok(auth_info) => {
+                        let client_auth = tc.context.get_config().client_auth();
+                        if let Err(e) = remote_control::auth_verify(client_auth, &auth_info) {
+                            remote_control::send_handshake_failed(
+                                &mut socket,
+                                ControlStatus::AuthFailed,
+                                e.to_string(),
+                            ).await?;
+                        } else {
+                            remote_control::send_handshake_success(&mut socket).await?;
+                        }
+
+                        let id = tc.conn_id.fetch_add(1, Ordering::Relaxed);
+                        let dispatcher = Dispatcher::new(id, socket, tc.emitter);
+                        dispatcher.run().await;
+                    }
+                    FutureRet::Err(e) => {
+                        return Err(anyhow!("解析 RemoteControl 握手协议失败: {}", e));
+                    }
+                }
             }
         }
+        Ok(())
     }
-    
+
     /// 监听器接收连接
-    fn listener_accept(&mut self) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
+    fn listener_accept(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
         let listener = self.listener.take().unwrap();
         let tsc = self.tsc.clone();
         Box::pin(async move {
@@ -136,7 +166,7 @@ impl TcpServer {
                     Ok((socket, addr)) => {
                         trace!("tcp server 接收到连接: {}", addr);
                         tokio::spawn(Self::accept(socket, tsc.clone()));
-                    },
+                    }
                     Err(e) => {
                         warn!("tcp server 接收连接错误: {}", e);
                     }
@@ -155,7 +185,9 @@ impl Runnable for TcpServer {
         TCP_SERVER.to_string()
     }
 
-    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
+    fn register_lt_future(
+        &mut self,
+    ) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
         let futures = FuturesUnordered::new();
         futures.push(self.listener_accept());
         futures
