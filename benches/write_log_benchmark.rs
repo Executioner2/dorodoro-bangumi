@@ -1,8 +1,8 @@
 //! 写日志基准性能测试
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use dorodoro_bangumi::log;
-use tracing::{Level, info};
+use tracing::{info, Level};
+use doro_util::log;
 
 fn write_log(c: &mut Criterion) {
     let _guard =

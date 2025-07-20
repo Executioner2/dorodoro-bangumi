@@ -1,0 +1,35 @@
+[package]
+name = "benches"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+doro-util = { path = "../doro-util" }
+criterion = "0.6.0"
+bytes = "1.10.1"
+enum_dispatch = "0.3.13"
+tracing = "0.1.41"
+
+[[bench]]
+name = "socket_buffer_benchmark"
+path = "socket_buffer_benchmark.rs"
+harness = false
+
+[[bench]]
+name = "write_log_benchmark"
+path = "write_log_benchmark.rs"
+harness = false
+
+[[bench]]
+name = "dispatch_benchmark"
+path = "dispatch_benchmark.rs"
+harness = false
+
+[[bench]]
+name = "channel_transfer_benchmark"
+path = "channel_transfer_benchmark.rs"
+harness = false
+

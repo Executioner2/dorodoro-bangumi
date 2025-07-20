@@ -115,6 +115,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "benches"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "doro-util",
+ "enum_dispatch",
+ "tracing",
+]
+
+[[package]]
 name = "bendy"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -518,16 +529,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "doro_macro"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "dorodoro-bangumi"
+name = "doro"
 version = "0.1.0"
 dependencies = [
  "ahash",
@@ -537,20 +539,17 @@ dependencies = [
  "bincode",
  "byteorder",
  "bytes",
- "criterion",
  "ctor",
  "dashmap",
- "doro_macro",
- "enum_dispatch",
+ "doro-macro",
+ "doro-util",
  "fnv",
  "futures",
- "hashlink",
  "hex",
  "json-value",
  "lazy_static",
  "libc",
  "memmap2",
- "nanoid",
  "nix",
  "num-bigint",
  "num-traits",
@@ -563,9 +562,59 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
- "time",
  "tokio",
  "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "doro-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
+]
+
+[[package]]
+name = "doro-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "bytes",
+ "ctor",
+ "dashmap",
+ "doro",
+ "doro-util",
+ "fnv",
+ "futures",
+ "rand 0.9.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-appender",
+]
+
+[[package]]
+name = "doro-util"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bendy",
+ "bincode",
+ "bytes",
+ "ctor",
+ "hashlink",
+ "lazy_static",
+ "nanoid",
+ "rand 0.9.1",
+ "time",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -1167,6 +1216,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "io-uring"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b86e202f00093dcba4275d4636b93ef9dd75d025ae560d2521b45ea28ab49013"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -1977,9 +2037,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.140"
+version = "1.0.141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20068b6e96dc6c9bd23e01df8827e6c7e1f2fddd43c21810382803c136b99373"
+checksum = "30b9eff21ebe718216c6ec64e1d9ac57087aad11efc64e32002bce4a0d4c03d3"
 dependencies = [
  "indexmap",
  "itoa",
@@ -2242,15 +2302,17 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.44.1"
+version = "1.46.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f382da615b842244d4b8738c82ed1275e6c5dd90c459a30941cd07080b06c91a"
+checksum = "0cc3a2344dafbe23a245241fe8b09735b521110d30fcefbbd5feb1797ca35d17"
 dependencies = [
  "backtrace",
  "bytes",
+ "io-uring",
  "libc",
  "mio",
  "pin-project-lite",
+ "slab",
  "socket2",
  "tokio-macros",
  "windows-sys 0.52.0",
@@ -2289,9 +2351,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b9590b93e6fcc1739458317cccd391ad3955e2bde8913edf6f95f9e65a8f034"
+checksum = "66a539a9ad6d5d281510d5bd368c973d636c02dbf8a67300bfb6b950696ad7df"
 dependencies = [
  "bytes",
  "futures-core",

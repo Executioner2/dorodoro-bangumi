@@ -20,7 +20,7 @@
 //! 最大带来 5 倍的性能提升。
 use bytes::Bytes;
 use criterion::{Criterion, criterion_group, criterion_main};
-use dorodoro_bangumi::util::buffer::ByteBuffer;
+use doro_util::buffer::ByteBuffer;
 
 const EXPECT_SIZE: usize = 65507;
 const RECV_SIZE: usize = 9572;
