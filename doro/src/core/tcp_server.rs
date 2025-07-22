@@ -19,12 +19,12 @@ use futures::stream::FuturesUnordered;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinHandle;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{error, info, trace, warn};
+use doro_util::global::GlobalId;
 
 pub mod command;
 mod future;
@@ -39,9 +39,6 @@ struct ConnInfo {
 /// 多线程下的共享数据
 #[derive(Clone)]
 pub struct TcpServerContext {
-    /// 链接增长 id
-    conn_id: Arc<AtomicU64>,
-
     /// 链接
     conns: Arc<DashMap<ConnId, ConnInfo>>,
 
@@ -55,7 +52,6 @@ pub struct TcpServerContext {
 impl TcpServerContext {
     fn new(context: Context, emitter: Emitter) -> Self {
         Self {
-            conn_id: Arc::new(AtomicU64::new(0)),
             conns: Arc::new(DashMap::default()),
             context,
             emitter,
@@ -141,7 +137,7 @@ impl TcpServer {
                             remote_control::send_handshake_success(&mut socket).await?;
                         }
 
-                        let id = tc.conn_id.fetch_add(1, Ordering::Relaxed);
+                        let id = GlobalId::global().next_id();
                         let dispatcher = Dispatcher::new(id, socket, tc.emitter);
                         dispatcher.run().await;
                     }

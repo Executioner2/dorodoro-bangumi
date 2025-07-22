@@ -16,16 +16,16 @@ use crate::torrent::TorrentArc;
 use anyhow::Result;
 use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info};
+use doro_util::global::{GlobalId, Id};
 
 pub mod command;
 pub mod gasket;
 
 pub struct GasketInfo {
-    id: u64,
+    id: Id,
     peer_id: Arc<[u8; 20]>,
     join_handle: JoinHandle<()>,
 }
@@ -36,13 +36,10 @@ pub struct PeerManagerContext {
     pub(crate) context: Context,
 
     /// peer 垫片，相同 torrent 的 peer由一个垫片管理
-    gaskets: Arc<DashMap<u64, GasketInfo>>,
+    gaskets: Arc<DashMap<Id, GasketInfo>>,
 
     /// 命令发射器
     emitter: Emitter,
-
-    /// 垫片 id
-    gasket_id: Arc<AtomicU64>,
 
     /// peer_id 生成池，一个垫片一个
     peer_id_pool: Arc<DashSet<[u8; 20]>>,
@@ -69,7 +66,7 @@ impl PeerManagerContext {
         self.gaskets.insert(gasket.id, gasket);
     }
 
-    pub async fn remove_gasket(&self, gasket_id: u64) {
+    pub async fn remove_gasket(&self, gasket_id: Id) {
         if let Some((_key, gasket)) = self.gaskets.remove(&gasket_id) {
             self.peer_id_pool.remove(&*gasket.peer_id);
         }
@@ -91,7 +88,6 @@ impl PeerManager {
             context,
             emitter,
             gaskets: Arc::new(DashMap::new()),
-            gasket_id: Arc::new(AtomicU64::new(0)),
             store,
             peer_id_pool: Arc::new(DashSet::new()),
             // peer_conn_num: Arc::new(AtomicUsize::new(0)),
@@ -106,26 +102,27 @@ impl PeerManager {
     pub async fn start_gasket(&self, torrent: TorrentArc) {
         let context = self.pmc.clone();
 
-        let mut emitter = Emitter::new();
-        context.emitter.get(PEER_MANAGER).map(async |send| {
-            emitter.register(PEER_MANAGER, send);
-        });
+        // let mut emitter = Emitter::new();
+        // context.emitter.get(PEER_MANAGER).map(async |send| {
+        //     emitter.register(PEER_MANAGER, send);
+        // });
+        let emitter = context.emitter.clone();
 
-        let gasket_id = context.gasket_id.fetch_add(1, Ordering::Relaxed);
+        // let gasket_id = context.gasket_id.fetch_add(1, Ordering::Relaxed);
+        let id = GlobalId::global().next_id();
         let peer_id = Arc::new(context.get_peer_id().await);
+
+        #[rustfmt::skip]
         let gasket = Gasket::new(
-            gasket_id,
-            torrent,
+            id, torrent,
             context.clone(),
             peer_id.clone(),
-            emitter,
-            context.store.clone(),
-        )
-        .await;
+            emitter, context.store.clone(),
+        ).await;
 
         let join_handle = tokio::spawn(gasket.run());
         let gasket_info = GasketInfo {
-            id: gasket_id,
+            id,
             peer_id,
             join_handle,
         };

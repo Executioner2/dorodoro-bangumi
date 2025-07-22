@@ -45,6 +45,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info, trace};
 use doro_util::{anyhow_eq, anyhow_ge};
+use doro_util::global::Id;
 use crate::bt::pe_crypto;
 use crate::bt::pe_crypto::CryptoProvide;
 use crate::bt::socket::TcpStreamWrapper;
@@ -315,7 +316,7 @@ impl DerefMut for Writer {
 #[derive(Clone)]
 pub struct PeerContext {
     /// 编号
-    no: u64,
+    no: Id,
 
     /// gasket 共享上下文
     gc: GasketContext,
@@ -328,7 +329,7 @@ pub struct PeerContext {
 }
 
 impl PeerContext {
-    fn new(no: u64, context: GasketContext, dashbord: Dashbord) -> Self {
+    fn new(no: Id, context: GasketContext, dashbord: Dashbord) -> Self {
         Self {
             no,
             gc: context,
@@ -410,7 +411,7 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(
-        no: u64,
+        no: Id,
         addr: SocketAddr,
         context: GasketContext,
         emitter: Emitter,
@@ -439,7 +440,7 @@ impl Peer {
         self.dashbord.clone()
     }
 
-    fn no(&self) -> u64 {
+    fn no(&self) -> Id {
         self.ctx.no
     }
     
@@ -830,7 +831,7 @@ impl Peer {
 
     /// 校验分块
     async fn checkout(
-        peer_no: u64,
+        peer_no: Id,
         context: GasketContext,
         piece_index: u32,
         sender: Sender<TransferPtr>,

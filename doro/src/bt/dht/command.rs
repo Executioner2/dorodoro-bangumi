@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use doro_util::command_system;
+use doro_util::global::Id;
 
 command_system! {
     ctx: DHT,
@@ -47,7 +48,7 @@ impl<'a> CommandHandler<'a, Result<()>> for Spread {
 pub struct FindPeers {
     pub info_hash: NodeId,
     pub resp_tx: Sender<TransferPtr>,
-    pub gasket_id: u64,
+    pub gasket_id: Id,
     pub expect_peers: usize,
 }
 impl<'a> CommandHandler<'a, Result<()>> for FindPeers {

@@ -3,6 +3,7 @@ use crate::torrent::TorrentArc;
 use tracing::trace;
 use anyhow::Result;
 use doro_util::command_system;
+use doro_util::global::Id;
 
 command_system! {
     ctx: PeerManager,
@@ -29,7 +30,7 @@ impl<'a> CommandHandler<'a, Result<()>> for NewDownloadTask {
 
 /// Gasket 退出
 #[derive(Debug)]
-pub struct GasketExit(pub u64);
+pub struct GasketExit(pub Id);
 impl<'a> CommandHandler<'a, Result<()>> for GasketExit {
     type Target = &'a mut PeerManager;
 

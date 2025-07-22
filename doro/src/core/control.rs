@@ -20,6 +20,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::info;
+use doro_util::global::Id;
 use doro_util::is_disconnect;
 use crate::core::control::request_parse::RequestParse;
 use doro_util::net::FutureRet;
@@ -62,7 +63,7 @@ enum ControlResponsePacket {
 
 pub struct Dispatcher {
     /// 控制器id
-    id: u64,
+    id: Id,
 
     /// socket 读取
     socket_read: Option<OwnedReadHalf>,
@@ -75,7 +76,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn new(id: u64, socket: TcpStream, emitter: Emitter) -> Self {
+    pub fn new(id: Id, socket: TcpStream, emitter: Emitter) -> Self {
         let (read, write) = socket.into_split();
         Self {
             id,

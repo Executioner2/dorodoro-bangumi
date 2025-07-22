@@ -11,12 +11,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use transfer::TransferPtr;
 
-#[derive(Eq, PartialEq, Hash)]
-pub enum EmitterType {
-    Scheduler,
-    PeerManager,
-}
-
 #[derive(Clone)]
 pub struct Emitter {
     mpsc_senders: Arc<DashMap<String, Sender<TransferPtr>>>,

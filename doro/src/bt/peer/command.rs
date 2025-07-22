@@ -4,6 +4,7 @@ use bytes::Bytes;
 use tracing::debug;
 use anyhow::{anyhow, Result};
 use doro_util::command_system;
+use doro_util::global::Id;
 
 command_system! {
     ctx: Peer,
@@ -106,7 +107,7 @@ impl<'a> CommandHandler<'a, Result<()>> for TryRequestPiece {
 /// 释放分块
 #[derive(Debug)]
 pub struct FreePiece {
-    pub(crate) peer_no: u64,
+    pub(crate) peer_no: Id,
     pub(crate) pieces: Vec<u32>,
 }
 impl<'a> CommandHandler<'a, Result<()>> for FreePiece {

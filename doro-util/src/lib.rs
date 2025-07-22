@@ -14,3 +14,4 @@ pub mod sync;
 /// 单元测试的全局注册
 #[cfg(test)]
 mod test_global_register;
+pub mod global;

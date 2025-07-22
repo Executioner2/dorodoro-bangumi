@@ -29,6 +29,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, trace};
+use doro_util::global::Id;
 
 pub mod command;
 pub mod entity;
@@ -251,7 +252,7 @@ impl DHT {
         &self,
         info_hash: NodeId,
         resp_tx: Sender<TransferPtr>,
-        gasket_id: u64,
+        gasket_id: Id,
         expect_peers: usize,
     ) {
         // 从路由表中查询出 N 个最近的节点

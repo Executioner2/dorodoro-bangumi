@@ -10,11 +10,12 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace};
+use doro_util::global::Id;
 use doro_util::is_disconnect;
 use doro_util::net::FutureRet;
 
 pub struct WriteFuture {
-    pub(super) no: u64,
+    pub(super) no: Id,
     pub(super) writer: OwnedWriteHalfExt,
     pub(super) cancel_token: CancellationToken,
     pub(super) addr: SocketAddr,
@@ -47,7 +48,7 @@ impl WriteFuture {
 }
 
 pub struct ReadFuture<T: PacketAck + Send> {
-    pub(super) no: u64,
+    pub(super) no: Id,
     pub(super) reader: OwnedReadHalfExt,
     pub(super) cancel_token: CancellationToken,
     pub(super) addr: SocketAddr,

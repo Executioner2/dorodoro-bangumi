@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Ret<T: Serialize> {
     /// 业务逻辑是否成功
     pub status_code: i32,

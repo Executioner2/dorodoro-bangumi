@@ -2,6 +2,8 @@ use crate::register_route;
 use doro_macro::route;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
+use anyhow::Result;
+use crate::router::ret::Ret;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct Info {
@@ -18,31 +20,20 @@ struct TorrentSource {
 }
 
 #[derive(Serialize)]
-struct Ret<T> {
-    code: u32,
-    msg: String,
-    data: Option<T>,
-}
-
-#[derive(Serialize)]
 struct R {
     code: u32,
 }
 
 #[route(code = 0)]
-async fn fun0(torrent: TorrentSource) -> Ret<bool> {
+async fn fun0(torrent: TorrentSource) -> Result<Ret<bool>> {
     info!("torrent source: {:#?}", torrent);
-    let ret = Ret {
-        code: 0,
-        msg: "success".to_string(),
-        data: Some(true),
-    };
-    ret
+    let ret = Ret::ok(true);
+    Ok(ret)
 }
 
 #[route(code = 1)]
-async fn fun1() -> R {
-    R { code: 1 }
+async fn fun1() -> Result<Ret<R>> {
+    Ok(Ret::ok(R { code: 1 }))
 }
 
 #[route(code = 2)]
@@ -50,15 +41,15 @@ async fn fun2(
     #[param] magent: String,
     #[param] name: String,
     #[body] info: Info,
-) -> R {
+) -> Result<Ret<R>> {
     info!("magent: {}, name: {}\tinfo: {:#?}", magent, name, info);
-    R { code: 2 }
+    Ok(Ret::ok(R { code: 2 }))
 }
 
 #[route(code = 3)]
-async fn fun3(args: Vec<String>) -> R {
+async fn fun3(args: Vec<String>) -> Result<Ret<R>> {
     info!("args: {:#?}", args);
-    R { code: 3 }
+    Ok(Ret::ok(R { code: 3 }))
 }
 
 // 处理请求

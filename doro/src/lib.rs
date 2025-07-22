@@ -4,10 +4,12 @@ pub mod bt;
 pub mod core;
 pub mod mapper;
 pub mod client;
+pub mod service;
 
 pub use bt::*;
 pub use core::*;
 pub use client::*;
+pub use service::*;
 
 pub trait Integer: Copy + Sized {}
 impl Integer for i8 {}

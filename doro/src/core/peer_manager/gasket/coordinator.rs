@@ -7,6 +7,7 @@ use tokio::runtime::Handle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, level_enabled, trace, Level};
+use doro_util::global::Id;
 
 pub const SCALE: u8 = 8;
 pub const UNIT: u32 = 1 << SCALE;
@@ -74,7 +75,7 @@ impl Coordinator {
     /// 检查是否可以升级为 lt peer
     async fn checkout_upgrade_lt_peer(&mut self) -> Option<()> {
         let mut temp_peer = None;
-        let mut low = (u64::MAX, u64::MAX, None);
+        let mut low = (Id::default(), u64::MAX, None);
 
         for item in self.ctx.peers.iter() {
             if !item.value().is_lt() {

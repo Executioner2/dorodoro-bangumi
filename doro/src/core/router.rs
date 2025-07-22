@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests;
+pub mod ret;
 
 use anyhow::{anyhow, Result};
 use serde::Serialize;
@@ -7,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use async_trait::async_trait;
 use json_value::JsonValue;
+use crate::router::ret::Ret;
 
 pub type Code = u32;
 
@@ -21,8 +23,8 @@ pub enum HandlerFnType<F1, F2> {
 }
 
 #[async_trait]
-pub trait HandlerTrait<Ret>: Send + Sync {
-    async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret>;
+pub trait HandlerTrait<T: Serialize + Send + Sync +'static>: Send + Sync {
+    async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret<T>>;
 }
 
 pub struct HandlerWrapper<Ret> {
@@ -51,14 +53,14 @@ pub struct NoneInputHandler<F, Fut> {
 }
 
 #[async_trait]
-impl<F, Fut, Ret> HandlerTrait<Ret> for NoneInputHandler<F, Fut>
+impl<F, Fut, T> HandlerTrait<T> for NoneInputHandler<F, Fut>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Ret> + Send + Sync,
-    Ret: Serialize + Send + Sync + 'static,
+    Fut: Future<Output = Result<Ret<T>>> + Send + Sync,
+    T: Serialize + Send + Sync + 'static,
 {
-    async fn call(&self, _: Option<JsonValue>) -> Result<Ret> {
-        Ok((self.f)().await)
+    async fn call(&self, _: Option<JsonValue>) -> Result<Ret<T>> {
+        Ok(handle_ret_after((self.f)().await))
     }
 }
 
@@ -68,15 +70,15 @@ pub struct HasInputHandler<F, Fut> {
 }
 
 #[async_trait]
-impl<F, Fut, Ret> HandlerTrait<Ret> for HasInputHandler<F, Fut>
+impl<F, Fut, T> HandlerTrait<T> for HasInputHandler<F, Fut>
 where
     F: Fn(JsonValue) -> Fut + Send + Sync,
-    Fut: Future<Output = Ret> + Send + Sync,
-    Ret: Serialize + Send + Sync + 'static,
+    Fut: Future<Output = Result<Ret<T>>> + Send + Sync,
+    T: Serialize + Send + Sync + 'static,
 {
-    async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret> {
+    async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret<T>> {
         let json_value = json_value.ok_or_else(|| anyhow!("Missing request params"))?;
-        Ok((self.f)(json_value).await)
+        Ok(handle_ret_after((self.f)(json_value).await))
     }
 }
 
@@ -135,6 +137,10 @@ macro_rules! register_route {
         }
     };
 }
+
+fn handle_ret_after<T: Serialize + Send + Sync + 'static>(ret: Result<Ret<T>>) -> Ret<T> {
+    ret.unwrap_or_else(|e| Ret::default_err(e.to_string()))
+} 
 
 pub async fn handle_request(code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
     Router::global().handle_request(code, body).await

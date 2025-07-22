@@ -5,7 +5,7 @@
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::if_else;
+/// use doro_util::if_else;
 ///
 /// if_else!(true, 1, 2); // 1
 /// if_else!(false, 1, 2); // 2
@@ -103,7 +103,7 @@ macro_rules! command_system {
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::anyhow_eq;
+/// use doro_util::anyhow_eq;
 ///
 /// let a = 1;
 /// let b = 2;
@@ -132,7 +132,7 @@ macro_rules! anyhow_eq {
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::anyhow_ne;
+/// use doro_util::anyhow_ne;
 ///
 /// let a = 1;
 /// let b = 2;
@@ -160,7 +160,7 @@ macro_rules! anyhow_ne {
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::anyhow_le;
+/// use doro_util::anyhow_le;
 ///
 /// let a = 1;
 /// let b = 2;
@@ -189,7 +189,7 @@ macro_rules! anyhow_le {
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::anyhow_lt;
+/// use doro_util::anyhow_lt;
 ///
 /// let a = 1;
 /// let b = 2;
@@ -218,7 +218,7 @@ macro_rules! anyhow_lt {
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::anyhow_ge;
+/// use doro_util::anyhow_ge;
 ///
 /// let a = 1;
 /// let b = 2;
@@ -247,7 +247,7 @@ macro_rules! anyhow_ge {
 /// # Examples
 ///
 /// ```
-/// use dorodoro_bangumi::anyhow_gt;
+/// use doro_util::anyhow_gt;
 ///
 /// let a = 3;
 /// let b = 2;

@@ -1,2 +1,1 @@
-pub mod controller;
-pub mod common;
+pub mod api;

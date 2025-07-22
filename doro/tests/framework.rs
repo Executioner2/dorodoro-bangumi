@@ -1,10 +1,11 @@
+use doro::api::task_api;
+use doro::api::task_api::TorrentSource;
+use doro::protocol;
+use doro_util::default_logger;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::Level;
-use doro::controller::task;
-use doro::protocol;
-use doro_util::default_logger;
 
 default_logger!(Level::DEBUG);
 
@@ -128,10 +129,10 @@ async fn test_add_torrent() {
         .unwrap();
     socket.write(&bytes).await.unwrap(); // socket 连接上
 
-    let request = task::Task {
-          task_name: Some("好东西".to_string()),
-          download_path: Some("./download".to_string()),
-          file_path: "./resources/test1.torrent".to_string(),
+    let request = task_api::Task {
+        task_name: Some("好东西".to_string()),
+        download_path: Some("./download".to_string()),
+        source: TorrentSource::LocalFile("./tests/resources/test6.torrent".to_string()),
     };
     let data = serde_json::to_vec(&request).unwrap();
 
