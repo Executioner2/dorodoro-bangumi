@@ -1,5 +1,5 @@
 use core::fmt::{Display, Formatter};
-use crate::peer_manager::gasket::{Gasket, PeerInfo};
+use crate::task_handler::gasket::{Gasket, PeerInfo};
 use std::net::SocketAddr;
 use tracing::{debug, info, trace};
 use crate::mapper::torrent::TorrentStatus;

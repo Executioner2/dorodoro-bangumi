@@ -11,10 +11,10 @@ pub enum TorrentSource {
     LocalFile(String),
 
     /// 磁力链接
-    MagnetURI,
+    MagnetURI(String),
 
     /// RSS 订阅
-    RSSFeed(u64, String),
+    RSSFeed(u64, String, String),
 }
 
 #[derive(Serialize, Deserialize, Debug)]

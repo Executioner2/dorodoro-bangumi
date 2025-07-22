@@ -1,10 +1,10 @@
 use crate::peer::{MsgType, Peer};
-use crate::peer_manager::gasket::PeerExitReason;
 use bytes::Bytes;
 use tracing::debug;
 use anyhow::{anyhow, Result};
 use doro_util::command_system;
 use doro_util::global::Id;
+use crate::task_handler::gasket::PeerExitReason;
 
 command_system! {
     ctx: Peer,

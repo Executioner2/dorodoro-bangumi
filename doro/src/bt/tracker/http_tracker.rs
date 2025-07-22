@@ -13,6 +13,7 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::warn;
+use crate::task_handler::PeerId;
 
 #[derive(Debug)]
 pub struct Announce {
@@ -112,12 +113,12 @@ impl FromBencode for Announce {
 pub struct HttpTracker {
     announce: String,
     info_hash: Arc<[u8; 20]>,
-    peer_id: Arc<[u8; 20]>,
+    peer_id: PeerId,
     next_request_time: u64,
 }
 
 impl HttpTracker {
-    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: Arc<[u8; 20]>) -> Self {
+    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: PeerId) -> Self {
         Self {
             announce,
             info_hash,
@@ -149,7 +150,7 @@ impl HttpTracker {
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
             self.announce,
             percent_encode(self.info_hash.as_slice(), NON_ALPHANUMERIC).to_string(),
-            percent_encode(self.peer_id.as_slice(), NON_ALPHANUMERIC).to_string(),
+            percent_encode(self.peer_id.value().as_slice(), NON_ALPHANUMERIC).to_string(),
             info.port,
             info.uploaded.load(Ordering::Acquire),
             download,

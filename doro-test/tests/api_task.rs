@@ -43,12 +43,20 @@ async fn test_add_task() {
     let task = Task {
         task_name: Some("test".to_string()),
         download_path: Some("./download".to_string()),
-        source: TorrentSource::LocalFile("./tests/resources/test6.torrent".to_string()),
+        source: TorrentSource::LocalFile("./tests/resources/test7.torrent".to_string()),
     };
 
     let mut client = client_auth::client().await.unwrap();
     let rf = client.request(code, task).await.unwrap();
     let ret = rf.await;
+    assert_eq!(ret.code, code);
+    assert_eq!(ret.status, ControlStatus::Ok as Status);
 
-    info!("ret: {:?}", ret);
+    let torrent_ret: Result<Ret<TorrentRet>, _> = serde_json::from_slice(ret.body.as_ref());
+    assert!(torrent_ret.is_ok());
+    assert_eq!(torrent_ret.as_ref().unwrap().status_code, 0);
+
+    let data = torrent_ret.unwrap().data;
+    assert!(data.is_some());
+    info!("data: {:?}", data);
 }

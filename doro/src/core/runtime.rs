@@ -1,12 +1,12 @@
 use crate::config::CHANNEL_BUFFER;
-use crate::emitter::transfer::TransferPtr;
 use crate::emitter::Emitter;
-use anyhow::{anyhow, Result};
+use crate::emitter::transfer::TransferPtr;
+use anyhow::{Result, anyhow};
 use core::fmt::Debug;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::pin::Pin;
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, info, warn};
 
@@ -69,20 +69,22 @@ impl RunContext {
 pub trait Runnable {
     /// 启动实例
     #[allow(async_fn_in_trait)]
-    async fn run(mut self) where Self: Sized {
+    async fn run(mut self)
+    where
+        Self: Sized,
+    {
         // 注册命令通道
-        let mut emitter = self.emitter().clone();
         let id = Self::get_transfer_id(self.get_suffix());
         debug!("{id} 启动中...");
         let (send, mut recv) = {
             let (send, recv) = channel(CHANNEL_BUFFER);
-            emitter.register(id.clone(), send.clone());
+            Emitter::global().register(id.clone(), send.clone());
             (send, recv)
         };
 
         let exit_reason: ExitReason;
         let rc = RunContext { send };
-        
+
         if let Err(e) = self.run_before_handle(rc).await {
             error!("{id} 启动失败: {:?}", e);
             exit_reason = ExitReason::Error(e);
@@ -144,12 +146,9 @@ pub trait Runnable {
         // 移除命令通道，然后执行清理操作
         debug!("[{id}] - 退出原因: {:?}", exit_reason);
         self.shutdown(exit_reason).await;
-        emitter.remove(&id);
+        Emitter::global().remove(&id);
         debug!("[{id}] - 已退出");
     }
-
-    /// 获取 Emitter 实例
-    fn emitter(&self) -> &Emitter;
 
     /// 获取 TransferId
     fn get_transfer_id<T: ToString>(suffix: T) -> String;
@@ -160,7 +159,9 @@ pub trait Runnable {
     }
 
     /// 注册长时间运行的异步任务
-    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
+    fn register_lt_future(
+        &mut self,
+    ) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
         FuturesUnordered::default()
     }
 

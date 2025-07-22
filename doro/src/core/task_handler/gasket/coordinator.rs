@@ -1,6 +1,6 @@
 use doro_util::collection::FixedQueue;
 use crate::peer::rate_control::RateControl;
-use crate::peer_manager::gasket::{PeerExitReason, GasketContext};
+use crate::task_handler::gasket::{PeerExitReason, GasketContext};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::runtime::Handle;

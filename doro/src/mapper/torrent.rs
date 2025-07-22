@@ -2,7 +2,7 @@
 
 use doro_util::bytes_util;
 use crate::db::ConnWrapper;
-use crate::peer_manager::gasket::PieceStatus;
+use crate::task_handler::gasket::PieceStatus;
 use crate::torrent::TorrentArc;
 use anyhow::{Error, Result, anyhow};
 use bytes::BytesMut;
@@ -113,7 +113,7 @@ pub trait TorrentMapper {
     /// * `save_path`: 保存路径
     ///
     /// returns: bool `true`: 添加成功 `false`: 添加失败
-    fn add_torrent(&mut self, torrent: TorrentArc, save_path: PathBuf) -> Result<bool>;
+    fn add_torrent(&mut self, torrent: &TorrentArc, save_path: &PathBuf) -> Result<bool>;
 
     /// 列出所有种子
     ///
@@ -176,7 +176,7 @@ impl TorrentMapper for ConnWrapper {
     }
 
     /// 添加下载任务
-    fn add_torrent(&mut self, torrent: TorrentArc, save_path: PathBuf) -> Result<bool> {
+    fn add_torrent(&mut self, torrent: &TorrentArc, save_path: &PathBuf) -> Result<bool> {
         let tx = self.transaction()?;
 
         let count: u32 = tx

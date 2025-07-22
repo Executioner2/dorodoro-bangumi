@@ -5,7 +5,6 @@ mod tests;
 
 use doro_util::buffer::ByteBuffer;
 use crate::config::Config;
-use crate::emitter::Emitter;
 use doro_util::fs::OpenOptionsExt;
 use crate::torrent::BlockInfo;
 use anyhow::Result;
@@ -23,6 +22,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use doro_util::anyhow_le;
+use crate::context::Context;
 
 struct FileWriter {
     /// 文件路径
@@ -105,9 +105,6 @@ pub struct Store {
     /// 配置
     config: Config,
 
-    /// 命令发射器
-    _emitter: Emitter,
-
     /// 文件写入 handle
     file_writer: Arc<DashMap<PathBuf, FileWriter>>,
 
@@ -119,11 +116,11 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(config: Config, emitter: Emitter) -> Self {
+    pub fn new() -> Self {
+        let config = Context::global().get_config().clone();
         let permits = config.hash_concurrency();
         Self {
             config,
-            _emitter: emitter,
             file_writer: Arc::new(DashMap::new()),
             buf_size: Arc::new(AtomicUsize::new(0)),
             hash_semaphore: Arc::new(Semaphore::new(permits)),

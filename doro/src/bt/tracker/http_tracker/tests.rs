@@ -4,6 +4,7 @@ use crate::tracker::{AnnounceInfo, Event};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tracing::info;
+use crate::task_handler::PeerId;
 
 /// HTTP tracker 握手测试
 #[tokio::test]
@@ -12,7 +13,7 @@ async fn test_announce() -> Result<(), Box<dyn std::error::Error>> {
     let torrent = Torrent::parse_torrent("tests/resources/test3.torrent")?;
     let peer_id = doro_util::rand::gen_peer_id();
     let announce = "http://nyaa.tracker.wf:7777/announce".to_string();
-    let mut tracker = HttpTracker::new(announce, Arc::new(torrent.info_hash), Arc::new(peer_id));
+    let mut tracker = HttpTracker::new(announce, Arc::new(torrent.info_hash), PeerId::from_peer_id(peer_id));
 
     let info = AnnounceInfo {
         download: Arc::new(AtomicU64::new(0)),

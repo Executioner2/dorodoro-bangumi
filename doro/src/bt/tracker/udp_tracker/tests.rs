@@ -20,6 +20,7 @@ use tokio::net::TcpStream;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 use tracing::{error, info};
+use crate::task_handler::PeerId;
 
 /// 测试是否能发起 connect 请求
 #[tokio::test]
@@ -30,7 +31,7 @@ async fn test_connect() {
     let mut tracker = UdpTracker::new(
         "tracker.torrent.eu.org:451".to_string(),
         Arc::new(info_hash),
-        Arc::new(peer_id),
+        PeerId::from_peer_id(peer_id),
     );
     info!("connect before: {:?}", tracker.connect);
     tracker.update_connect().await.unwrap();
@@ -47,7 +48,7 @@ async fn test_announce() {
     let mut tracker = UdpTracker::new(
         "tracker.torrent.eu.org:451".to_string(),
         Arc::new(torrent.info_hash),
-        Arc::new(peer_id),
+        PeerId::from_peer_id(peer_id),
     );
     let info = AnnounceInfo {
         download: Arc::new(AtomicU64::new(0)),

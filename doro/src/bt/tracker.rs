@@ -6,8 +6,6 @@ use doro_util::bytes_util::Bytes2Int;
 use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
-use crate::peer_manager::PeerManagerContext;
-use crate::peer_manager::gasket::command::{DiscoverPeerAddr, PeerSource};
 use crate::runtime::{CommandHandleResult, CustomTaskResult, RunContext, Runnable};
 use crate::torrent::TorrentArc;
 use crate::tracker::http_tracker::HttpTracker;
@@ -29,6 +27,9 @@ use crate::tracker::command::Command;
 use anyhow::Result;
 use futures::stream::FuturesUnordered;
 use doro_util::{anyhow_eq, datetime};
+use crate::task_handler::gasket::command::{DiscoverPeerAddr, PeerSource};
+use crate::task_handler::PeerId;
+
 // ===========================================================================
 // Peer Host
 // ===========================================================================
@@ -113,7 +114,7 @@ impl AnnounceInfo {
 fn parse_tracker_host(
     announce: &String,
     info_hash: Arc<[u8; 20]>,
-    peer_id: Arc<[u8; 20]>,
+    peer_id: PeerId,
 ) -> Option<TrackerInstance> {
     if announce.starts_with("http") {
         Some(TrackerInstance::HTTP(HttpTracker::new(
@@ -143,7 +144,7 @@ fn parse_tracker_host(
 }
 
 fn instance_tracker(
-    peer_id: Arc<[u8; 20]>,
+    peer_id: PeerId,
     torrent: TorrentArc,
 ) -> Vec<Arc<Mutex<(Event, TrackerInstance)>>> {
     let mut trackers = vec![];
@@ -175,9 +176,6 @@ pub enum TrackerInstance {
 /// tracker
 pub struct Tracker {
     info: AnnounceInfo,
-    emitter: Emitter,
-    #[allow(dead_code)]
-    pmc: PeerManagerContext,
     gasket_transfer_id: String,
     trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>,
     scan_time: u64,
@@ -187,10 +185,8 @@ pub struct Tracker {
 impl Tracker {
     pub fn new(
         torrent: TorrentArc,
-        peer_id: Arc<[u8; 20]>,
+        peer_id: PeerId,
         info: AnnounceInfo,
-        emitter: Emitter,
-        pmc: PeerManagerContext,
         gasket_transfer_id: String,
         cancel_token: CancellationToken
     ) -> Self {
@@ -198,8 +194,6 @@ impl Tracker {
 
         Self {
             info,
-            emitter,
-            pmc,
             gasket_transfer_id,
             trackers,
             scan_time: datetime::now_secs(),
@@ -349,7 +343,7 @@ impl Tracker {
             source: PeerSource::Tracker,
         }
             .into();
-        self.emitter
+        Emitter::global()
             .send(&self.gasket_transfer_id, cmd)
             .await
             .unwrap();
@@ -362,8 +356,7 @@ impl Tracker {
         let scan_time = self.scan_time;
         let info = self.info.clone();
 
-        let send_to_gasket: Sender<TransferPtr> =
-            self.emitter.get(&self.gasket_transfer_id).unwrap();
+        let send_to_gasket: Sender<TransferPtr> = Emitter::global().get(&self.gasket_transfer_id).unwrap();
         
         Box::pin(async move {
             loop {
@@ -381,10 +374,6 @@ impl Tracker {
 }
 
 impl Runnable for Tracker {
-    fn emitter(&self) -> &Emitter {
-        &self.emitter
-    }
-
     fn get_transfer_id<T: ToString>(suffix: T) -> String {
         format!("{}{}", suffix.to_string(), TRACKER)
     }

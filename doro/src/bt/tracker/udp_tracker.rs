@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::warn;
 use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime};
+use crate::task_handler::PeerId;
 use crate::tracker;
 
 type Buffer = Vec<u8>;
@@ -69,26 +70,13 @@ pub struct UdpTracker {
     retry_count: u8,
     announce: String,
     info_hash: Arc<[u8; 20]>,
-    peer_id: Arc<[u8; 20]>,
+    peer_id: PeerId,
     next_request_time: u64,
 }
 
 impl UdpTracker {
     /// 创建一个 UDP Tracker 实例（默认读超时时间为 15 秒）
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use std::sync::Arc;
-    /// use doro_util::rand::gen_peer_id;
-    /// use doro::tracker::{udp_tracker as udp_tracker};
-    /// use udp_tracker::UdpTracker;
-    ///
-    /// let info_hash = Arc::new([0u8; 20]);
-    /// let peer_id = Arc::new(gen_peer_id());
-    /// let mut tracker = UdpTracker::new("tracker.torrent.eu.org:451".to_string(), info_hash, peer_id);
-    /// ```
-    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: Arc<[u8; 20]>) -> Self {
+    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: PeerId) -> Self {
         Self {
             connect: Connect::default(),
             retry_count: 0,
@@ -114,7 +102,7 @@ impl UdpTracker {
         let download = info.download.load(Ordering::Acquire);
         let left = info.resource_size - download;
         req.write(self.info_hash.as_slice())?;
-        req.write(self.peer_id.as_slice())?;
+        req.write(self.peer_id.value().as_slice())?;
         req.write_u64::<BigEndian>(download)?;
         req.write_u64::<BigEndian>(left)?;
         req.write_u64::<BigEndian>(info.uploaded.load(Ordering::Acquire))?;

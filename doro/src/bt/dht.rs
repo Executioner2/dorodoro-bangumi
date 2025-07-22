@@ -6,12 +6,9 @@ use crate::context::Context;
 use crate::dht::command::Command;
 use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
 use crate::dht::routing::{Node, NodeId, REFRESH_INTERVAL, RoutingTable};
-use crate::emitter::Emitter;
 use crate::emitter::constant::DHT;
 use crate::emitter::transfer::TransferPtr;
 use crate::mapper::dht::DHTMapper;
-use crate::peer_manager::gasket;
-use crate::peer_manager::gasket::command::PeerSource;
 use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
 use doro_util::sync::MutexExt;
 use crate::udp_server::UdpServer;
@@ -30,6 +27,9 @@ use tokio::sync::mpsc::Sender;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, trace};
 use doro_util::global::Id;
+use crate::emitter::Emitter;
+use crate::task_handler::gasket;
+use crate::task_handler::gasket::command::PeerSource;
 
 pub mod command;
 pub mod entity;
@@ -142,12 +142,6 @@ pub struct DHT {
     /// dht 请求
     dht_request: DHTRequestA,
 
-    /// 全局上下文
-    ctx: Context,
-
-    /// 命令发射器。注册到全局 emitter 中
-    emitter: Emitter,
-
     /// 路由表
     routing_table: RoutingTableAM,
 
@@ -160,8 +154,6 @@ pub struct DHT {
 
 impl DHT {
     pub fn new(
-        emitter: Emitter,
-        ctx: Context,
         udp_server: UdpServer,
         routing_table: RoutingTable,
         bootstrap_nodes: Vec<String>,
@@ -171,8 +163,6 @@ impl DHT {
         Self {
             own_id,
             dht_request: Arc::new(dht_request),
-            emitter,
-            ctx,
             routing_table: Arc::new(Mutex::new(routing_table)),
             bootstrap_nodes,
             gpcs: Arc::new(Semaphore::new(GET_PEERS_CONCURRENCY)),
@@ -333,7 +323,7 @@ impl DHT {
     async fn refresh_routing_table(&mut self) {
         let routing_table = self.routing_table.clone();
         let dht_request = self.dht_request.clone();
-        let conn = self.ctx.get_conn().await.unwrap();
+        let conn = Context::global().get_conn().await.unwrap();
         tokio::task::spawn(async move {
             debug!("开始刷新 dht 路由表");
             loop {
@@ -385,10 +375,9 @@ impl DHT {
         &self,
     ) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
         let id = Self::get_transfer_id(self.get_suffix());
-        let emitter = self.emitter.clone();
         Box::pin(async move {
             loop {
-                let _ = emitter.send(&id, command::RefreshRoutingTable.into()).await;
+                let _ = Emitter::global().send(&id, command::RefreshRoutingTable.into()).await;
                 tokio::time::sleep(REFRESH_INTERVAL).await;
             }
         })
@@ -396,10 +385,6 @@ impl DHT {
 }
 
 impl Runnable for DHT {
-    fn emitter(&self) -> &Emitter {
-        &self.emitter
-    }
-
     fn get_transfer_id<T: ToString>(_suffix: T) -> String {
         DHT.to_string()
     }
@@ -414,7 +399,7 @@ impl Runnable for DHT {
     }
 
     fn cancelled(&self) -> WaitForCancellationFuture<'_> {
-        self.ctx.cancelled()
+        Context::global().cancelled()
     }
 
     async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {

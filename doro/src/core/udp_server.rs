@@ -53,22 +53,18 @@ pub struct UdpServer {
     /// 响应结果
     result_store: Arc<DashMap<u16, (Bytes, SocketAddr)>>,
 
-    /// 全局上下文
-    context: Context,
-
     /// 循环 id
     cycle_id: Arc<CycleId>,
 }
 
 impl UdpServer {
-    pub async fn new(context: Context) -> Result<Self> {
-        let bind = context.get_config().udp_server_addr();
+    pub async fn new() -> Result<Self> {
+        let bind = Context::global().get_config().udp_server_addr();
         let socket = UdpSocket::bind(bind).await?;
         Ok(Self {
             socket: Arc::new(socket),
             inflight: Arc::new(DashMap::new()),
             result_store: Arc::new(DashMap::new()),
-            context,
             cycle_id: Arc::new(CycleId::new()),
         })
     }
@@ -104,7 +100,7 @@ impl UdpServer {
     }
 
     fn packet_size(&self) -> usize {
-        self.context.get_config().udp_packet_limit()
+        Context::global().get_config().udp_packet_limit()
     }
 
     /// 解析收到的数据
@@ -131,7 +127,7 @@ impl UdpServer {
         let mut recv_buf = ByteBuffer::new(self.packet_size());
         loop {
             tokio::select! {
-                _ = self.context.cancelled() => {
+                _ = Context::global().cancelled() => {
                     break;
                 }
                 result = self.socket.recv_from(recv_buf.as_mut()) => {

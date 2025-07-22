@@ -40,10 +40,24 @@ macro_rules! linked_hashmap {
 /// 命令宏
 #[macro_export]
 macro_rules! command_system {
-    (
-        ctx: $ctx:ty,
-        Command { $($variant:ident),+ $(,)? }
-    ) => {
+    (ctx: $ctx:ty) => {
+        use crate::core::command::CommandHandler;
+        use crate::emitter::transfer::{CommandEnum, TransferPtr};
+
+        #[derive(Debug)]
+        pub enum Command {}
+
+        impl CommandEnum for Command {}
+
+        impl<'a> CommandHandler<'a, Result<()>> for Command {
+            type Target = &'a mut $ctx;
+
+            async fn handle(self, _ctx: Self::Target) -> Result<()> {
+                Ok(())
+            }
+        }
+    };
+    (ctx: $ctx:ty, Command { $($variant:ident),+ $(,)? }) => {
         use crate::core::command::CommandHandler;
         use crate::emitter::transfer::{CommandEnum, TransferPtr};
         

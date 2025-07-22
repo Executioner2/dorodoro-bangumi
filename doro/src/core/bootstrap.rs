@@ -1,15 +1,13 @@
 use crate::config::DATABASE_CONN_LIMIT;
 use crate::core::config::Config;
 use crate::core::context::Context;
-use crate::core::emitter::Emitter;
-use crate::core::peer_manager::PeerManager;
 use crate::core::runtime::Runnable;
-use crate::core::scheduler::Scheduler;
 use crate::core::tcp_server::TcpServer;
 use crate::core::udp_server::UdpServer;
 use crate::db::Db;
 use crate::mapper;
 use tracing::{info, trace};
+use crate::core::task_handler::TaskHandler;
 use crate::dht::DHT;
 use crate::dht::routing::{NodeId, RoutingTable};
 
@@ -21,32 +19,23 @@ pub async fn start() {
     let db = Db::new(mapper::DB_SAVE_PATH, mapper::DB_NAME, mapper::INIT_SQL, DATABASE_CONN_LIMIT).unwrap();
     let context = load_context(db).await;
 
-    // 命令发射器
-    let emitter = Emitter::new();
-
     trace!("启动 tcp server");
-    let tcp_server = TcpServer::new(context.clone(), emitter.clone());
+    let tcp_server = TcpServer::new();
     let tcp_server_handle = tokio::spawn(tcp_server.run());
 
     trace!("启动 udp server");
-    let udp_server = UdpServer::new(context.clone()).await.unwrap();
+    let udp_server = UdpServer::new().await.unwrap();
     let udp_server_handle = tokio::spawn(udp_server.clone().run());
     
     trace!("启动 dht");
     let (routing_table, bootstrap_nodes) = load_routing_table(&context).await;
-    let dht_server = DHT::new(emitter.clone(), context.clone(), udp_server, routing_table, bootstrap_nodes);
+    let dht_server = DHT::new(udp_server, routing_table, bootstrap_nodes);
     let dht_server_handle = tokio::spawn(dht_server.run());
 
-    trace!("启动 peer 管理器");
-    let peer_manager = PeerManager::new(context.clone(), emitter.clone());
-    let peer_manager_handle = tokio::spawn(peer_manager.run());
-
-    trace!("启动调度器");
-    let scheduler = Scheduler::new(context, emitter);
-    scheduler.run().await;
+    trace!("初始化任务处理器");
+    TaskHandler::init().await;
 
     info!("等待资源关闭中...");
-    peer_manager_handle.await.unwrap();
     dht_server_handle.await.unwrap();
     udp_server_handle.await.unwrap();
     tcp_server_handle.await.unwrap();

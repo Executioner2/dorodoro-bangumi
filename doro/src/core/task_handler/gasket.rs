@@ -11,9 +11,8 @@ use crate::mapper::torrent::{TorrentEntity, TorrentMapper, TorrentStatus};
 use crate::peer::rate_control::probe::Dashbord;
 use crate::peer::rate_control::RateControl;
 use crate::peer::{Peer, Piece};
-use crate::peer_manager::gasket::command::{Command, SaveProgress, StartWaittingAddr};
-use crate::peer_manager::gasket::coordinator::Coordinator;
-use crate::peer_manager::PeerManagerContext;
+use crate::task_handler::gasket::command::{Command, SaveProgress, StartWaittingAddr};
+use crate::task_handler::gasket::coordinator::Coordinator;
 use crate::runtime::{CommandHandleResult, CustomExitReason, CustomTaskResult, ExitReason, RunContext, Runnable};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
@@ -40,8 +39,9 @@ use doro_util::global::{GlobalId, Id};
 use crate::dht::command::FindPeers;
 use crate::dht::DHT;
 use crate::dht::routing::NodeId;
-use crate::{peer, peer_manager};
-use crate::peer_manager::command::GasketExit;
+use crate::context::Context;
+use crate::peer;
+use crate::task_handler::{PeerId, TaskHandler};
 
 /// 每间隔一分钟扫描一次 peers
 const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
@@ -155,11 +155,8 @@ pub struct GasketContext {
     /// gasket 的 id
     gtid: String,
 
-    /// peer manager context
-    pm_ctx: PeerManagerContext,
-
     /// peer id
-    peer_id: Arc<[u8; 20]>,
+    peer_id: PeerId,
 
     /// 种子信息
     torrent: TorrentArc,
@@ -188,9 +185,6 @@ pub struct GasketContext {
     /// 可连接，但是没有任务可分配的 peer
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
 
-    /// 命令发射器
-    emitter: Emitter,
-
     /// peer 传输速率
     peer_transfer_speed: Arc<DashMap<Id, u64>>,
 
@@ -201,11 +195,9 @@ pub struct GasketContext {
 impl GasketContext {
     fn new(
         gtid: String,
-        pm_ctx: PeerManagerContext,
-        peer_id: Arc<[u8; 20]>,
+        peer_id: PeerId,
         torrent: TorrentArc,
         entity: TorrentEntity,
-        emitter: Emitter,
     ) -> Self {
         let ub: DashMap<u32, PieceStatus> =
             entity.underway_bytefield.unwrap().into_iter().collect();
@@ -213,7 +205,6 @@ impl GasketContext {
 
         Self {
             gtid,
-            pm_ctx,
             peer_id,
             torrent,
             peers: Arc::new(DashMap::new()),
@@ -224,7 +215,6 @@ impl GasketContext {
             underway_bytefield: Arc::new(ub),
             unstart_host: Arc::new(DashSet::new()),
             wait_queue: Arc::new(Mutex::new(VecDeque::new())),
-            emitter,
             peer_transfer_speed: Arc::new(DashMap::new()),
             status: Arc::new(Mutex::from(status)),
         }
@@ -235,11 +225,11 @@ impl GasketContext {
     }
 
     pub fn cancel_token(&self) -> WaitForCancellationFuture {
-        self.pm_ctx.context.cancelled()
+        Context::global().cancelled()
     }
 
     pub fn peer_id(&self) -> &[u8; 20] {
-        self.peer_id.as_ref()
+        self.peer_id.value()
     }
 
     pub fn torrent(&self) -> TorrentArc {
@@ -247,7 +237,7 @@ impl GasketContext {
     }
 
     pub fn config(&self) -> Config {
-        self.pm_ctx.context.get_config().clone()
+        Context::global().get_config().clone()
     }
 
     pub fn save_path(&self) -> &PathBuf {
@@ -260,7 +250,7 @@ impl GasketContext {
 
     pub async fn peer_exit(&mut self, peer_no: Id, reason: PeerExitReason) {
         debug!("peer_no [{}] 退出了，退出原因: {:?}", peer_no, reason);
-        if self.pm_ctx.context.is_cancelled() {
+        if Context::global().is_cancelled() {
             return;
         }
 
@@ -275,8 +265,7 @@ impl GasketContext {
                 trace!("将这个地址从不可用host中移除了");
 
                 // 从等待队列中唤醒一个
-                if let Err(e) = self
-                    .emitter
+                if let Err(e) = Emitter::global()
                     .send(&self.gtid, StartWaittingAddr.into())
                     .await
                 {
@@ -302,7 +291,7 @@ impl GasketContext {
             let tid = Peer::get_transfer_id(peer_no);
             let cmd = peer::command::TryRequestPiece.into();
             item.wait_piece = false;
-            let _ = self.emitter.send(&tid, cmd).await;
+            let _ = Emitter::global().send(&tid, cmd).await;
         }
     }
 
@@ -424,7 +413,7 @@ impl GasketContext {
                         peer_no: peer.0,
                         pieces: free_piece,
                     }.into();
-                    let _ = self.emitter.send(&tid, cmd).await;
+                    let _ = Emitter::global().send(&tid, cmd).await;
                     flag = true;
                     break;
                 }
@@ -438,7 +427,7 @@ impl GasketContext {
     pub async fn notify_peer_stop(&self, peer_no: Id, reason: PeerExitReason) {
         let tid = Peer::get_transfer_id(peer_no);
         let cmd = peer::command::Exit { reason }.into();
-        let _ = self.emitter.send(&tid, cmd).await; // 可能在通知退出前就已经退出了，所以忽略错误
+        let _ = Emitter::global().send(&tid, cmd).await; // 可能在通知退出前就已经退出了，所以忽略错误
     }
 
     /// 升级为 lt peer
@@ -474,7 +463,7 @@ impl GasketContext {
         if let Some(peer_info) = self.wait_queue.lock().await.pop_front() {
             info!("启动一个新的 temp peer, addr: {}", peer_info.addr);
             let cmd = command::StartTempPeer { peer_info }.into();
-            self.emitter.send(&self.gtid, cmd).await.unwrap();
+            Emitter::global().send(&self.gtid, cmd).await.unwrap();
         }
     }
 
@@ -521,7 +510,7 @@ impl GasketContext {
             status: Some(status),
         }
         .into();
-        self.emitter.send(&self.gtid, cmd).await.unwrap();
+        Emitter::global().send(&self.gtid, cmd).await.unwrap();
     }
 
     /// 下载完成后的后置处理
@@ -588,20 +577,16 @@ impl Gasket {
     pub async fn new(
         id: Id,
         torrent: TorrentArc,
-        pm_ctx: PeerManagerContext,
-        peer_id: Arc<[u8; 20]>,
-        emitter: Emitter,
+        peer_id: PeerId,
         store: Store,
     ) -> Self {
-        let conn = pm_ctx.context.get_conn().await.unwrap();
+        let conn = Context::global().get_conn().await.unwrap();
         let entity = conn.recover_from_db(&torrent.info_hash).unwrap();
         let ctx = GasketContext::new(
             Self::get_transfer_id(id),
-            pm_ctx,
             peer_id,
             torrent,
             entity,
-            emitter,
         );
 
         Self { id, ctx, store, future_token: (CancellationToken::new(), vec![]) }
@@ -612,7 +597,7 @@ impl Gasket {
     }
 
     async fn get_conn(&self) -> ConnWrapper {
-        self.ctx.pm_ctx.context.get_conn().await.unwrap()
+        Context::global().get_conn().await.unwrap()
     }
     
     async fn start_peer(&self, addr: SocketAddr) {
@@ -671,7 +656,6 @@ impl Gasket {
             peer_no,
             addr,
             self.ctx.clone(),
-            self.ctx.emitter.clone(),
             self.store.clone(),
             dashbord.clone(),
         );
@@ -722,8 +706,6 @@ impl Gasket {
             self.ctx.torrent.clone(),
             self.ctx.peer_id.clone(),
             info,
-            self.ctx.emitter.clone(),
-            self.ctx.pm_ctx.clone(),
             transfer_id,
             cancel_token
         );
@@ -745,8 +727,7 @@ impl Gasket {
         let context = self.ctx.clone();
         let info_hash = NodeId::new(self.ctx.torrent.info_hash.clone());
         let gakset_id = self.id;
-        let emitter = self.emitter().clone();
-        let resp_tx = self.emitter().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
+        let resp_tx = Emitter::global().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
         let status = self.ctx.status.clone();
         
         Box::pin(async move {
@@ -761,7 +742,7 @@ impl Gasket {
                         gasket_id: gakset_id,
                         expect_peers: DHT_EXPECT_PEERS,
                     }.into();
-                    let _ = emitter.send(&DHT::get_transfer_id(""), cmd).await;
+                    let _ = Emitter::global().send(&DHT::get_transfer_id(""), cmd).await;
                 }
                 tokio::time::sleep(DHT_FIND_PEERS_INTERVAL).await;
             }
@@ -772,10 +753,6 @@ impl Gasket {
 }
 
 impl Runnable for Gasket {
-    fn emitter(&self) -> &Emitter {
-        &self.ctx.emitter
-    }
-
     fn get_transfer_id<T: ToString>(suffix: T) -> String {
         format!("{}{}", GASKET_PREFIX, suffix.to_string())
     }
@@ -801,7 +778,7 @@ impl Runnable for Gasket {
     }
 
     fn cancelled(&self) -> WaitForCancellationFuture<'_> {
-        self.ctx.pm_ctx.context.cancelled()
+        Context::global().cancelled()
     }
     
     async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
@@ -827,8 +804,7 @@ impl Runnable for Gasket {
         while let Some(Some(handle)) = handles.pop() {
             handle.await.unwrap();
         }
-        let cmd = GasketExit(self.id);
-        let _ = self.emitter().send(&peer_manager::PeerManager::get_transfer_id(""), cmd.into()).await;
         self.save_progress(None).await;
+        TaskHandler::global().remove_gasket(self.id);
     }
 }

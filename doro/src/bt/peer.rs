@@ -18,14 +18,12 @@ use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
 };
 use crate::core::runtime::Runnable;
-use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
-use crate::peer_manager::gasket::{PeerExitReason, GasketContext};
 use crate::store::Store;
 use crate::torrent::TorrentArc;
 use byteorder::{BigEndian, WriteBytesExt};
@@ -49,7 +47,9 @@ use doro_util::global::Id;
 use crate::bt::pe_crypto;
 use crate::bt::pe_crypto::CryptoProvide;
 use crate::bt::socket::TcpStreamWrapper;
+use crate::emitter::Emitter;
 use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
+use crate::task_handler::gasket::{GasketContext, PeerExitReason};
 
 const MSS: u32 = 17;
 
@@ -383,9 +383,6 @@ pub struct Peer {
     /// 对端的状态
     opposite_peer_status: Status,
 
-    /// 指令发射器
-    emitter: Emitter,
-
     /// 存储处理
     store: Store,
 
@@ -414,7 +411,6 @@ impl Peer {
         no: Id,
         addr: SocketAddr,
         context: GasketContext,
-        emitter: Emitter,
         store: Store,
         dashbord: Dashbord,
     ) -> Self {
@@ -426,7 +422,6 @@ impl Peer {
             addr,
             opposite_peer_id: None,
             opposite_peer_status: Status::Choke,
-            emitter,
             store,
             opposite_peer_bitfield: BytesMut::new(),
             response_pieces: FnvHashMap::default(),
@@ -799,8 +794,7 @@ impl Peer {
         let context = self.ctx.gc.clone();
         let store = self.store.clone();
         let peer_no = self.no();
-        let sender = self
-            .emitter
+        let sender = Emitter::global()
             .get(&Self::get_transfer_id(self.ctx.no))
             .unwrap();
 
@@ -929,10 +923,6 @@ impl Peer {
 }
 
 impl Runnable for Peer {
-    fn emitter(&self) -> &Emitter {
-        &self.emitter
-    }
-
     fn get_transfer_id<T: ToString>(suffix: T) -> String {
         format!("{}{}", PEER_PREFIX, suffix.to_string())
     }

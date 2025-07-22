@@ -1,9 +1,6 @@
 /// 调度器的发送器
 pub static SCHEDULER: &str = "scheduler";
 
-/// peer 管理器的发送器
-pub static PEER_MANAGER: &str = "peer_manager";
-
 /// tcp_server 的发送器
 pub static TCP_SERVER: &str = "tcp_server";
 

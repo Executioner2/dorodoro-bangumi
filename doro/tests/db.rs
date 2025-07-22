@@ -6,7 +6,7 @@ use doro::config::DATABASE_CONN_LIMIT;
 use doro::db::Db;
 use doro::mapper;
 use doro::mapper::dht::DHTMapper;
-use doro::peer_manager::gasket::PieceStatus;
+use doro::task_handler::gasket::PieceStatus;
 use doro_util::default_logger;
 
 default_logger!(Level::DEBUG);

@@ -7,7 +7,7 @@ pub mod transfer;
 
 use dashmap::DashMap;
 use anyhow::{anyhow, Result};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::Sender;
 use transfer::TransferPtr;
 
@@ -20,10 +20,13 @@ unsafe impl Send for Emitter {}
 unsafe impl Sync for Emitter {}
 
 impl Emitter {
-    pub fn new() -> Self {
-        Self {
-            mpsc_senders: Arc::new(DashMap::default()),
-        }
+    pub fn global() -> &'static Self { 
+        static EMITTER: OnceLock<Emitter> = OnceLock::new();
+        EMITTER.get_or_init(|| {
+            Self {
+                mpsc_senders: Arc::new(DashMap::default()),
+            }
+        })
     }
 
     pub async fn send(&self, transfer_id: &str, data: TransferPtr) -> Result<()> {
@@ -37,7 +40,7 @@ impl Emitter {
         }
     }
 
-    pub fn register<T: ToString>(&mut self, transfer_id: T, sender: Sender<TransferPtr>) {
+    pub fn register<T: ToString>(&self, transfer_id: T, sender: Sender<TransferPtr>) {
         let transfer_id = transfer_id.to_string();
         self.mpsc_senders.insert(transfer_id, sender);
     }

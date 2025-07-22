@@ -5,7 +5,6 @@ use crate::peer::command::{Exit, PeerTransfer};
 use crate::peer::peer_resp::PeerResp;
 use crate::peer::rate_control::PacketAck;
 use crate::peer::{command, MsgType};
-use crate::peer_manager::gasket::PeerExitReason;
 use std::net::SocketAddr;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
@@ -13,6 +12,7 @@ use tracing::{debug, error, trace};
 use doro_util::global::Id;
 use doro_util::is_disconnect;
 use doro_util::net::FutureRet;
+use crate::task_handler::gasket::PeerExitReason;
 
 pub struct WriteFuture {
     pub(super) no: Id,

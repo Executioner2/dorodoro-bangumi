@@ -70,19 +70,15 @@ pub struct Dispatcher {
     
     /// socket 写入
     socket_write: OwnedWriteHalf,
-
-    /// 指令发射器
-    emitter: Emitter,
 }
 
 impl Dispatcher {
-    pub fn new(id: Id, socket: TcpStream, emitter: Emitter) -> Self {
+    pub fn new(id: Id, socket: TcpStream) -> Self {
         let (read, write) = socket.into_split();
         Self {
             id,
             socket_read: Some(read),
             socket_write: write,
-            emitter,
         }
     }
 
@@ -91,10 +87,7 @@ impl Dispatcher {
     }
 
     fn dispatch(&self, code: Code, tran_id: TranId, data: Option<Bytes>) {
-        let send = self
-            .emitter
-            .get(&Self::get_transfer_id(self.get_suffix()))
-            .unwrap();
+        let send = Emitter::global().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
         tokio::spawn(async move {
             let data = data.as_ref().map(|d| d.as_ref());
             let crp = {
@@ -144,7 +137,7 @@ impl Dispatcher {
     ) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
         let mut socket_read = self.socket_read.take().unwrap();
         let cancel_token = Context::global().cancel_token();
-        let send = self.emitter.get(&Self::get_transfer_id(self.get_suffix())).unwrap();
+        let send = Emitter::global().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
         Box::pin(async move {
             let addr = socket_read.peer_addr().unwrap();
             let mut request_parse = RequestParse::new(&mut socket_read, &addr);
@@ -176,10 +169,6 @@ impl Dispatcher {
 }
 
 impl Runnable for Dispatcher {
-    fn emitter(&self) -> &Emitter {
-        &self.emitter
-    }
-
     fn get_transfer_id<T: ToString>(suffix: T) -> String {
         format!("{}{}", CONTROLLER_PREFIX, suffix.to_string())
     }
