@@ -3,12 +3,11 @@ extern crate alloc;
 pub mod bt;
 pub mod core;
 pub mod mapper;
-pub mod client;
 pub mod service;
+pub mod api;
 
 pub use bt::*;
 pub use core::*;
-pub use client::*;
 pub use service::*;
 
 pub trait Integer: Copy + Sized {}
