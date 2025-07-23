@@ -1,8 +1,7 @@
 use doro::api::task_api::{Task, TorrentRet, TorrentSource};
-use doro_test::client_auth;
+use doro_test::client_util;
 use doro_util::default_logger;
 use tracing::{Level, info};
-use doro::control::{ControlStatus, Status};
 use doro::router::ret::Ret;
 
 default_logger!(Level::DEBUG);
@@ -21,11 +20,10 @@ async fn test_parse_torrent_file() {
     let code = 1002;
     let file_path = "./tests/resources/test6.torrent";
 
-    let mut client = client_auth::client().await.unwrap();
+    let mut client = client_util::client().await.unwrap();
     let rf = client.request(code, file_path).await.unwrap();
     let ret = rf.await;
-    assert_eq!(ret.code, code);
-    assert_eq!(ret.status, ControlStatus::Ok as Status);
+    client_util::verification_result(&code, &ret);
 
     let torrent_ret: Result<Ret<TorrentRet>, _> = serde_json::from_slice(ret.body.as_ref());
     assert!(torrent_ret.is_ok());
@@ -46,11 +44,10 @@ async fn test_add_task() {
         source: TorrentSource::LocalFile("./tests/resources/test7.torrent".to_string()),
     };
 
-    let mut client = client_auth::client().await.unwrap();
+    let mut client = client_util::client().await.unwrap();
     let rf = client.request(code, task).await.unwrap();
     let ret = rf.await;
-    assert_eq!(ret.code, code);
-    assert_eq!(ret.status, ControlStatus::Ok as Status);
+    client_util::verification_result(&code, &ret);
 
     let torrent_ret: Result<Ret<TorrentRet>, _> = serde_json::from_slice(ret.body.as_ref());
     assert!(torrent_ret.is_ok());

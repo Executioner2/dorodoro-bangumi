@@ -80,6 +80,9 @@ struct ConfigInner {
 
     /// 认证信息
     client_auth: ClientAuth,
+
+    /// rss 订阅并发刷新量
+    rss_refresh_concurrency: usize,
 }
 
 impl Config {
@@ -97,11 +100,12 @@ impl Config {
                 hash_concurrency: 1, // 默认就一个
                 peer_conn_limit: 500,
                 // torrent_lt_peer_conn_limit: 100,
-                torrent_lt_peer_conn_limit: 5,
-                torrent_temp_peer_conn_limit: 1,
+                torrent_lt_peer_conn_limit: 20,
+                torrent_temp_peer_conn_limit: 2,
                 peer_connection_timeout: Duration::from_secs(5),
-                default_download_dir: PathBuf::from("./downloads/"),
+                default_download_dir: PathBuf::from("./download/"),
                 client_auth: ClientAuth::init(),
+                rss_refresh_concurrency: 10,
             }),
         }
     }
@@ -211,6 +215,13 @@ impl Config {
         self
     }
 
+    pub fn set_rss_refresh_concurrency(mut self, concurrency: usize) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.rss_refresh_concurrency = concurrency;
+        });
+        self
+    }
+
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
     }
@@ -273,5 +284,9 @@ impl Config {
     
     pub fn client_auth(&self) -> &ClientAuth {
         &self.inner.client_auth
+    }
+
+    pub fn rss_refresh_concurrency(&self) -> usize {
+        self.inner.rss_refresh_concurrency
     }
 }

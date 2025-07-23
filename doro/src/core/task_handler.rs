@@ -103,10 +103,7 @@ impl TaskHandler {
     /// 启动 rss。因为启动 rss 之后会扫描订阅源，并将订阅源中的种子加入下载队列，
     /// 所以必须在启动 rss 之前启动 peer manager
     fn start_rss(&self) {
-        let rss = RSS::new(
-            self.future_token.lock_pe().0.clone(),
-        );
-        let rss_handle = tokio::spawn(rss.run());
+        let rss_handle = RSS::init(self.future_token.lock_pe().0.clone());
         self.future_token.lock_pe().1.push(rss_handle);
     }
 

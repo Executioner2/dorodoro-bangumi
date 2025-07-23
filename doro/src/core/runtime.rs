@@ -86,7 +86,7 @@ pub trait Runnable {
         let rc = RunContext { send };
 
         if let Err(e) = self.run_before_handle(rc).await {
-            error!("{id} 启动失败: {:?}", e);
+            error!("{id} 启动失败: {:?}", e.to_string());
             exit_reason = ExitReason::Error(e);
             self.shutdown(exit_reason).await;
             return;

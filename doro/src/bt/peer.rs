@@ -6,64 +6,62 @@
 //! 长度的需要加上消息类型的 1 字节。
 
 pub mod command;
-pub mod peer_resp;
 mod listener;
+pub mod peer_resp;
 pub mod rate_control;
 pub mod reserved;
 
-use doro_util::bytes_util::Bytes2Int;
+use crate::bt::pe_crypto;
+use crate::bt::pe_crypto::CryptoProvide;
+use crate::bt::socket::TcpStreamWrapper;
 use crate::command::CommandHandler;
-use crate::config::{Config, CHANNEL_BUFFER};
+use crate::config::{CHANNEL_BUFFER, Config};
 use crate::core::protocol::{
     BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN,
 };
 use crate::core::runtime::Runnable;
+use crate::emitter::Emitter;
 use crate::emitter::constant::PEER_PREFIX;
 use crate::emitter::transfer::TransferPtr;
 use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
+use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 use crate::store::Store;
+use crate::task_handler::gasket::{GasketContext, PeerExitReason};
 use crate::torrent::TorrentArc;
+use anyhow::{Error, Result, anyhow};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::global::Id;
+use doro_util::{anyhow_eq, anyhow_ge};
 use fnv::FnvHashMap;
-use anyhow::{anyhow, Error, Result};
 use std::cmp::min;
-use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::mem;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::{Sender, channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info, trace};
-use doro_util::{anyhow_eq, anyhow_ge};
-use doro_util::global::Id;
-use crate::bt::pe_crypto;
-use crate::bt::pe_crypto::CryptoProvide;
-use crate::bt::socket::TcpStreamWrapper;
-use crate::emitter::Emitter;
-use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
-use crate::task_handler::gasket::{GasketContext, PeerExitReason};
 
 const MSS: u32 = 17;
 
 /// Peer 通信的消息类型
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum MsgType {
-    
     // ===========================================================================
-    // Core 
+    // Core
     // 详情见：[bep_0003](https://www.bittorrent.org/beps/bep_0003.html)
     // ===========================================================================
-    
     /// 我现在还不想接收你的请求        
-    /// 
+    ///
     /// 格式：`length:u32 | 0:u8`
     Choke = 0,
 
@@ -73,7 +71,7 @@ pub enum MsgType {
     UnChoke = 1,
 
     /// 感兴趣，期望可以允许我发起请求    
-    /// 
+    ///
     /// 格式：`length:u32 | 2:u8`
     Interested = 2,
 
@@ -83,7 +81,7 @@ pub enum MsgType {
     NotInterested = 3,
 
     /// 我新增了这个分块，你要不要呀      
-    /// 
+    ///
     /// 格式：`length:u32 | 4:u8 | piece_index:u32`
     Have = 4,
 
@@ -93,7 +91,7 @@ pub enum MsgType {
     Bitfield = 5,
 
     /// 请给我这个分块     
-    /// 
+    ///
     /// 格式：`length:u32 | 6:u8 | piece_index:u32 | block_offset:u32 | block_length:u32`
     Request = 6,
 
@@ -108,11 +106,10 @@ pub enum MsgType {
     Cancel = 8,
 
     // ===========================================================================
-    // DHT Extension    
+    // DHT Extension
     // 详情见：[bep_0005](https://www.bittorrent.org/beps/bep_0005.html)
     // 握手时，通过设置扩展位（HANDSHAKE_DHT_PROTOCOL）开启
     // ===========================================================================
-    
     /// DHT 访问端口     
     ///   
     /// 格式：`length:u32 | 9:u8 | dht_port:u16`
@@ -123,60 +120,57 @@ pub enum MsgType {
     // 详情见：[bep_0006](https://www.bittorrent.org/beps/bep_0006.html)
     // 握手时，通过设置扩展位（HANDSHAKE_FAST_EXTENSION）开启
     // ===========================================================================
-
     /// 建议请求的分片     
-    /// 
+    ///
     /// 格式：`length:u32 | 13:u8 | piece_index:u32`
     Suggest = 13,
-    
+
     /// 拥有所有的分片   
     ///  
     /// 格式：`length:u32 | 14:u8`
     HaveAll = 14,
-    
+
     /// 一个分片都没有
     ///
     /// 格式：`length:u32 | 15:u8`   
     HaveNone = 15,
-    
+
     /// 拒绝请求的分片
-    /// 
+    ///
     /// 格式：`length:u32 | 16:u8 | piece_index:u32 | block_offset:u32 | block_length:u32`
     RejectRequest = 16,
-    
+
     /// 允许快速下载
-    /// 
+    ///
     /// 格式：`length:u32 | 17:u8 | piece_index:u32`
     AllowedFast = 17,
 
     // ===========================================================================
-    // Additional IDs used in deployed clients  
+    // Additional IDs used in deployed clients
     // 详情见：[bep_0010](https://www.bittorrent.org/beps/bep_0010.html)
     // 握手时，通过设置扩展位（HANDSHAKE_EXTENSION_PROTOCOL）开启
     // ===========================================================================
-    
     /// 扩展协议
-    /// 
+    ///
     /// 格式：`length:u32 | 20:u8 | extended_id:u64 | extended_data:bencode`
     LTEPHandshake = 20,
 
     // ===========================================================================
-    // Hash Transfer Protocol  
+    // Hash Transfer Protocol
     // 详情见：[bep_0009](https://www.bittorrent.org/beps/bep_0009.html)
     // ===========================================================================
-    
     /// 请求 metadata
-    /// 
+    ///
     /// 格式：`length:u32 | 21:u8 | hash:bencode`
     HashRequest = 21,
 
     /// 响应 metadata
-    /// 
+    ///
     /// 格式：`length:u32 | 22:u8 | metadata:bencode`
     Hashes = 22,
 
     /// 拒绝响应 metadata
-    /// 
+    ///
     /// 格式：`length:u32 | 23:u8 | metadata:bencode`
     HashReject = 23,
 }
@@ -188,7 +182,7 @@ impl TryFrom<u8> for MsgType {
     type Error = Error;
 
     fn try_from(value: u8) -> Result<Self> {
-        match value { 
+        match value {
             0..=9 | 13..=17 | 20..=23 => Ok(unsafe { mem::transmute(value) }),
             _ => Err(anyhow!("Invalid message type: {}", value)),
         }
@@ -239,7 +233,7 @@ impl Piece {
             finish: false,
         }
     }
-    
+
     fn block_offset_idx(block_offset: u32, block_size: u32) -> u32 {
         (block_offset + block_size - 1) / block_size
     }
@@ -320,7 +314,7 @@ pub struct PeerContext {
 
     /// gasket 共享上下文
     gc: GasketContext,
-    
+
     /// wrtier
     writer: Writer,
 
@@ -398,12 +392,12 @@ pub struct Peer {
 
     /// 请求的分块
     request_pieces: FnvHashMap<u32, u32>,
-    
+
     /// 下载速率仪表盘
     dashbord: Dashbord,
 
     /// 异步任务
-    future_token: (CancellationToken, Vec<JoinHandle<()>>)
+    future_token: (CancellationToken, Vec<JoinHandle<()>>),
 }
 
 impl Peer {
@@ -430,7 +424,7 @@ impl Peer {
             future_token: (CancellationToken::new(), vec![]),
         }
     }
-    
+
     pub fn dashbord(&self) -> Dashbord {
         self.dashbord.clone()
     }
@@ -438,14 +432,14 @@ impl Peer {
     fn no(&self) -> Id {
         self.ctx.no
     }
-    
+
     /// 加密握手
     async fn crypto_handshake(&mut self, stream: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.no());
         let tse= pe_crypto::init_handshake(stream, &self.ctx.torrent().info_hash, CryptoProvide::Rc4).await?;
         Ok(tse)
     }
-    
+
     /// 握手
     async fn handshake(&mut self, stream: &mut TcpStreamWrapper) -> Result<()> {
         trace!("发送握手信息 peer_no: {}", self.no());
@@ -465,9 +459,12 @@ impl Peer {
 
         let mut handshake_resp = vec![0u8; bytes.len()];
         let size = stream.read(&mut handshake_resp).await?;
-        anyhow_eq!(size, bytes.len(),
-            "握手响应数据长度与预期不符 [{}]\t[{}]", 
-            size, bytes.len()
+        anyhow_eq!(
+            size,
+            bytes.len(),
+            "握手响应数据长度与预期不符 [{}]\t[{}]",
+            size,
+            bytes.len()
         );
 
         let protocol_len = u8::from_be_bytes([handshake_resp[0]]) as usize;
@@ -589,17 +586,21 @@ impl Peer {
 
         for piece_index in 0..self.ctx.torrent().piece_num() {
             let (idx, offset) = doro_util::bytes_util::bitmap_offset(piece_index);
-            
-            let item = self.opposite_peer_bitfield
-                .get(idx) 
+
+            let item = self
+                .opposite_peer_bitfield
+                .get(idx)
                 .map(|value| value & offset != 0);
-            if !matches!(item, Some(true))  {
+            if !matches!(item, Some(true)) {
                 continue;
             }
 
-            if let Some((piece_index, block_offset)) = 
-                self.ctx.gc.apply_download_piece(self.ctx.no, piece_index as u32).await {
-                
+            if let Some((piece_index, block_offset)) = self
+                .ctx
+                .gc
+                .apply_download_piece(self.ctx.no, piece_index as u32)
+                .await
+            {
                 self.insert_response_pieces(piece_index, block_offset);
                 self.request_pieces.insert(piece_index, block_offset);
                 return Ok(Some(piece_index));
@@ -616,15 +617,24 @@ impl Peer {
     fn insert_response_pieces(&mut self, piece_index: u32, block_offset: u32) {
         let bs = self.ctx.config().block_size();
         let pl = Self::get_piece_length(&self.ctx.torrent(), piece_index);
-        self.response_pieces.insert(piece_index, Piece::new(block_offset, pl, bs));
+        self.response_pieces
+            .insert(piece_index, Piece::new(block_offset, pl, bs));
     }
 
-    fn update_response_pieces(&mut self, piece_index: u32, block_offset: u32) -> Result<(bool, u32)> {
-        let piece = self.response_pieces.get_mut(&piece_index)
+    fn update_response_pieces(
+        &mut self,
+        piece_index: u32,
+        block_offset: u32,
+    ) -> Result<(bool, u32)> {
+        let piece = self
+            .response_pieces
+            .get_mut(&piece_index)
             .ok_or(anyhow!("分块响应错误，响应的分块: {}", piece_index))?;
         piece.add_finish(block_offset);
         let res = (piece.is_finish(), piece.block_offset);
-        if res.0 { self.response_pieces.remove(&piece_index); }
+        if res.0 {
+            self.response_pieces.remove(&piece_index);
+        }
         Ok(res)
     }
 
@@ -633,13 +643,15 @@ impl Peer {
         let resource_length = torrent.info.length;
         piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length)) as u32
     }
-    
+
     /// 释放正在下载的分片
     async fn free_download_piece(&mut self, pieces: &Vec<u32>) {
         for piece_index in pieces {
             self.request_pieces.remove(piece_index);
             if let Some(peer) = self.response_pieces.remove(piece_index) {
-                self.ctx.gc.give_back_download_pieces(self.no(), &vec![(piece_index, &peer)]);
+                self.ctx
+                    .gc
+                    .give_back_download_pieces(self.no(), &vec![(piece_index, &peer)]);
             }
         }
         if self.response_pieces.is_empty() {
@@ -711,7 +723,7 @@ impl Peer {
     async fn handle_have(&mut self, bytes: Bytes) -> Result<()> {
         trace!("对端告诉我们他有新的分块可以下载");
         anyhow_eq!(bytes.len(), 4, "对端的 Have 消息长度不正确");
-        
+
         let bit = u32::from_be_slice(&bytes[..4]);
         let (idx, offset) = doro_util::bytes_util::bitmap_offset(bit as usize);
 
@@ -728,14 +740,19 @@ impl Peer {
         trace!("对端告诉我们他有哪些分块可以下载: {:?}", &bytes[..]);
         let torrent = self.ctx.torrent();
         let bit_len = torrent.bitfield_len();
-        
-        anyhow_eq!(bytes.len(), bit_len, 
-            "对端的 Bitfield 消息长度不正确。预计长度：{}，实际长度：{}", 
-            bit_len, bytes.len()
+
+        anyhow_eq!(
+            bytes.len(),
+            bit_len,
+            "对端的 Bitfield 消息长度不正确。预计长度：{}，实际长度：{}",
+            bit_len,
+            bytes.len()
         );
 
         self.opposite_peer_bitfield = BytesMut::from(bytes);
-        self.ctx.gc.reported_bitfield(self.no(), self.opposite_peer_bitfield.clone());
+        self.ctx
+            .gc
+            .reported_bitfield(self.no(), self.opposite_peer_bitfield.clone());
         self.request_piece().await?;
 
         Ok(())
@@ -756,12 +773,12 @@ impl Peer {
         anyhow_ge!(bytes.len(), 8, "对端的 Piece 消息长度不正确");
 
         let piece_index = u32::from_be_slice(&bytes[0..4]);
-        
+
         // 交给了其他 peer 下载这个 piece。见 free_download_piece
         if !self.response_pieces.contains_key(&piece_index) {
             return Ok(());
         }
-        
+
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
         let block_data_len = block_data.len();
@@ -773,12 +790,14 @@ impl Peer {
         // if over {
         //     self.ctx.gc.reported_piece_finished(self.no(), piece_index).await;
         // }
-        
+
         // fixme - 正式记得取消下面的注释
         self.write_file(piece_index, block_offset, block_data, over);
 
         // 上报给 gasket
-        self.ctx.gc.reported_download(piece_index, cts_bo, block_data_len as u64);
+        self.ctx
+            .gc
+            .reported_download(piece_index, cts_bo, block_data_len as u64);
 
         Ok(())
     }
@@ -855,12 +874,8 @@ impl Peer {
         let timeout = self.ctx.config().peer_connection_timeout();
         match tokio::time::timeout(timeout, TcpStream::connect(self.addr)).await {
             Ok(Ok(stream)) => Ok(stream),
-            Ok(Err(e)) => {
-                Err(anyhow!("连接对端 peer 失败\n{}", e))
-            },
-            Err(_) => {
-                Err(anyhow!("连接对端 peer 超时"))
-            }
+            Ok(Err(e)) => Err(anyhow!("连接对端 peer 失败\n{}", e)),
+            Err(_) => Err(anyhow!("连接对端 peer 超时")),
         }
     }
 
@@ -905,10 +920,7 @@ impl Peer {
     }
 
     /// 启动 peer
-    async fn start(
-        &mut self,
-        send: Sender<TransferPtr>,
-    ) -> Result<Vec<JoinHandle<()>>> {
+    async fn start(&mut self, send: Sender<TransferPtr>) -> Result<Vec<JoinHandle<()>>> {
         let stream = self.connection().await?;
         let mut stream = self.crypto_handshake(stream).await?;
 
@@ -928,7 +940,7 @@ impl Runnable for Peer {
     }
 
     fn get_suffix(&self) -> String {
-        self.ctx.no.to_string()   
+        self.ctx.no.to_string()
     }
 
     async fn run_before_handle(&mut self, rc: RunContext) -> Result<()> {
@@ -948,11 +960,15 @@ impl Runnable for Peer {
     async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
         let cmd: command::Command = cmd.instance();
         if let command::Command::Exit(exit) = cmd {
-            return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(exit.reason))));
+            return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(
+                exit.reason,
+            ))));
         }
         if let Err(e) = cmd.handle(self).await {
             error!("处理指令出现错误\t{}", e);
-            return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(PeerExitReason::Exception))));
+            return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(
+                PeerExitReason::Exception,
+            ))));
         }
         Ok(CommandHandleResult::Continue)
     }
@@ -962,15 +978,16 @@ impl Runnable for Peer {
         for handle in self.future_token.1.iter_mut() {
             handle.await.unwrap();
         }
-        
+
         let reason = match reason {
-            ExitReason::Custom(reason) => {
-                reason.exit_code().try_into().unwrap_or_else(|_| PeerExitReason::Exception)
-            },
+            ExitReason::Custom(reason) => reason
+                .exit_code()
+                .try_into()
+                .unwrap_or_else(|_| PeerExitReason::Exception),
             ExitReason::Normal => PeerExitReason::Normal,
             ExitReason::Error(_) => PeerExitReason::Exception,
         };
-        
+
         self.ctx
             .gc
             .give_back_download_pieces(self.ctx.no, &self.response_pieces.iter().collect());

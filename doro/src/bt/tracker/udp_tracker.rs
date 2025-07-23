@@ -6,20 +6,21 @@ pub mod socket;
 mod tests;
 
 use crate::bt::constant::udp_tracker::*;
-use doro_util::bytes_util::Bytes2Int;
+use crate::task_handler::PeerId;
+use crate::tracker;
 use crate::tracker::{AnnounceInfo, Event};
-use doro_util::buffer::ByteBuffer;
 use anyhow::Result;
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
-use std::io::Write;
-use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use tracing::warn;
+use doro_util::buffer::ByteBuffer;
+use doro_util::bytes_util::Bytes2Int;
 use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime};
-use crate::task_handler::PeerId;
-use crate::tracker;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use tokio::net::UdpSocket;
+use tracing::warn;
 
 type Buffer = Vec<u8>;
 
@@ -173,11 +174,10 @@ impl UdpTracker {
     /// # Returns
     /// 正常的情况下，返回接收到的数据。
     async fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
-        let socket = UdpSocket::bind(DEFAULT_ADDR)?;
-        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
-        socket.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
-        let socket = tokio::net::UdpSocket::from_std(socket)?;
-        socket.send_to(data, target).await?;
+        let socket = UdpSocket::bind(DEFAULT_ADDR).await?;
+        socket.connect(target).await?;
+
+        tokio::time::timeout(SOCKET_WRITE_TIMEOUT, socket.send(data)).await??;
         let expect_size = if expect_size < 0 {
             MAX_PAYLOAD_SIZE
         } else {
@@ -185,7 +185,8 @@ impl UdpTracker {
         };
 
         let mut buffer = ByteBuffer::new(expect_size);
-        let (size, _socket_addr) = socket.recv_from(buffer.as_mut()).await?;
+        let (size, _socket_addr) =
+            tokio::time::timeout(SOCKET_WRITE_TIMEOUT, socket.recv_from(buffer.as_mut())).await??;
 
         // 转换为已初始化的缓冲区
         buffer.resize(size);
@@ -236,7 +237,7 @@ impl UdpTracker {
 
         anyhow_eq!(resp_tran_id, req_tran_id, "传输 ID 不匹配");
         anyhow_ne!(action, Action::Error as u32, "Tracker 出现错误");
-        
+
         Ok(())
     }
 

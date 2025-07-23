@@ -6,3 +6,4 @@
 //!     即 1100 是保留位，1101 - 1199 是这个 api 的可用范围。
 
 pub mod task_api;
+pub mod rss_api; 

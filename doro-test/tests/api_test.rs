@@ -1,5 +1,5 @@
 use doro::control::{ControlStatus, Status};
-use doro_test::client_auth;
+use doro_test::client_util;
 use doro_util::default_logger;
 use tracing::Level;
 
@@ -10,7 +10,7 @@ default_logger!(Level::DEBUG);
 async fn test_client_base() {
     let code = 10001;
 
-    let mut client = client_auth::client().await.unwrap();
+    let mut client = client_util::client().await.unwrap();
     let rf = client.request(code, "/").await.unwrap();
     let ret = rf.await;
 

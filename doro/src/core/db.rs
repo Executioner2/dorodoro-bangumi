@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use anyhow::Result;
+use doro_util::sync::MutexExt;
 
 type Pool = Arc<Mutex<VecDeque<Connection>>>;
 
@@ -52,10 +53,8 @@ impl ConnWrapper {
 impl Drop for ConnWrapper {
     fn drop(&mut self) {
         // 归还连接到连接池
-        match self.pool.lock().as_mut() {
-            Ok(pool) => pool.push_back(self.connection.take().unwrap()),
-            Err(e) => e.get_mut().push_back(self.connection.take().unwrap()),
-        }
+        let mut pool = self.pool.lock_pe();
+        pool.push_back(self.connection.take().unwrap());
     }
 }
 
@@ -90,11 +89,7 @@ impl Db {
 
     pub async fn get_conn(&self) -> Result<ConnWrapper> {
         let permit = self.semaphore.clone().acquire_owned().await?;
-        let conn = match self.pool.lock().as_mut() {
-            Ok(pool) => pool.pop_front(),
-            Err(e) => e.get_mut().pop_front(),
-        };
-        let conn = match conn {
+        let conn = match self.pool.lock_pe().pop_front() {
             None => Connection::open(&*self.filepath)?,
             Some(conn) => conn,
         };
