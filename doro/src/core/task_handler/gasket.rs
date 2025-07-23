@@ -1,47 +1,49 @@
 pub mod command;
 mod coordinator;
+pub mod error;
 
 use crate::command::CommandHandler;
+use crate::context::Context;
 use crate::core::config::Config;
-use crate::core::emitter::constant::GASKET_PREFIX;
 use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::GASKET_PREFIX;
 use crate::db::ConnWrapper;
+use crate::dht::DHT;
+use crate::dht::command::FindPeers;
+use crate::dht::routing::NodeId;
 use crate::emitter::transfer::TransferPtr;
 use crate::mapper::torrent::{TorrentEntity, TorrentMapper, TorrentStatus};
-use crate::peer::rate_control::probe::Dashbord;
+use crate::peer;
 use crate::peer::rate_control::RateControl;
+use crate::peer::rate_control::probe::Dashbord;
 use crate::peer::{Peer, Piece};
-use crate::task_handler::gasket::command::{Command, SaveProgress, StartWaittingAddr};
-use crate::task_handler::gasket::coordinator::Coordinator;
-use crate::runtime::{CommandHandleResult, CustomExitReason, CustomTaskResult, ExitReason, RunContext, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext, Runnable};
 use crate::store::Store;
+use crate::task_handler::gasket::command::{Command, SaveProgress, Shutdown, StartWaittingAddr};
+use crate::task_handler::gasket::coordinator::Coordinator;
+use crate::task_handler::gasket::error::{deadly_error, ErrorType, PeerExitReason};
+use crate::task_handler::{PeerId, TaskHandler};
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
+use doro_util::global::{GlobalId, Id};
+use doro_util::{bytes_util, if_else, net};
 use fnv::FnvHashSet;
+use futures::stream::FuturesUnordered;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use futures::stream::FuturesUnordered;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
-use tracing::{debug, error, info, level_enabled, trace, Level};
-use doro_util::{if_else, net};
-use doro_util::global::{GlobalId, Id};
-use crate::dht::command::FindPeers;
-use crate::dht::DHT;
-use crate::dht::routing::NodeId;
-use crate::context::Context;
-use crate::peer;
-use crate::task_handler::{PeerId, TaskHandler};
+use tracing::{Level, debug, error, info, level_enabled, trace};
 
 /// 每间隔一分钟扫描一次 peers
 const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
@@ -49,46 +51,8 @@ const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
 /// 等待的 peer 上限，如果超过这个数量，就不会进行 dht 扫描
 const DHT_WAIT_PEER_LIMIT: usize = 20;
 
-/// 期望每次 dht 扫描能找到 15 个 peer
-const DHT_EXPECT_PEERS: usize = 15;
-
-#[derive(PartialEq, Debug, Clone, Copy)]
-pub enum PeerExitReason {
-    /// 正常退出
-    Normal,
-
-    /// 客户端主动退出
-    ClientExit,
-    
-    /// 没有任务的退出
-    NotHasJob,
-
-    /// 周期性的临时 peer 替换
-    PeriodicPeerReplace,
-
-    /// 异常退出
-    Exception,
-}
-
-impl TryFrom<u8> for PeerExitReason {
-    type Error = anyhow::Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(PeerExitReason::Normal),
-            1 => Ok(PeerExitReason::NotHasJob),
-            2 => Ok(PeerExitReason::PeriodicPeerReplace),
-            3 => Ok(PeerExitReason::Exception),
-            _ => Err(anyhow::anyhow!("unknown peer exit reason: {}", value)),
-        }
-    }
-}
-
-impl CustomExitReason for PeerExitReason {
-    fn exit_code(&self) -> u8 {
-        *self as u8
-    }
-}
+/// 期望每次 dht 扫描能找到 25 个 peer
+const DHT_EXPECT_PEERS: usize = 25;
 
 #[derive(Eq, PartialEq, Decode, Encode, Clone, Debug)]
 pub enum PieceStatus {
@@ -124,6 +88,9 @@ pub struct PeerInfo {
 
     /// 异步任务句柄
     join_handle: Option<JoinHandle<()>>,
+
+    /// 错误的分块数量
+    error_piece_cnt: u32,
 }
 
 impl PeerInfo {
@@ -142,6 +109,7 @@ impl PeerInfo {
             download_piece: FnvHashSet::default(),
             bitfield: BytesMut::new(),
             wait_piece: false,
+            error_piece_cnt: 0,
         }
     }
 
@@ -179,7 +147,9 @@ pub struct GasketContext {
     /// 正在下载中的分块
     underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
 
-    /// 存储的是可链接地址，避免 tracker 扫描出相同的然后重复请求链接
+    /// 存储的是不允许启动的地址，避免 tracker 扫描出相同的然后重复请求链接。
+    /// 多次响应无法通过校验的分片的 peer，会从 peers 和 wait_queue 中移除，
+    /// 但是不会从 unstart_host 中移除，以起到黑名单作用
     unstart_host: Arc<DashSet<SocketAddr>>,
 
     /// 可连接，但是没有任务可分配的 peer
@@ -193,12 +163,7 @@ pub struct GasketContext {
 }
 
 impl GasketContext {
-    fn new(
-        gtid: String,
-        peer_id: PeerId,
-        torrent: TorrentArc,
-        entity: TorrentEntity,
-    ) -> Self {
+    fn new(gtid: String, peer_id: PeerId, torrent: TorrentArc, entity: TorrentEntity) -> Self {
         let ub: DashMap<u32, PieceStatus> =
             entity.underway_bytefield.unwrap().into_iter().collect();
         let status = entity.status.unwrap();
@@ -219,7 +184,7 @@ impl GasketContext {
             status: Arc::new(Mutex::from(status)),
         }
     }
-    
+
     pub fn gtid(&self) -> &str {
         &self.gtid
     }
@@ -248,33 +213,41 @@ impl GasketContext {
         &self.bytefield
     }
 
+    #[rustfmt::skip]
     pub async fn peer_exit(&mut self, peer_no: Id, reason: PeerExitReason) {
-        debug!("peer_no [{}] 退出了，退出原因: {:?}", peer_no, reason);
+        debug!("peer_no [{}] 退出了，退出原因: {}", peer_no, reason);
         if Context::global().is_cancelled() {
             return;
         }
 
         if let Some((_, mut peer)) = self.peers.remove(&peer_no) {
             debug!("成功移除 peer_no [{}]", peer_no);
-            if reason == PeerExitReason::NotHasJob || reason == PeerExitReason::PeriodicPeerReplace {
-                peer.join_handle = None;
-                self.wait_queue.lock().await.push_back(peer);
-                self.try_notify_wait_piece().await;
-            } else {
-                self.unstart_host.remove(&peer.addr);
-                trace!("将这个地址从不可用host中移除了");
+            match reason {
+                PeerExitReason::DownloadFinished => {
+                    self.unstart_host.remove(&peer.addr);
+                }
+                PeerExitReason::NotHasJob | PeerExitReason::PeriodicPeerReplace => {
+                    peer.join_handle = None;
+                    self.wait_queue.lock().await.push_back(peer);
+                    self.try_notify_wait_piece().await;
+                }
+                PeerExitReason::Exception(e) if e.error_type() == ErrorType::DeadlyError => {
+                    error!("peer_no [{}] 引发致命错误，加入黑名单，原因: {}", peer_no, e);
+                }
+                _ => {
+                    self.unstart_host.remove(&peer.addr);
+                    trace!("将这个地址从不可用host中移除了");
 
-                // 从等待队列中唤醒一个
-                if let Err(e) = Emitter::global()
-                    .send(&self.gtid, StartWaittingAddr.into())
-                    .await
-                {
-                    error!("唤醒等待队列中的失败！{}", e);
+                    // 从等待队列中唤醒一个
+                    if let Err(e) = Emitter::global()
+                        .send(&self.gtid, StartWaittingAddr.into())
+                        .await
+                    {
+                        error!("唤醒等待队列中的失败！{}", e);
+                    }
                 }
             }
         }
-
-        trace!("发送了唤醒消息");
     }
 
     /// 尝试唤醒一个等待 piece 的，下载速率相对来说还不错的 peer
@@ -287,7 +260,10 @@ impl GasketContext {
     /// 尝试分配任务
     pub async fn assign_peer_handle(&self, peer_no: Id) {
         if let Some(mut item) = self.peers.get_mut(&peer_no) {
-            trace!("唤醒了等待任务的 peer [{}]，ip addr: {}", item.no, item.addr);
+            trace!(
+                "唤醒了等待任务的 peer [{}]，ip addr: {}",
+                item.no, item.addr
+            );
             let tid = Peer::get_transfer_id(peer_no);
             let cmd = peer::command::TryRequestPiece.into();
             item.wait_piece = false;
@@ -307,7 +283,7 @@ impl GasketContext {
         trace!("peer {} 申请下载分块", peer_no);
         let mut res = None;
 
-        let (index, offset) = doro_util::bytes_util::bitmap_offset(piece_index as usize);
+        let (index, offset) = bytes_util::bitmap_offset(piece_index as usize);
         let mut bytefield = self.bytefield.lock().await;
         if *bytefield.get_mut(index)? & offset == 0 {
             self.underway_bytefield
@@ -357,21 +333,31 @@ impl GasketContext {
                 let mut str = String::new();
                 self.peers.iter().for_each(|item| {
                     let (bw, unit) = net::rate_formatting(item.dashbord.bw());
-                    str.push_str(&format!("{}-{}: {:.2}{} {:?}\n",
-                                      item.no, item.addr.port(), bw, unit, 
-                                      item.download_piece.clone())
-                    );
+                    str.push_str(&format!(
+                        "{}-{}: {:.2}{} {:?}\n",
+                        item.no,
+                        item.addr.port(),
+                        bw,
+                        unit,
+                        item.download_piece.clone()
+                    ));
                 });
-                debug!("peer_no: {} 没有任务了\t当前运行中的 peer: \n{}", peer_no, str);    
+                debug!(
+                    "peer_no: {} 没有任务了\t当前运行中的 peer: \n{}",
+                    peer_no, str
+                );
             }
 
             // 判断当前 peer no 的地位，如果是超快 peer，那么就从最慢
             // 的 peer 开始，寻找当前 peer 可以抢过来下载的 piece
             if self.try_free_slow_piece(peer_no).await != Some(true) {
-                self.notify_peer_stop(peer_no, PeerExitReason::NotHasJob).await;
+                self.notify_peer_stop(peer_no, PeerExitReason::NotHasJob)
+                    .await;
                 info!("没有可下载的分块了，停掉peer: {}", peer_no);
             } else {
-                self.peers.get_mut(&peer_no).map(|mut item| item.wait_piece = true);
+                self.peers
+                    .get_mut(&peer_no)
+                    .map(|mut item| item.wait_piece = true);
             }
         }
     }
@@ -401,9 +387,11 @@ impl GasketContext {
 
                 let mut free_piece = vec![];
                 item.download_piece.retain(|piece_index| {
-                    let (idx, ost) = doro_util::bytes_util::bitmap_offset(*piece_index as usize);
+                    let (idx, ost) = bytes_util::bitmap_offset(*piece_index as usize);
                     let res = peer.2.get(idx).map(|val| val & ost != 0).unwrap_or(false);
-                    if res { free_piece.push(*piece_index); }
+                    if res {
+                        free_piece.push(*piece_index);
+                    }
                     !res
                 });
 
@@ -412,7 +400,8 @@ impl GasketContext {
                     let cmd = peer::command::FreePiece {
                         peer_no: peer.0,
                         pieces: free_piece,
-                    }.into();
+                    }
+                    .into();
                     let _ = Emitter::global().send(&tid, cmd).await;
                     flag = true;
                     break;
@@ -482,9 +471,30 @@ impl GasketContext {
         self.uploaded.fetch_add(block_size, Ordering::Relaxed);
     }
 
+    /// 上报分片下载失败
+    #[rustfmt::skip]
+    pub async fn reported_piece_failed(&self, peer_no: Id, piece_idx: u32) {
+        // 获取真实的分片大小
+        let read_length = self.torrent.piece_length(piece_idx);
+
+        // 分片下载失败，删除一个分片的大小
+        self.download.fetch_sub(read_length as u64, Ordering::Relaxed);
+
+        // 错误分片数加 1
+        if let Some(mut peer) = self.peers.get_mut(&peer_no) {
+            peer.error_piece_cnt += 1;
+            if peer.error_piece_cnt >= Context::global().get_config().error_piece_limit() {
+                self.notify_peer_stop(
+                    peer_no,
+                    deadly_error(anyhow!("错误分片数达到上限"))
+                ).await
+            }
+        }
+    }
+
     /// 上报分块下载完成
     pub async fn reported_piece_finished(&self, peer_no: Id, piece_index: u32) {
-        let (index, offset) = doro_util::bytes_util::bitmap_offset(piece_index as usize);
+        let (index, offset) = bytes_util::bitmap_offset(piece_index as usize);
         self.bytefield
             .lock()
             .await
@@ -504,28 +514,33 @@ impl GasketContext {
 
     ///　保存进度
     async fn store_progress(&self) {
-        let status = self.status.lock().await.clone();
         // 存数据库，通过通道信号传递给 gasket 执行存储动作，避免阻塞 peer 线程
-        let cmd = SaveProgress {
-            status: Some(status),
-        }
-        .into();
-        Emitter::global().send(&self.gtid, cmd).await.unwrap();
+        Emitter::global()
+            .send(&self.gtid, SaveProgress.into())
+            .await
+            .unwrap();
     }
 
     /// 下载完成后的后置处理
     async fn download_finished_after_handle(&self) {
-        // 通知各个 peer 退出
         if *self.status.lock().await == TorrentStatus::Finished {
             info!("下载完成，通知 peer 退出");
+            // 清空等待列表
+            self.wait_queue.lock().await.clear();
+
+            // 通知各个 peer 退出
             let peers = self
                 .peers
                 .iter()
                 .map(|item| *item.key())
                 .collect::<Vec<_>>();
             for peer_no in peers.iter() {
-                self.notify_peer_stop(*peer_no, PeerExitReason::Normal).await;
+                self.notify_peer_stop(*peer_no, PeerExitReason::DownloadFinished)
+                    .await;
             }
+
+            // 关闭 gasket
+            let _ = Emitter::global().send(&self.gtid, Shutdown.into()).await;
         }
     }
 
@@ -538,7 +553,8 @@ impl GasketContext {
         let mut pn = self.torrent.piece_num() - 1; // 分片下标是从 0 开始的
         let mut last_v = !0u8 << (7 - (pn & 7));
         let bytefield = self.bytefield.lock().await;
-        for v in bytefield.iter().rev() { // 从后往前匹配
+        for v in bytefield.iter().rev() {
+            // 从后往前匹配
             if *v != last_v {
                 return false;
             }
@@ -570,26 +586,21 @@ pub struct Gasket {
     store: Store,
 
     /// 异步任务
-    future_token: (CancellationToken, Vec<JoinHandle<()>>)
+    future_token: (CancellationToken, Vec<JoinHandle<()>>),
 }
 
 impl Gasket {
-    pub async fn new(
-        id: Id,
-        torrent: TorrentArc,
-        peer_id: PeerId,
-        store: Store,
-    ) -> Self {
+    pub async fn new(id: Id, torrent: TorrentArc, peer_id: PeerId, store: Store) -> Self {
         let conn = Context::global().get_conn().await.unwrap();
         let entity = conn.recover_from_db(&torrent.info_hash).unwrap();
-        let ctx = GasketContext::new(
-            Self::get_transfer_id(id),
-            peer_id,
-            torrent,
-            entity,
-        );
+        let ctx = GasketContext::new(Self::get_transfer_id(id), peer_id, torrent, entity);
 
-        Self { id, ctx, store, future_token: (CancellationToken::new(), vec![]) }
+        Self {
+            id,
+            ctx,
+            store,
+            future_token: (CancellationToken::new(), vec![]),
+        }
     }
 
     fn get_config(&self) -> Config {
@@ -599,7 +610,7 @@ impl Gasket {
     async fn get_conn(&self) -> ConnWrapper {
         Context::global().get_conn().await.unwrap()
     }
-    
+
     async fn start_peer(&self, addr: SocketAddr) {
         debug!("启动peer: {}", addr);
         if self.ctx.unstart_host.contains(&addr) || self.ctx.check_finished().await {
@@ -622,7 +633,7 @@ impl Gasket {
 
         self.do_start_peer(addr, dashbord, true);
     }
-    
+
     async fn start_wait_peer(&self, pi: PeerInfo) {
         // 超过配额，加入等待队列中
         let limit = self.get_config().torrent_peer_conn_limit();
@@ -666,7 +677,7 @@ impl Gasket {
         self.ctx.peers.insert(peer_no, peer);
     }
 
-    async fn save_progress(&self, status: Option<TorrentStatus>) {
+    async fn save_progress(&self) {
         trace!("保存下载进度");
         let conn = self.get_conn().await;
 
@@ -687,7 +698,7 @@ impl Gasket {
             bytefield: Some(self.ctx.bytefield.lock().await.clone()),
             download: Some(self.ctx.download.load(Ordering::Relaxed)),
             uploaded: Some(self.ctx.uploaded.load(Ordering::Relaxed)),
-            status,
+            status: Some(self.ctx.status.lock().await.clone()),
             ..Default::default()
         };
         conn.save_progress(entity).unwrap();
@@ -707,11 +718,11 @@ impl Gasket {
             self.ctx.peer_id.clone(),
             info,
             transfer_id,
-            cancel_token
+            cancel_token,
         );
         tokio::spawn(tracker.run())
     }
-    
+
     fn start_coordinator(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
         let coor = Coordinator::new(self.ctx.clone(), cancel_token);
         tokio::spawn(coor.run())
@@ -721,15 +732,19 @@ impl Gasket {
     async fn pop_wait_peer(&self) -> Option<PeerInfo> {
         self.ctx.wait_queue.lock().await.pop_front()
     }
-    
+
     /// 定时从 dht 中发现 peer
-    fn interval_find_peers_from_dht(&self) -> Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>> {
+    fn interval_find_peers_from_dht(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
         let context = self.ctx.clone();
         let info_hash = NodeId::new(self.ctx.torrent.info_hash.clone());
         let gakset_id = self.id;
-        let resp_tx = Emitter::global().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
+        let resp_tx = Emitter::global()
+            .get(&Self::get_transfer_id(self.get_suffix()))
+            .unwrap();
         let status = self.ctx.status.clone();
-        
+
         Box::pin(async move {
             loop {
                 if *status.lock().await == TorrentStatus::Finished {
@@ -741,7 +756,8 @@ impl Gasket {
                         resp_tx: resp_tx.clone(),
                         gasket_id: gakset_id,
                         expect_peers: DHT_EXPECT_PEERS,
-                    }.into();
+                    }
+                    .into();
                     let _ = Emitter::global().send(&DHT::get_transfer_id(""), cmd).await;
                 }
                 tokio::time::sleep(DHT_FIND_PEERS_INTERVAL).await;
@@ -761,7 +777,9 @@ impl Runnable for Gasket {
         self.id.to_string()
     }
 
-    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
+    fn register_lt_future(
+        &mut self,
+    ) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
         let futures = FuturesUnordered::new();
         futures.push(self.interval_find_peers_from_dht());
         futures
@@ -772,7 +790,7 @@ impl Runnable for Gasket {
         self.future_token.1 = vec![
             // fixme - 正式取消注释
             self.start_tracker(cancel_token.clone()),
-            self.start_coordinator(cancel_token.clone())
+            self.start_coordinator(cancel_token.clone()),
         ];
         Ok(())
     }
@@ -780,9 +798,12 @@ impl Runnable for Gasket {
     fn cancelled(&self) -> WaitForCancellationFuture<'_> {
         Context::global().cancelled()
     }
-    
+
     async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
         let cmd: Command = cmd.instance();
+        if let Command::Shutdown(_) = cmd {
+            return Ok(CommandHandleResult::Exit(ExitReason::Normal));
+        }
         cmd.handle(self).await?;
         Ok(CommandHandleResult::Continue)
     }
@@ -792,7 +813,7 @@ impl Runnable for Gasket {
         for handle in self.future_token.1.iter_mut() {
             handle.await.unwrap();
         }
-        
+
         // 先把任务句柄读取出来，避免在循环中等待任务结束，以免和 peer_exit 中的 remove peer 操作形成死锁
         debug!("等待 peers 关闭");
         let mut handles = self
@@ -804,7 +825,7 @@ impl Runnable for Gasket {
         while let Some(Some(handle)) = handles.pop() {
             handle.await.unwrap();
         }
-        self.save_progress(None).await;
+        self.save_progress().await;
         TaskHandler::global().remove_gasket(self.id);
     }
 }

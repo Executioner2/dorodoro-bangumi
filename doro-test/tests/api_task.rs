@@ -18,7 +18,8 @@ async fn test_parse_torrent_link() {
 #[tokio::test]
 async fn test_parse_torrent_file() {
     let code = 1002;
-    let file_path = "./tests/resources/test6.torrent";
+    // let file_path = "./tests/resources/test6.torrent";
+    let file_path = "/Users/zhaoyuxi/Downloads/cfe40ab08b47c19e0f04d4f4b4ae5004708b4402.torrent";
 
     let mut client = client_util::client().await.unwrap();
     let rf = client.request(code, file_path).await.unwrap();

@@ -2,7 +2,6 @@ use core::fmt::{Display, Formatter};
 use crate::task_handler::gasket::{Gasket, PeerInfo};
 use std::net::SocketAddr;
 use tracing::{debug, info, trace};
-use crate::mapper::torrent::TorrentStatus;
 use anyhow::Result;
 use doro_util::command_system;
 
@@ -13,6 +12,7 @@ command_system! {
         StartWaittingAddr,
         SaveProgress,
         StartTempPeer,
+        Shutdown,
     }
 }
 
@@ -73,15 +73,12 @@ impl<'a> CommandHandler<'a, Result<()>> for StartWaittingAddr {
 
 /// 保存进度
 #[derive(Debug)]
-pub struct SaveProgress {
-    pub(super) status: Option<TorrentStatus>
-}
-
+pub struct SaveProgress;
 impl<'a> CommandHandler<'a, Result<()>> for SaveProgress {
     type Target = &'a mut Gasket;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.save_progress(self.status).await;
+        ctx.save_progress().await;
         Ok(())
     }
 }
@@ -99,5 +96,16 @@ impl<'a> CommandHandler<'a, Result<()>> for StartTempPeer {
         trace!("启动临时 peer [{}]", self.peer_info.addr);
         ctx.start_temp_peer(self.peer_info).await;
         Ok(())
+    }
+}
+
+/// 关闭 gasket 实例，不需要具体实现
+#[derive(Debug)]
+pub struct Shutdown;
+impl<'a> CommandHandler<'a, Result<()>> for Shutdown {
+    type Target = &'a mut Gasket;
+
+    async fn handle(self, _: Self::Target) -> Result<()> {
+        unimplemented!()
     }
 }

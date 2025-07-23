@@ -101,7 +101,7 @@ impl UdpTracker {
             Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
 
         let download = info.download.load(Ordering::Acquire);
-        let left = info.resource_size - download;
+        let left = info.resource_size.saturating_sub(download);
         req.write(self.info_hash.as_slice())?;
         req.write(self.peer_id.value().as_slice())?;
         req.write_u64::<BigEndian>(download)?;

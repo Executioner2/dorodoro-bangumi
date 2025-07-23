@@ -10,16 +10,6 @@ use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, info, warn};
 
-pub trait CustomExitReason: Debug {
-    /// 退出代码
-    fn exit_code(&self) -> u8;
-
-    /// 退出信息
-    fn exit_message(&self) -> String {
-        String::new()
-    }
-}
-
 /// 处理命令的结果
 pub enum CommandHandleResult {
     /// 正常处理
@@ -50,7 +40,7 @@ pub enum ExitReason {
     Error(anyhow::Error),
 
     /// 自定义退出
-    Custom(Box<dyn CustomExitReason + Send + 'static>),
+    Custom(Box<dyn std::error::Error + Send + 'static>),
 }
 
 /// 运行时上下文

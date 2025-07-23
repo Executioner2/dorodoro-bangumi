@@ -29,27 +29,28 @@ use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
 use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 use crate::store::Store;
-use crate::task_handler::gasket::{GasketContext, PeerExitReason};
+use crate::task_handler::gasket::GasketContext;
+use crate::task_handler::gasket::error::{PeerExitReason, exception};
 use crate::torrent::TorrentArc;
 use anyhow::{Error, Result, anyhow};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::{Bytes, BytesMut};
 use doro_util::bytes_util::Bytes2Int;
 use doro_util::global::Id;
-use doro_util::{anyhow_eq, anyhow_ge};
+use doro_util::{anyhow_eq, anyhow_ge, bytes_util};
 use fnv::FnvHashMap;
 use std::cmp::min;
+use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::mem;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Sender, channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
-use tracing::{error, info, trace};
+use tracing::{info, trace};
 
 const MSS: u32 = 17;
 
@@ -244,12 +245,12 @@ impl Piece {
             return;
         }
         let bo_idx = Self::block_offset_idx(block_offset, self.block_size);
-        let (idx, offset) = doro_util::bytes_util::bitmap_offset(bo_idx as usize);
+        let (idx, offset) = bytes_util::bitmap_offset(bo_idx as usize);
         self.bitmap.get_mut(idx).map(|val| *val |= offset);
 
         // 更新连续块偏移
         let bo_idx = Self::block_offset_idx(self.block_offset, self.block_size);
-        let (idx, mut offset) = doro_util::bytes_util::bitmap_offset(bo_idx as usize);
+        let (idx, mut offset) = bytes_util::bitmap_offset(bo_idx as usize);
         'first_loop: for i in idx..self.bitmap.len() {
             let mut k = offset;
             while k != 0 {
@@ -436,7 +437,9 @@ impl Peer {
     /// 加密握手
     async fn crypto_handshake(&mut self, stream: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.no());
-        let tse= pe_crypto::init_handshake(stream, &self.ctx.torrent().info_hash, CryptoProvide::Rc4).await?;
+        let tse =
+            pe_crypto::init_handshake(stream, &self.ctx.torrent().info_hash, CryptoProvide::Rc4)
+                .await?;
         Ok(tse)
     }
 
@@ -511,7 +514,7 @@ impl Peer {
     /// 请求块
     async fn request_block(&mut self, piece_index: u32) -> Result<()> {
         let block_size = self.ctx.config().block_size();
-        let piece_length = Self::get_piece_length(&self.ctx.torrent(), piece_index);
+        let piece_length = self.ctx.torrent().piece_length(piece_index);
         let offset = *self.request_pieces.get(&piece_index).unwrap_or(&0);
 
         if offset < piece_length {
@@ -585,7 +588,7 @@ impl Peer {
         }
 
         for piece_index in 0..self.ctx.torrent().piece_num() {
-            let (idx, offset) = doro_util::bytes_util::bitmap_offset(piece_index);
+            let (idx, offset) = bytes_util::bitmap_offset(piece_index);
 
             let item = self
                 .opposite_peer_bitfield
@@ -601,8 +604,7 @@ impl Peer {
                 .apply_download_piece(self.ctx.no, piece_index as u32)
                 .await
             {
-                self.insert_response_pieces(piece_index, block_offset);
-                self.request_pieces.insert(piece_index, block_offset);
+                self.reset_request_piece_origin(piece_index, block_offset);
                 return Ok(Some(piece_index));
             }
         }
@@ -614,9 +616,15 @@ impl Peer {
         Ok(None)
     }
 
+    /// 重置分片请求的起始位置
+    fn reset_request_piece_origin(&mut self, piece_index: u32, block_offset: u32) {
+        self.insert_response_pieces(piece_index, block_offset);
+        self.request_pieces.insert(piece_index, block_offset);
+    }
+
     fn insert_response_pieces(&mut self, piece_index: u32, block_offset: u32) {
         let bs = self.ctx.config().block_size();
-        let pl = Self::get_piece_length(&self.ctx.torrent(), piece_index);
+        let pl = self.ctx.torrent().piece_length(piece_index);
         self.response_pieces
             .insert(piece_index, Piece::new(block_offset, pl, bs));
     }
@@ -636,12 +644,6 @@ impl Peer {
             self.response_pieces.remove(&piece_index);
         }
         Ok(res)
-    }
-
-    fn get_piece_length(torrent: &TorrentArc, piece_index: u32) -> u32 {
-        let piece_length = torrent.info.piece_length;
-        let resource_length = torrent.info.length;
-        piece_length.min(resource_length.saturating_sub(piece_index as u64 * piece_length)) as u32
     }
 
     /// 释放正在下载的分片
@@ -725,7 +727,7 @@ impl Peer {
         anyhow_eq!(bytes.len(), 4, "对端的 Have 消息长度不正确");
 
         let bit = u32::from_be_slice(&bytes[..4]);
-        let (idx, offset) = doro_util::bytes_util::bitmap_offset(bit as usize);
+        let (idx, offset) = bytes_util::bitmap_offset(bit as usize);
 
         self.opposite_peer_bitfield
             .get_mut(idx)
@@ -781,7 +783,7 @@ impl Peer {
 
         let block_offset = u32::from_be_slice(&bytes[4..8]);
         let block_data = bytes.split_off(8);
-        let block_data_len = block_data.len();
+        // let block_data_len = block_data.len();
 
         self.request_piece().await?;
         let (over, cts_bo) = self.update_response_pieces(piece_index, block_offset)?;
@@ -792,12 +794,12 @@ impl Peer {
         // }
 
         // fixme - 正式记得取消下面的注释
-        self.write_file(piece_index, block_offset, block_data, over);
+        self.write_file(piece_index, block_offset, block_data, over, cts_bo);
 
         // 上报给 gasket
-        self.ctx
-            .gc
-            .reported_download(piece_index, cts_bo, block_data_len as u64);
+        // self.ctx
+        //     .gc
+        //     .reported_download(piece_index, cts_bo, block_data_len as u64);
 
         Ok(())
     }
@@ -809,13 +811,24 @@ impl Peer {
     }
 
     /// 写入文件
-    fn write_file(&self, piece_index: u32, block_offset: u32, mut block_data: Bytes, over: bool) {
+    fn write_file(
+        &self,
+        piece_index: u32,
+        block_offset: u32,
+        mut block_data: Bytes,
+        over: bool,
+        cts_bo: u32,
+    ) {
+        let sender = {
+            match Emitter::global().get(&Self::get_transfer_id(self.ctx.no)) {
+                None => return, // 此 peer 可能已经关闭了
+                Some(sender) => sender,
+            }
+        };
         let context = self.ctx.gc.clone();
         let store = self.store.clone();
         let peer_no = self.no();
-        let sender = Emitter::global()
-            .get(&Self::get_transfer_id(self.ctx.no))
-            .unwrap();
+        let block_data_len = block_data.len();
 
         tokio::spawn(async move {
             let torrent = context.torrent();
@@ -829,11 +842,14 @@ impl Peer {
                     let cmd = PieceWriteFailed {
                         piece_index,
                         block_offset,
-                    }
-                    .into();
-                    let _ = sender.send(cmd).await;
+                    };
+                    let _ = sender.send(cmd.into()).await;
+                    return;
                 }
             }
+
+            // 上报给 gasket
+            context.reported_download(piece_index, cts_bo, block_data_len as u64);
 
             // 校验分块 hash
             if over {
@@ -846,25 +862,26 @@ impl Peer {
     async fn checkout(
         peer_no: Id,
         context: GasketContext,
-        piece_index: u32,
+        piece_idx: u32,
         sender: Sender<TransferPtr>,
         store: Store,
     ) {
-        let read_length = Self::get_piece_length(&context.torrent(), piece_index);
+        let read_length = context.torrent().piece_length(piece_idx);
 
-        trace!("开始校验 {} 个分块", piece_index);
+        trace!("开始校验 {} 个分块", piece_idx);
         let torrent = context.torrent();
         let path = context.save_path();
-        let hash = &torrent.info.pieces[piece_index as usize * 20..(piece_index as usize + 1) * 20];
-        let list = torrent.find_file_of_piece_index(path, piece_index, 0, read_length as usize);
+        let hash = &torrent.info.pieces[piece_idx as usize * 20..(piece_idx as usize + 1) * 20];
+        let list = torrent.find_file_of_piece_index(path, piece_idx, 0, read_length as usize);
         match store.checkout(list.clone(), hash).await {
             Ok(false) | Err(_) => {
-                let cmd = PieceCheckoutFailed { piece_index }.into();
-                let _ = sender.send(cmd).await; // 有可能第一次发送错误就关闭了 peer，所以不必理会发送错误
+                context.reported_piece_failed(peer_no, piece_idx).await;
+                let cmd = PieceCheckoutFailed { piece_idx };
+                let _ = sender.send(cmd.into()).await; // 有可能第一次发生错误就关闭了 peer，所以不必理会发送错误
             }
             _ => {
-                trace!("第 {} 个分块校验通过", piece_index);
-                context.reported_piece_finished(peer_no, piece_index).await;
+                trace!("第 {} 个分块校验通过", piece_idx);
+                context.reported_piece_finished(peer_no, piece_idx).await;
             }
         }
     }
@@ -965,9 +982,8 @@ impl Runnable for Peer {
             ))));
         }
         if let Err(e) = cmd.handle(self).await {
-            error!("处理指令出现错误\t{}", e);
             return Ok(CommandHandleResult::Exit(ExitReason::Custom(Box::new(
-                PeerExitReason::Exception,
+                exception(anyhow!("处理指令出现错误\t{}", e)),
             ))));
         }
         Ok(CommandHandleResult::Continue)
@@ -980,12 +996,12 @@ impl Runnable for Peer {
         }
 
         let reason = match reason {
-            ExitReason::Custom(reason) => reason
-                .exit_code()
-                .try_into()
-                .unwrap_or_else(|_| PeerExitReason::Exception),
+            ExitReason::Custom(reason) => match reason.downcast::<PeerExitReason>() {
+                Ok(reason) => *reason,
+                Err(e) => exception(anyhow!("PeerExitReason 转换失败\t{}", e)),
+            },
             ExitReason::Normal => PeerExitReason::Normal,
-            ExitReason::Error(_) => PeerExitReason::Exception,
+            ExitReason::Error(e) => exception(anyhow!("Peer 出现错误\t{}", e)),
         };
 
         self.ctx

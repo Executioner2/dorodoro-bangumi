@@ -105,6 +105,13 @@ impl Torrent {
     pub fn bitfield_len(&self) -> usize {
         (self.piece_num() + 7) >> 3
     }
+
+    /// 获取分片大小
+    pub fn piece_length(&self, piece_idx: u32) -> u32 {
+        let piece_length = self.info.piece_length;
+        let resource_length = self.info.length;
+        piece_length.min(resource_length.saturating_sub(piece_idx as u64 * piece_length)) as u32
+    }
 }
 
 impl FromBencode for Torrent {

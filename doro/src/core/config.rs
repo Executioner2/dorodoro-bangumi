@@ -83,6 +83,9 @@ struct ConfigInner {
 
     /// rss 订阅并发刷新量
     rss_refresh_concurrency: usize,
+
+    /// 错误分片上限
+    error_piece_limit: u32,
 }
 
 impl Config {
@@ -106,6 +109,7 @@ impl Config {
                 default_download_dir: PathBuf::from("./download/"),
                 client_auth: ClientAuth::init(),
                 rss_refresh_concurrency: 10,
+                error_piece_limit: 3,
             }),
         }
     }
@@ -222,6 +226,13 @@ impl Config {
         self
     }
 
+    pub fn set_error_piece_limit(mut self, limit: u32) -> Self {
+        Arc::get_mut(&mut self.inner).map(|inner| {
+            inner.error_piece_limit = limit;
+        });
+        self
+    }
+
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
     }
@@ -288,5 +299,9 @@ impl Config {
 
     pub fn rss_refresh_concurrency(&self) -> usize {
         self.inner.rss_refresh_concurrency
+    }
+
+    pub fn error_piece_limit(&self) -> u32 {
+        self.inner.error_piece_limit
     }
 }

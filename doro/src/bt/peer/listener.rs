@@ -6,13 +6,14 @@ use crate::peer::peer_resp::PeerResp;
 use crate::peer::rate_control::PacketAck;
 use crate::peer::{command, MsgType};
 use std::net::SocketAddr;
+use anyhow::anyhow;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 use doro_util::global::Id;
 use doro_util::is_disconnect;
 use doro_util::net::FutureRet;
-use crate::task_handler::gasket::PeerExitReason;
+use crate::task_handler::gasket::error::{exception, PeerExitReason};
 
 pub struct WriteFuture {
     pub(super) no: Id,
@@ -34,8 +35,7 @@ impl WriteFuture {
                 data = self.recv.recv() => {
                     if let Some(mut data) = data {
                         if self.writer.write_all(&mut data).await.is_err() {
-                            error!("[{}] 消息发送失败!", self.no);
-                            let reason = PeerExitReason::Exception;
+                            let reason = exception(anyhow!("[{}] 消息发送失败!", self.no));
                             self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
                         }
                     } else {
@@ -87,8 +87,7 @@ impl<T: PacketAck + Send> ReadFuture<T> {
                                 trace!("断开了链接，终止 {} - {} 的数据监听", self.no, self.addr);
                                 reason = PeerExitReason::ClientExit;
                             } else {
-                                error!("{} - {} 的数据监听出错: {}", self.no, self.addr, e);
-                                reason = PeerExitReason::Exception;
+                                reason = exception(anyhow!("{} - {} 的数据监听出错: {}", self.no, self.addr, e));
                             }
                             self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
                             break;

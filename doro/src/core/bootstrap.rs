@@ -35,7 +35,7 @@ pub async fn start() {
     trace!("初始化任务处理器");
     TaskHandler::init().await;
 
-    info!("等待资源关闭中...");
+    info!("dorodoro bangumi 运行中...");
     dht_server_handle.await.unwrap();
     udp_server_handle.await.unwrap();
     tcp_server_handle.await.unwrap();

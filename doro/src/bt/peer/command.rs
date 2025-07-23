@@ -4,7 +4,7 @@ use tracing::debug;
 use anyhow::{anyhow, Result};
 use doro_util::command_system;
 use doro_util::global::Id;
-use crate::task_handler::gasket::PeerExitReason;
+use crate::task_handler::gasket::error::PeerExitReason;
 
 command_system! {
     ctx: Peer,
@@ -62,19 +62,20 @@ impl<'a> CommandHandler<'a, Result<()>> for Heartbeat {
 /// 分块校验失败
 #[derive(Debug)]
 pub struct PieceCheckoutFailed {
-    pub(crate) piece_index: u32,
+    pub(crate) piece_idx: u32,
 }
 impl<'a> CommandHandler<'a, Result<()>> for PieceCheckoutFailed {
     type Target = &'a mut Peer;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        // 清空所有正在进行以及校验失败了的分块
-        ctx.response_pieces
-            .iter_mut()
-            .for_each(|(_, value)| value.block_offset = 0);
+        // 重置所有进行中的分片
+        let pieces = ctx.response_pieces.keys().map(|key| *key).collect::<Vec<_>>();
+        for pi in pieces {
+            ctx.reset_request_piece_origin(pi, 0);
+        }
         // 下载完最后一个 block 后，piece_index 会被删除，因此重新设置为 0
-        ctx.insert_response_pieces(self.piece_index, 0);
-        Err(anyhow!("响应分块错误，piece_index: {}", self.piece_index))
+        ctx.reset_request_piece_origin(self.piece_idx, 0);
+        Err(anyhow!("响应分块错误，piece_index: {}", self.piece_idx))
     }
 }
 

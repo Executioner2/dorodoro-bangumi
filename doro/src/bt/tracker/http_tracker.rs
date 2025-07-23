@@ -145,7 +145,7 @@ impl HttpTracker {
     /// 正常情况下返回可用资源的地址
     pub async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
         let download = info.download.load(Ordering::Acquire);
-        let left = info.resource_size - download;
+        let left = info.resource_size.saturating_sub(download);
         let query_url = format!(
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
             self.announce,
