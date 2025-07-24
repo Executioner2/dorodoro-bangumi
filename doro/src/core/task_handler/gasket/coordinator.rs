@@ -161,10 +161,13 @@ impl Coordinator {
                 _ = self.cancel_token.cancelled() => {
                     break;
                 }
+                _ = self.ctx.check_finished() => {
+                    // 是否完成拧出来到 select 里。不要在下面的
+                    // interval.tick 中，会造成唤醒丢失问题。
+                    // tokio console 中的警告：This task has lost its waker, and will never be woken again.
+                    break;
+                }
                 _ = interval.tick() => {
-                    if self.ctx.check_finished().await {
-                        break;
-                    }
                     self.speed_rate_statistics();
                     self.peer_alloc().await;
                 }

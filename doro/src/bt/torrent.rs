@@ -85,6 +85,7 @@ impl Torrent {
     }
 
     /// 根据分片下标，查询处相关文件
+    #[rustfmt::skip]
     pub fn find_file_of_piece_index(
         &self,
         path_buf: &PathBuf,
@@ -92,8 +93,7 @@ impl Torrent {
         offset: u32,
         len: usize,
     ) -> Vec<BlockInfo> {
-        self.info
-            .find_file_of_piece_index(path_buf, piece_index, offset, len)
+        self.info.find_file_of_piece_index(path_buf, piece_index, offset, len)
     }
 
     /// 分片数量

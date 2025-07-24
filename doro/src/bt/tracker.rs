@@ -6,7 +6,7 @@ use doro_util::bytes_util::Bytes2Int;
 use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, RunContext, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, FuturePin, RunContext, Runnable};
 use crate::torrent::TorrentArc;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
@@ -305,7 +305,7 @@ impl Tracker {
                 scan_time,
                 info.clone(),
                 send_to_gasket.clone(),
-            ));
+            ).pin());
             join_handle.push(handle);
         }
 
@@ -375,7 +375,7 @@ impl Tracker {
 
 impl Runnable for Tracker {
     fn get_transfer_id<T: ToString>(suffix: T) -> String {
-        format!("{}{}", suffix.to_string(), TRACKER)
+        format!("{}_{}", suffix.to_string(), TRACKER)
     }
 
     fn get_suffix(&self) -> String {

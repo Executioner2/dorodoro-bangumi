@@ -10,6 +10,7 @@ use tracing::{info, trace};
 use crate::core::task_handler::TaskHandler;
 use crate::dht::DHT;
 use crate::dht::routing::{NodeId, RoutingTable};
+use crate::runtime::FuturePin;
 
 pub async fn start() {
     info!("dorodoro-bangumi 启动中...");
@@ -21,16 +22,16 @@ pub async fn start() {
 
     trace!("启动 tcp server");
     let tcp_server = TcpServer::new();
-    let tcp_server_handle = tokio::spawn(tcp_server.run());
+    let tcp_server_handle = tokio::spawn(tcp_server.run().pin());
 
     trace!("启动 udp server");
     let udp_server = UdpServer::new().await.unwrap();
-    let udp_server_handle = tokio::spawn(udp_server.clone().run());
+    let udp_server_handle = tokio::spawn(udp_server.clone().run().pin());
     
     trace!("启动 dht");
     let (routing_table, bootstrap_nodes) = load_routing_table(&context).await;
     let dht_server = DHT::new(udp_server, routing_table, bootstrap_nodes);
-    let dht_server_handle = tokio::spawn(dht_server.run());
+    let dht_server_handle = tokio::spawn(dht_server.run().pin());
 
     trace!("初始化任务处理器");
     TaskHandler::init().await;

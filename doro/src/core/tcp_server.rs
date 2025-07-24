@@ -9,7 +9,7 @@ use crate::emitter::transfer::TransferPtr;
 use doro_util::net::FutureRet;
 use crate::protocol::remote_control;
 use crate::protocol::remote_control::HandshakeParse;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, FuturePin, RunContext};
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use futures::stream::FuturesUnordered;
@@ -22,6 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{error, info, trace, warn};
 use doro_util::global::{GlobalId, Id};
+use doro_util::sync::wait_join_handle_close;
 
 mod future;
 
@@ -145,7 +146,7 @@ impl TcpServer {
                         trace!("tcp server 接收到连接: {}", addr);
                         let cc = Self::get_conn_context(socket, conns.clone());
                         let id = cc.id;
-                        let join_handle = tokio::spawn(Self::accept(cc));
+                        let join_handle = tokio::spawn(Self::accept(cc).pin());
                         let conn_info = ConnInfo { join_handle };
                         conns.insert(id, conn_info);
                     }
@@ -201,8 +202,7 @@ impl Runnable for TcpServer {
     async fn shutdown(&mut self, _reason: ExitReason) {
         trace!("等待关闭的子线程数量: {}", self.conns.len());
         for mut conn in self.conns.iter_mut() {
-            let join_handle = &mut conn.join_handle;
-            join_handle.await.unwrap()
+            wait_join_handle_close(&mut conn.join_handle).await;
         }
     }
 }

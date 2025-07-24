@@ -36,7 +36,7 @@ impl WriteFuture {
                     if let Some(mut data) = data {
                         if self.writer.write_all(&mut data).await.is_err() {
                             let reason = exception(anyhow!("[{}] 消息发送失败!", self.no));
-                            self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
+                            let _ = self.peer_sender.send(Exit{ reason }.into()).await;
                         }
                     } else {
                         break;
@@ -79,7 +79,7 @@ impl<T: PacketAck + Send> ReadFuture<T> {
                             }.into()).await.unwrap();
                         },
                         FutureRet::Ok(Heartbeat) => {
-                            self.peer_sender.send(command::Heartbeat.into()).await.unwrap();
+                            let _ = self.peer_sender.send(command::Heartbeat.into()).await;
                         }
                         FutureRet::Err(e) => {
                             let reason;
@@ -89,7 +89,7 @@ impl<T: PacketAck + Send> ReadFuture<T> {
                             } else {
                                 reason = exception(anyhow!("{} - {} 的数据监听出错: {}", self.no, self.addr, e));
                             }
-                            self.peer_sender.send(Exit{ reason }.into()).await.unwrap();
+                            let _ = self.peer_sender.send(Exit{ reason }.into()).await;
                             break;
                         }
                     }

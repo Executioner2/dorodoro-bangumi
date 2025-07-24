@@ -41,8 +41,6 @@ type Idx = (u32, u32);
 /// 网络传输速率测试
 #[tokio::test]
 async fn test_net_rate() {
-    let _guard =
-        log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::DEBUG).unwrap();
     let stream = TcpStream::connect("192.168.2.177:8000").await.unwrap();
     let (read, mut wrtie) = stream.into_split();
     let (tx, mut rx) = channel(1000);

@@ -2,12 +2,11 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use tracing::{info, Level};
-use doro_util::log;
+use doro_util::default_logger;
+
+default_logger!(Level::INFO);
 
 fn write_log(c: &mut Criterion) {
-    let _guard =
-        log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::INFO).unwrap();
-
     c.bench_function("write_log", |b| {
         b.iter(|| {
             // 日志写入代码

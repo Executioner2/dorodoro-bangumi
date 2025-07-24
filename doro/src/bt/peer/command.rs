@@ -82,15 +82,15 @@ impl<'a> CommandHandler<'a, Result<()>> for PieceCheckoutFailed {
 /// 分块写入失败
 #[derive(Debug)]
 pub struct PieceWriteFailed {
-    pub(crate) piece_index: u32,
+    pub(crate) piece_idx: u32,
     pub(crate) block_offset: u32,
 }
 impl<'a> CommandHandler<'a, Result<()>> for PieceWriteFailed {
     type Target = &'a mut Peer;
 
     async fn handle(self, ctx: Self::Target) -> Result<()> {
-        ctx.insert_response_pieces(self.piece_index, self.block_offset);
-        Err(anyhow!("piece_index: {}, block_offset: {} 写入失败", self.piece_index, self.block_offset))
+        ctx.reset_request_piece_origin(self.piece_idx, self.block_offset);
+        Err(anyhow!("piece_index: {}, block_offset: {} 写入失败", self.piece_idx, self.block_offset))
     }
 }
 

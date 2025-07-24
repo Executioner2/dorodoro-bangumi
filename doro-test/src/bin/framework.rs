@@ -8,9 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, error, info, warn};
-use doro_util::{default_logger, log};
-
-default_logger!(Level::DEBUG);
+use doro_util::default_logger;
 
 pub mod torrent {
     /// Torrent
@@ -404,14 +402,9 @@ impl Bootstrap {
     }
 }
 
-/// 全局初始化
-fn global_init() -> Result<WorkerGuard, Box<dyn std::error::Error>> {
-    let guard = log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::INFO)?;
-    Ok(guard)
-}
+default_logger!();
 
 #[tokio::main]
 async fn main() {
-    let _guard = global_init().unwrap();
     Bootstrap::start().await;
 }

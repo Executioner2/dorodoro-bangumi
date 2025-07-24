@@ -17,7 +17,7 @@ use crate::peer;
 use crate::peer::rate_control::RateControl;
 use crate::peer::rate_control::probe::Dashbord;
 use crate::peer::{Peer, Piece};
-use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, FuturePin, RunContext, Runnable};
 use crate::store::Store;
 use crate::task_handler::gasket::command::{Command, SaveProgress, Shutdown, StartWaittingAddr};
 use crate::task_handler::gasket::coordinator::Coordinator;
@@ -44,6 +44,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{Level, debug, error, info, level_enabled, trace};
+use doro_util::sync::{wait_join_handle_close, wait_join_handles_close};
 
 /// 每间隔一分钟扫描一次 peers
 const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
@@ -535,8 +536,9 @@ impl GasketContext {
                 .map(|item| *item.key())
                 .collect::<Vec<_>>();
             for peer_no in peers.iter() {
-                self.notify_peer_stop(*peer_no, PeerExitReason::DownloadFinished)
-                    .await;
+                self.notify_peer_stop(
+                    *peer_no, PeerExitReason::DownloadFinished
+                ).await;
             }
 
             // 关闭 gasket
@@ -671,7 +673,7 @@ impl Gasket {
             dashbord.clone(),
         );
 
-        let join_handle = tokio::spawn(peer.run());
+        let join_handle = tokio::spawn(peer.run().pin());
         let mut peer = PeerInfo::new(peer_no, addr, dashbord, Some(join_handle));
         peer.lt_running = lt;
         self.ctx.peers.insert(peer_no, peer);
@@ -720,12 +722,12 @@ impl Gasket {
             transfer_id,
             cancel_token,
         );
-        tokio::spawn(tracker.run())
+        tokio::spawn(tracker.run().pin())
     }
 
     fn start_coordinator(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
         let coor = Coordinator::new(self.ctx.clone(), cancel_token);
-        tokio::spawn(coor.run())
+        tokio::spawn(coor.run().pin())
     }
 
     #[inline]
@@ -810,22 +812,19 @@ impl Runnable for Gasket {
 
     async fn shutdown(&mut self, _reason: ExitReason) {
         self.future_token.0.cancel();
-        for handle in self.future_token.1.iter_mut() {
-            handle.await.unwrap();
-        }
+        wait_join_handles_close(self.future_token.1.iter_mut()).await;
 
         // 先把任务句柄读取出来，避免在循环中等待任务结束，以免和 peer_exit 中的 remove peer 操作形成死锁
-        debug!("等待 peers 关闭");
-        let mut handles = self
-            .ctx
-            .peers
-            .iter_mut()
-            .map(|mut item| item.join_handle.take())
-            .collect::<Vec<Option<JoinHandle<()>>>>();
-        while let Some(Some(handle)) = handles.pop() {
-            handle.await.unwrap();
+        info!("等待 peers 关闭");
+        for mut item in self.ctx.peers.iter_mut() {
+            if let Some(handle) = &mut item.join_handle {
+                wait_join_handle_close(handle).await;
+            }
         }
+
+        info!("保存进度");
         self.save_progress().await;
         TaskHandler::global().remove_gasket(self.id);
+        info!("gasket [{}] 已关闭", self.id);
     }
 }

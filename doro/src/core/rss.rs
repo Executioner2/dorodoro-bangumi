@@ -21,6 +21,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
+use crate::runtime::FuturePin;
 
 /// HTTP 请求超时时间
 pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -39,7 +40,7 @@ pub struct RSS {
 impl RSS {
     pub fn init(cancel_token: CancellationToken) -> JoinHandle<()> {
         let global_rss = GLOBAL_RSS.get_or_init(|| Self { cancel_token });
-        tokio::spawn(global_rss.clone().interval_refresh())
+        tokio::spawn(global_rss.clone().interval_refresh().pin())
     }
 
     pub fn global() -> &'static Self {
@@ -141,7 +142,7 @@ impl RSS {
         for rss_entity in rss_entities {
             let permit = hash_semaphore.clone().acquire_owned().await?;
             let rss_entity = Arc::new(rss_entity);
-            handles.push((tokio::spawn(Self::flush_feed(rss_entity.clone(), permit)), rss_entity));
+            handles.push((tokio::spawn(Self::flush_feed(rss_entity.clone(), permit).pin()), rss_entity));
         }
 
         for (handle, rss_entity) in handles {

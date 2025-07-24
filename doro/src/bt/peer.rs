@@ -27,7 +27,7 @@ use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
-use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
+use crate::runtime::{CommandHandleResult, ExitReason, FuturePin, RunContext};
 use crate::store::Store;
 use crate::task_handler::gasket::GasketContext;
 use crate::task_handler::gasket::error::{PeerExitReason, exception};
@@ -618,6 +618,16 @@ impl Peer {
 
     /// 重置分片请求的起始位置
     fn reset_request_piece_origin(&mut self, piece_index: u32, block_offset: u32) {
+        if let Some(origin_offset) = self.request_pieces.get(&piece_index) {
+            // 避免先写入错误时，高偏移值替换掉还没请求的低偏移值。
+            // 例如：先请求了 0 号偏移数据，再请求 1 号偏移数据，接着
+            // 收到的 0 号 和 1 号 都发生了写入错误，先把请求记录重置为
+            // 了 0 号偏移，但是还没重新发起 0 号请求，就接着重置为了 1 号，
+            // 导致一直缺失 0 号数据。
+            if *origin_offset < block_offset {
+                return;
+            }
+        }
         self.insert_response_pieces(piece_index, block_offset);
         self.request_pieces.insert(piece_index, block_offset);
     }
@@ -813,7 +823,7 @@ impl Peer {
     /// 写入文件
     fn write_file(
         &self,
-        piece_index: u32,
+        piece_idx: u32,
         block_offset: u32,
         mut block_data: Bytes,
         over: bool,
@@ -825,22 +835,25 @@ impl Peer {
                 Some(sender) => sender,
             }
         };
+
         let context = self.ctx.gc.clone();
         let store = self.store.clone();
         let peer_no = self.no();
         let block_data_len = block_data.len();
 
+        #[rustfmt::skip]
         tokio::spawn(async move {
             let torrent = context.torrent();
             let path = context.save_path();
+            let block_infos = torrent.find_file_of_piece_index(
+                path, piece_idx, block_offset, block_data.len()
+            );
 
-            for block_info in
-                torrent.find_file_of_piece_index(path, piece_index, block_offset, block_data.len())
-            {
+            for block_info in block_infos {
                 let data = block_data.split_to(block_info.len);
                 if store.write(block_info, data).await.is_err() {
                     let cmd = PieceWriteFailed {
-                        piece_index,
+                        piece_idx,
                         block_offset,
                     };
                     let _ = sender.send(cmd.into()).await;
@@ -849,13 +862,13 @@ impl Peer {
             }
 
             // 上报给 gasket
-            context.reported_download(piece_index, cts_bo, block_data_len as u64);
+            context.reported_download(piece_idx, cts_bo, block_data_len as u64);
 
             // 校验分块 hash
             if over {
-                Self::checkout(peer_no, context, piece_index, sender, store).await;
+                Self::checkout(peer_no, context, piece_idx, sender, store).await;
             }
-        });
+        }.pin());
     }
 
     /// 校验分块
@@ -907,6 +920,7 @@ impl Peer {
         let (send, recv) = channel(CHANNEL_BUFFER);
         let probe = Probe::new(self.dashbord.clone());
 
+        #[rustfmt::skip]
         let write_future_handle = tokio::spawn(
             WriteFuture {
                 no: self.ctx.no,
@@ -915,10 +929,10 @@ impl Peer {
                 addr: self.addr,
                 peer_sender: peer_send.clone(),
                 recv,
-            }
-            .run(),
+            }.run().pin()
         );
 
+        #[rustfmt::skip]
         let read_future_handle = tokio::spawn(
             ReadFuture {
                 no: self.ctx.no,
@@ -927,8 +941,7 @@ impl Peer {
                 addr: self.addr,
                 peer_sender: peer_send.clone(),
                 rc: probe,
-            }
-            .run(),
+            }.run().pin()
         );
 
         self.ctx.writer.set_sender(send);

@@ -19,6 +19,7 @@ use doro::control::{ControlStatus, Status, TranId, CODE_SIZE, LENGTH_SIZE, STATU
 use doro::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
 use doro::protocol::remote_control::{PASSWORD_LEN_SIZE, USERNAME_LEN_SIZE};
 use doro::router::Code;
+use doro::runtime::FuturePin;
 use doro_util::{is_disconnect, pin_poll};
 use doro_util::bytes_util::Bytes2Int;
 use doro_util::net::{FutureRet, ReaderHandle};
@@ -132,7 +133,7 @@ impl ClientHandle {
             cancel_token: cancel_token.clone(),
         };
 
-        tokio::spawn(client_handle.run());
+        tokio::spawn(client_handle.run().pin());
 
         Ok(Client {
             write,

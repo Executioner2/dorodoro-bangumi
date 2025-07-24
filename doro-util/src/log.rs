@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 use time::format_description;
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::fmt;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::{EnvFilter, fmt, Layer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -192,7 +191,8 @@ pub fn register_logger(
         .with_line_number(true)
         .with_thread_names(true)
         .with_thread_ids(true)
-        .with_writer(non_blocking.with_max_level(level));
+        .with_writer(non_blocking)
+        .with_filter(get_default_env_filter(level));
 
     // 输出到控制台
     let console = fmt::layer()
@@ -200,7 +200,8 @@ pub fn register_logger(
         .with_line_number(true)
         .with_thread_names(false)
         .with_thread_ids(true)
-        .with_writer(std::io::stderr.with_max_level(level));
+        .with_writer(std::io::stderr)
+        .with_filter(get_default_env_filter(level));
 
     // 注册订阅
     tracing_subscriber::registry()
@@ -211,6 +212,12 @@ pub fn register_logger(
     Ok(guard)
 }
 
+fn get_default_env_filter(level: Level) -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(level.to_string()))
+        .unwrap()
+}
+
 /// 注册一个默认的日志记录器
 pub fn default_logger(level: Level) -> Result<WorkerGuard, std::io::Error> {
     register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, level)
@@ -218,12 +225,35 @@ pub fn default_logger(level: Level) -> Result<WorkerGuard, std::io::Error> {
 
 #[macro_export]
 macro_rules! default_logger {
-    ($level:expr) => {
-        use tracing_appender::non_blocking::WorkerGuard;
+    () => {
+        use std::sync::OnceLock;
         use ctor::ctor;
+        use tracing_appender::non_blocking::WorkerGuard;
+
+        static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+
         #[ctor]
         fn init() {
-            let _guard: WorkerGuard = $crate::log::default_logger($level).unwrap();
+            let default_level = if cfg!(debug_assertions) {
+                Level::DEBUG
+            } else {
+                Level::INFO
+            };
+            let guard: WorkerGuard = $crate::log::default_logger(default_level).unwrap();
+            LOG_GUARD.set(guard).expect("Failed to initialize logger guard");
+        }
+    };
+    ($level:expr) => {
+        use std::sync::OnceLock;
+        use ctor::ctor;
+        use tracing_appender::non_blocking::WorkerGuard;
+
+        static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+
+        #[ctor]
+        fn init() {
+            let guard: WorkerGuard = $crate::log::default_logger($level).unwrap();
+            LOG_GUARD.set(guard).expect("Failed to initialize logger guard");
         }
     };
 }

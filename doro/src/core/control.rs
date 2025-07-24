@@ -10,7 +10,7 @@ use crate::core::emitter::constant::CONTROLLER_PREFIX;
 use crate::core::emitter::Emitter;
 use crate::emitter::transfer::TransferPtr;
 use crate::router::Code;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, FuturePin, Runnable};
 use anyhow::Result;
 use bytes::Bytes;
 use futures::stream::FuturesUnordered;
@@ -104,7 +104,7 @@ impl Dispatcher {
             let packet = Dispatcher::pack_response(crp);
             let response = Response { data: packet };
             send.send(response.into()).await.unwrap();
-        });
+        }.pin());
     }
 
     fn pack_response(crp: ControlResponsePacket) -> Vec<u8> {

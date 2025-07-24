@@ -50,7 +50,7 @@ async fn test_add_task() {
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
-    let torrent_ret: Result<Ret<TorrentRet>, _> = serde_json::from_slice(ret.body.as_ref());
+    let torrent_ret: Result<Ret<bool>, _> = serde_json::from_slice(ret.body.as_ref());
     assert!(torrent_ret.is_ok());
     assert_eq!(torrent_ret.as_ref().unwrap().status_code, 0);
 

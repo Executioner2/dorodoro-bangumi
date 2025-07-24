@@ -1,18 +1,18 @@
+use crate::context::Context;
+use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
+use crate::rss::RSS;
+use crate::runtime::{FuturePin, Runnable};
+use crate::store::Store;
+use crate::task_handler::gasket::Gasket;
+use crate::torrent::TorrentArc;
+use dashmap::{DashMap, DashSet};
+use doro_util::global::{GlobalId, Id};
+use doro_util::sync::{MutexExt, wait_join_handles_close};
 use std::mem;
 use std::sync::{Arc, Mutex, OnceLock};
-use dashmap::{DashMap, DashSet};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use doro_util::global::{GlobalId, Id};
-use doro_util::sync::MutexExt;
-use crate::context::Context;
-use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
-use crate::task_handler::gasket::Gasket;
-use crate::rss::RSS;
-use crate::runtime::Runnable;
-use crate::store::Store;
-use crate::torrent::TorrentArc;
 
 pub mod gasket;
 
@@ -31,7 +31,7 @@ impl PeerId {
             peer_id_pool,
         }
     }
-    
+
     pub fn from_peer_id(peer_id: [u8; 20]) -> Self {
         let peer_id_pool = Arc::new(DashSet::new());
         peer_id_pool.insert(peer_id.clone());
@@ -40,7 +40,7 @@ impl PeerId {
             peer_id_pool,
         }
     }
-    
+
     pub fn value(&self) -> &[u8; 20] {
         &*self.peer_id
     }
@@ -54,7 +54,7 @@ impl Drop for PeerId {
 
 pub struct GasketInfo {
     id: Id,
-    join_handle: JoinHandle<()>,
+    join_handle: Option<JoinHandle<()>>,
 }
 
 pub struct TaskHandler {
@@ -73,13 +73,11 @@ pub struct TaskHandler {
 
 impl TaskHandler {
     pub async fn init() {
-        let task_handler = TASK_HANDLER.get_or_init(|| {
-            TaskHandler {
-                gaskets: Arc::new(DashMap::new()),
-                peer_id_pool: Arc::new(DashSet::new()),
-                store: Store::new(),
-                future_token: Arc::new(Mutex::new((CancellationToken::new(), Vec::new()))),
-            }
+        let task_handler = TASK_HANDLER.get_or_init(|| TaskHandler {
+            gaskets: Arc::new(DashMap::new()),
+            peer_id_pool: Arc::new(DashSet::new()),
+            store: Store::new(),
+            future_token: Arc::new(Mutex::new((CancellationToken::new(), Vec::new()))),
         });
         task_handler.init_handle().await;
     }
@@ -122,7 +120,7 @@ impl TaskHandler {
     }
 
     fn remove_gasket(&self, gasket_id: Id) {
-        self.gaskets.remove(&gasket_id);
+        self.gaskets.remove(&gasket_id); // 直接删除就行，调用此方法的 gasket 一定是调用完这个就关闭的
     }
 }
 
@@ -145,10 +143,10 @@ impl TaskHandler {
             self.store.clone(),
         ).await;
 
-        let join_handle = tokio::spawn(gasket.run());
+        let join_handle = tokio::spawn(gasket.run().pin());
         let gasket_info = GasketInfo {
             id,
-            join_handle,
+            join_handle: Some(join_handle),
         };
 
         self.add_gasket(gasket_info);
@@ -158,19 +156,21 @@ impl TaskHandler {
     pub async fn shutdown(&self) {
         let mut handles = vec![];
         {
+            // 等待 handle 关闭时 async 的，future_token 锁是物理线程锁，因此
+            // 需要将值取出来先。
             let ft = &mut self.future_token.lock_pe();
             ft.0.cancel();
             mem::swap(&mut ft.1, &mut handles);
-        }
-        
-        for handle in handles {
-            handle.await.unwrap();
+
+            handles.extend(
+                self.gaskets
+                    .iter_mut()
+                    .map(|mut item| item.join_handle.take().unwrap())
+                    .collect::<Vec<_>>(),
+            );
         }
 
-        for mut item in self.gaskets.iter_mut() {
-            let handle = &mut item.join_handle;
-            handle.await.unwrap()
-        }
+        wait_join_handles_close(handles.iter_mut()).await;
         match self.store.flush_all() {
             Ok(_) => info!("关机前 flush 数据到存储设备成功"),
             Err(e) => error!("flush 数据到存储设备失败！！！\t{}", e),
