@@ -1,20 +1,24 @@
 //! dht 实现
 
-use doro_util::bendy_ext::SocketAddrExt;
 use crate::command::CommandHandler;
 use crate::context::Context;
 use crate::dht::command::Command;
 use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
 use crate::dht::routing::{Node, NodeId, REFRESH_INTERVAL, RoutingTable};
+use crate::emitter::Emitter;
 use crate::emitter::constant::DHT;
 use crate::emitter::transfer::TransferPtr;
 use crate::mapper::dht::DHTMapper;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, FuturePin, Runnable};
-use doro_util::sync::MutexExt;
+use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
+use crate::task_handler::gasket;
+use crate::task_handler::gasket::command::PeerSource;
 use crate::udp_server::UdpServer;
 use anyhow::Result;
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
+use doro_util::bendy_ext::SocketAddrExt;
+use doro_util::global::Id;
+use doro_util::sync::MutexExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::VecDeque;
@@ -26,10 +30,6 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, trace};
-use doro_util::global::Id;
-use crate::emitter::Emitter;
-use crate::task_handler::gasket;
-use crate::task_handler::gasket::command::PeerSource;
 
 pub mod command;
 pub mod entity;
@@ -324,7 +324,7 @@ impl DHT {
         let routing_table = self.routing_table.clone();
         let dht_request = self.dht_request.clone();
         let conn = Context::global().get_conn().await.unwrap();
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             debug!("开始刷新 dht 路由表");
             loop {
                 let mut update_traget = None;
@@ -367,7 +367,7 @@ impl DHT {
             conn.update_routing_table(&*routing_table).unwrap();
             let node_num = routing_table.get_node_num();
             debug!("刷新 dht 路由表结束\t当前已知节点数: {}", node_num);
-        }.pin());
+        }));
     }
 
     /// 注册定时刷新路由表任务
@@ -377,7 +377,9 @@ impl DHT {
         let id = Self::get_transfer_id(self.get_suffix());
         Box::pin(async move {
             loop {
-                let _ = Emitter::global().send(&id, command::RefreshRoutingTable.into()).await;
+                let _ = Emitter::global()
+                    .send(&id, command::RefreshRoutingTable.into())
+                    .await;
                 tokio::time::sleep(REFRESH_INTERVAL).await;
             }
         })

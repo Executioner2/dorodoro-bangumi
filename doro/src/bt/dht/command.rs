@@ -1,11 +1,11 @@
 use crate::dht::DHT;
 use crate::dht::routing::NodeId;
 use anyhow::Result;
+use doro_util::command_system;
+use doro_util::global::Id;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
-use doro_util::command_system;
-use doro_util::global::Id;
 
 command_system! {
     ctx: DHT,

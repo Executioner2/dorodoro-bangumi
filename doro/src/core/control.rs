@@ -6,25 +6,25 @@ mod request_parse;
 use crate::command::CommandHandler;
 use crate::core::context::Context;
 use crate::core::control::command::{Command, Response};
-use crate::core::emitter::constant::CONTROLLER_PREFIX;
+use crate::core::control::request_parse::RequestParse;
 use crate::core::emitter::Emitter;
+use crate::core::emitter::constant::CONTROLLER_PREFIX;
 use crate::emitter::transfer::TransferPtr;
+use crate::router;
 use crate::router::Code;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, FuturePin, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, Runnable};
 use anyhow::Result;
 use bytes::Bytes;
+use doro_util::global::Id;
+use doro_util::is_disconnect;
+use doro_util::net::FutureRet;
 use futures::stream::FuturesUnordered;
 use std::pin::Pin;
 use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::info;
-use doro_util::global::Id;
-use doro_util::is_disconnect;
-use crate::core::control::request_parse::RequestParse;
-use doro_util::net::FutureRet;
-use crate::router;
 
 /// code 字段占用字节数
 pub const CODE_SIZE: usize = 4;
@@ -67,7 +67,7 @@ pub struct Dispatcher {
 
     /// socket 读取
     socket_read: Option<OwnedReadHalf>,
-    
+
     /// socket 写入
     socket_write: OwnedWriteHalf,
 }
@@ -82,13 +82,16 @@ impl Dispatcher {
         }
     }
 
+    #[rustfmt::skip]
     pub async fn send(&mut self, data: &[u8]) -> Result<()> {
         self.socket_write.write_all(data).await.map_err(|e| e.into())
     }
 
     fn dispatch(&self, code: Code, tran_id: TranId, data: Option<Bytes>) {
-        let send = Emitter::global().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
-        tokio::spawn(async move {
+        let send = Emitter::global()
+            .get(&Self::get_transfer_id(self.get_suffix()))
+            .unwrap();
+        tokio::spawn(Box::pin(async move {
             let data = data.as_ref().map(|d| d.as_ref());
             let crp = {
                 match router::handle_request(code, data).await {
@@ -104,13 +107,14 @@ impl Dispatcher {
             let packet = Dispatcher::pack_response(crp);
             let response = Response { data: packet };
             send.send(response.into()).await.unwrap();
-        }.pin());
+        }));
     }
 
     fn pack_response(crp: ControlResponsePacket) -> Vec<u8> {
         match crp {
             ControlResponsePacket::Ok(code, tran_id, data) => {
                 let len = data.len();
+                #[rustfmt::skip]
                 let mut packet = Vec::with_capacity(CODE_SIZE + TRAN_ID_SIZE + STATUS_SIZE + LENGTH_SIZE + len);
                 packet.extend_from_slice(&code.to_be_bytes());
                 packet.extend_from_slice(&tran_id.to_be_bytes());
@@ -120,8 +124,9 @@ impl Dispatcher {
                 packet
             }
             ControlResponsePacket::Error(code, tran_id, control_status, message) => {
-                let mut packet =
-                    Vec::with_capacity(CODE_SIZE + TRAN_ID_SIZE + STATUS_SIZE + LENGTH_SIZE + message.len());
+                let mut packet = Vec::with_capacity(
+                    CODE_SIZE + TRAN_ID_SIZE + STATUS_SIZE + LENGTH_SIZE + message.len(),
+                );
                 packet.extend_from_slice(&code.to_be_bytes());
                 packet.extend_from_slice(&tran_id.to_be_bytes());
                 packet.extend_from_slice(&(control_status as u32).to_be_bytes());
@@ -137,7 +142,9 @@ impl Dispatcher {
     ) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
         let mut socket_read = self.socket_read.take().unwrap();
         let cancel_token = Context::global().cancel_token();
-        let send = Emitter::global().get(&Self::get_transfer_id(self.get_suffix())).unwrap();
+        let send = Emitter::global()
+            .get(&Self::get_transfer_id(self.get_suffix()))
+            .unwrap();
         Box::pin(async move {
             let addr = socket_read.peer_addr().unwrap();
             let mut request_parse = RequestParse::new(&mut socket_read, &addr);

@@ -1,12 +1,37 @@
-use std::path::PathBuf;
 use crate::api::task_api::{File, Task, TorrentRet, TorrentSource};
-use crate::torrent::{Parse, Torrent, TorrentArc};
-use anyhow::Result;
 use crate::context::Context;
 use crate::mapper::rss::RSSMapper;
 use crate::mapper::torrent::TorrentMapper;
 use crate::rss::HTTP_REQUEST_TIMEOUT;
 use crate::task_handler::TaskHandler;
+use crate::torrent::{Parse, Torrent, TorrentArc};
+use anyhow::{Result, anyhow};
+use doro_util::hash::SHA1_ENCODEN_LEN;
+use doro_util::if_else;
+use std::path::PathBuf;
+
+/// 解析种子链接
+pub fn parse_torrent_link(link: &str) -> Result<TorrentRet> {
+    let info_hash = if_else!(link.starts_with("magnet:?"), parse_magnet_link(link)?, link);
+    if !doro_util::hash::check_info_hash(info_hash) {
+        return Err(anyhow!("不正确的 info_hash"));
+    }
+    todo!("{info_hash}")
+}
+
+/// 从磁力链接中取出 info_hash
+pub fn parse_magnet_link(link: &str) -> Result<&str> {
+    let prefix = "urn:btih:";
+    let mut idx = link.find(prefix).ok_or(anyhow!("磁力链接格式错误"))?;
+    idx += prefix.len();
+
+    // sha1 字符串是 40 的长度
+    if idx + SHA1_ENCODEN_LEN > link.len() {
+        return Err(anyhow!("磁力链接格式错误"));
+    }
+
+    Ok(&link[idx..idx + SHA1_ENCODEN_LEN])
+}
 
 /// 解析种子文件
 pub fn parse_torrent_file(file_path: &str) -> Result<TorrentRet> {
@@ -74,9 +99,15 @@ pub async fn add_task(task: Task) -> Result<bool> {
 
     let ret = {
         let mut conn = Context::global().get_conn().await?;
-        let save_path = task.download_path
+        let save_path = task
+            .download_path
             .map(|path| PathBuf::from(path))
-            .unwrap_or(Context::global().get_config().default_download_dir().clone());
+            .unwrap_or(
+                Context::global()
+                    .get_config()
+                    .default_download_dir()
+                    .clone(),
+            );
         conn.add_torrent(&torrent, &save_path)?
     };
 

@@ -27,7 +27,7 @@ use crate::peer::command::{PieceCheckoutFailed, PieceWriteFailed};
 use crate::peer::listener::{ReadFuture, WriteFuture};
 use crate::peer::rate_control::probe::{Dashbord, Probe};
 use crate::peer::rate_control::{PacketSend, RateControl};
-use crate::runtime::{CommandHandleResult, ExitReason, FuturePin, RunContext};
+use crate::runtime::{CommandHandleResult, ExitReason, RunContext};
 use crate::store::Store;
 use crate::task_handler::gasket::GasketContext;
 use crate::task_handler::gasket::error::{PeerExitReason, exception};
@@ -61,48 +61,48 @@ pub enum MsgType {
     // Core
     // 详情见：[bep_0003](https://www.bittorrent.org/beps/bep_0003.html)
     // ===========================================================================
-    /// 我现在还不想接收你的请求        
+    /// 我现在还不想接收你的请求
     ///
     /// 格式：`length:u32 | 0:u8`
     Choke = 0,
 
-    /// 你现在可以向我发起请求了   
-    ///     
+    /// 你现在可以向我发起请求了
+    ///
     /// 格式：`length:u32 | 1:u8`
     UnChoke = 1,
 
-    /// 感兴趣，期望可以允许我发起请求    
+    /// 感兴趣，期望可以允许我发起请求
     ///
     /// 格式：`length:u32 | 2:u8`
     Interested = 2,
 
-    /// 我已经对你不感兴趣了，你可以不再理我（choke）告诉对方自己已经下载完他的资源了   
-    ///     
+    /// 我已经对你不感兴趣了，你可以不再理我（choke）告诉对方自己已经下载完他的资源了
+    ///
     /// 格式：`length:u32 | 3:u8`
     NotInterested = 3,
 
-    /// 我新增了这个分块，你要不要呀      
+    /// 我新增了这个分块，你要不要呀
     ///
     /// 格式：`length:u32 | 4:u8 | piece_index:u32`
     Have = 4,
 
-    /// 你不要告诉别人，我偷偷给你说，我拥有这些分块。一般在建立完链接后发送         
-    ///  
+    /// 你不要告诉别人，我偷偷给你说，我拥有这些分块。一般在建立完链接后发送
+    ///
     /// 格式：`length:u32 | 5:u8 | bitfield:&[u8]`
     Bitfield = 5,
 
-    /// 请给我这个分块     
+    /// 请给我这个分块
     ///
     /// 格式：`length:u32 | 6:u8 | piece_index:u32 | block_offset:u32 | block_length:u32`
     Request = 6,
 
-    /// 好的，给你这个分块     
-    ///  
+    /// 好的，给你这个分块
+    ///
     /// 格式：`length:u32 | 7:u8 | piece_index:u32 | block_offset:u32 | block_data:&[u8]`
     Piece = 7,
 
-    /// 噢撤回，我不需要这个分块了    
-    ///   
+    /// 噢撤回，我不需要这个分块了
+    ///
     /// 格式：`length:u32 | 8:u8 | piece_index:u32 | block_offset:u32`
     Cancel = 8,
 
@@ -111,8 +111,8 @@ pub enum MsgType {
     // 详情见：[bep_0005](https://www.bittorrent.org/beps/bep_0005.html)
     // 握手时，通过设置扩展位（HANDSHAKE_DHT_PROTOCOL）开启
     // ===========================================================================
-    /// DHT 访问端口     
-    ///   
+    /// DHT 访问端口
+    ///
     /// 格式：`length:u32 | 9:u8 | dht_port:u16`
     Port = 9,
 
@@ -121,19 +121,19 @@ pub enum MsgType {
     // 详情见：[bep_0006](https://www.bittorrent.org/beps/bep_0006.html)
     // 握手时，通过设置扩展位（HANDSHAKE_FAST_EXTENSION）开启
     // ===========================================================================
-    /// 建议请求的分片     
+    /// 建议请求的分片
     ///
     /// 格式：`length:u32 | 13:u8 | piece_index:u32`
     Suggest = 13,
 
-    /// 拥有所有的分片   
-    ///  
+    /// 拥有所有的分片
+    ///
     /// 格式：`length:u32 | 14:u8`
     HaveAll = 14,
 
     /// 一个分片都没有
     ///
-    /// 格式：`length:u32 | 15:u8`   
+    /// 格式：`length:u32 | 15:u8`
     HaveNone = 15,
 
     /// 拒绝请求的分片
@@ -842,7 +842,7 @@ impl Peer {
         let block_data_len = block_data.len();
 
         #[rustfmt::skip]
-        tokio::spawn(async move {
+        tokio::spawn(Box::pin(async move {
             let torrent = context.torrent();
             let path = context.save_path();
             let block_infos = torrent.find_file_of_piece_index(
@@ -868,7 +868,7 @@ impl Peer {
             if over {
                 Self::checkout(peer_no, context, piece_idx, sender, store).await;
             }
-        }.pin());
+        }));
     }
 
     /// 校验分块
@@ -922,26 +922,26 @@ impl Peer {
 
         #[rustfmt::skip]
         let write_future_handle = tokio::spawn(
-            WriteFuture {
+            Box::pin(WriteFuture {
                 no: self.ctx.no,
                 writer,
                 cancel_token: cancel.clone(),
                 addr: self.addr,
                 peer_sender: peer_send.clone(),
                 recv,
-            }.run().pin()
+            }.run())
         );
 
         #[rustfmt::skip]
         let read_future_handle = tokio::spawn(
-            ReadFuture {
+            Box::pin(ReadFuture {
                 no: self.ctx.no,
                 reader,
                 cancel_token: cancel,
                 addr: self.addr,
                 peer_sender: peer_send.clone(),
                 rc: probe,
-            }.run().pin()
+            }.run())
         );
 
         self.ctx.writer.set_sender(send);

@@ -10,7 +10,7 @@ use crate::api::task_api::{Task, TorrentSource};
 use crate::context::Context;
 use crate::mapper::rss::{RSSEntity, RSSMapper};
 use crate::task_service;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use doro_util::datetime;
 use rss::Channel;
@@ -21,7 +21,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
-use crate::runtime::FuturePin;
 
 /// HTTP 请求超时时间
 pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -40,7 +39,7 @@ pub struct RSS {
 impl RSS {
     pub fn init(cancel_token: CancellationToken) -> JoinHandle<()> {
         let global_rss = GLOBAL_RSS.get_or_init(|| Self { cancel_token });
-        tokio::spawn(global_rss.clone().interval_refresh().pin())
+        tokio::spawn(Box::pin(global_rss.clone().interval_refresh()))
     }
 
     pub fn global() -> &'static Self {
@@ -74,7 +73,7 @@ impl RSS {
 
     async fn consumer_not_read(url: &String, channel: Channel) -> Result<()> {
         let (rss_entity, read_guids) = {
-        let conn = Context::global().get_conn().await?;
+            let conn = Context::global().get_conn().await?;
             let rss_entity = conn
                 .get_rss_by_url(&url)?
                 .ok_or(anyhow!("not found subscribe by url: {}", url))?;
@@ -142,7 +141,10 @@ impl RSS {
         for rss_entity in rss_entities {
             let permit = hash_semaphore.clone().acquire_owned().await?;
             let rss_entity = Arc::new(rss_entity);
-            handles.push((tokio::spawn(Self::flush_feed(rss_entity.clone(), permit).pin()), rss_entity));
+            handles.push((
+                tokio::spawn(Box::pin(Self::flush_feed(rss_entity.clone(), permit))),
+                rss_entity,
+            ));
         }
 
         for (handle, rss_entity) in handles {

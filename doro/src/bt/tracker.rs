@@ -2,16 +2,23 @@ pub mod command;
 pub mod http_tracker;
 pub mod udp_tracker;
 
-use doro_util::bytes_util::Bytes2Int;
+use crate::command::CommandHandler;
 use crate::emitter::Emitter;
 use crate::emitter::constant::TRACKER;
 use crate::emitter::transfer::TransferPtr;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, FuturePin, RunContext, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, RunContext, Runnable};
+use crate::task_handler::PeerId;
+use crate::task_handler::gasket::command::{DiscoverPeerAddr, PeerSource};
 use crate::torrent::TorrentArc;
+use crate::tracker::command::Command;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
 use ahash::AHashSet;
+use anyhow::Result;
 use core::fmt::Display;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::{anyhow_eq, datetime};
+use futures::stream::FuturesUnordered;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -19,22 +26,16 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::{Sender};
+use tokio::sync::mpsc::Sender;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{error, info};
-use crate::command::CommandHandler;
-use crate::tracker::command::Command;
-use anyhow::Result;
-use futures::stream::FuturesUnordered;
-use doro_util::{anyhow_eq, datetime};
-use crate::task_handler::gasket::command::{DiscoverPeerAddr, PeerSource};
-use crate::task_handler::PeerId;
 
 // ===========================================================================
 // Peer Host
 // ===========================================================================
 
 /// 解析 peer 列表 - IpV4
+#[rustfmt::skip]
 pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<SocketAddr>> {
     anyhow_eq!(peers.len() % 6, 0, "peers length should be a multiple of 6");
     Ok(peers
@@ -42,11 +43,12 @@ pub fn parse_peers_v4(peers: &[u8]) -> Result<Vec<SocketAddr>> {
         .map(|chunk| {
             let ip_bytes: [u8; 4] = chunk[..4].try_into().unwrap();
             SocketAddr::from((ip_bytes, u16::from_be_slice(&chunk[4..])))
-        })
-        .collect::<Vec<SocketAddr>>())
+        }).collect::<Vec<SocketAddr>>()
+    )
 }
 
 /// 解析 peer 列表 - IpV6
+#[rustfmt::skip]
 pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<SocketAddr>> {
     anyhow_eq!(peers.len() % 18, 0, "peers length should be a multiple of 18");
     Ok(peers
@@ -54,8 +56,8 @@ pub fn parse_peers_v6(peers: &[u8]) -> Result<Vec<SocketAddr>> {
         .map(|chunk| {
             let ip_bytes: [u8; 16] = chunk[..16].try_into().unwrap();
             SocketAddr::from((ip_bytes, u16::from_be_slice(&chunk[16..])))
-        })
-        .collect::<Vec<SocketAddr>>())
+        }).collect::<Vec<SocketAddr>>()
+    )
 }
 
 /// announce event
@@ -188,7 +190,7 @@ impl Tracker {
         peer_id: PeerId,
         info: AnnounceInfo,
         gasket_transfer_id: String,
-        cancel_token: CancellationToken
+        cancel_token: CancellationToken,
     ) -> Self {
         let trackers = instance_tracker(peer_id, torrent);
 
@@ -235,8 +237,11 @@ impl Tracker {
                         tracker.announce(),
                         peers.len()
                     );
-                    let cmd = DiscoverPeerAddr { peers, source: PeerSource::Tracker }.into();
-                    send_to_gasket.send(cmd).await.unwrap();
+                    let cmd = DiscoverPeerAddr {
+                        peers,
+                        source: PeerSource::Tracker,
+                    };
+                    send_to_gasket.send(cmd.into()).await.unwrap();
                     announce.interval as u64
                 }
                 Err(e) => {
@@ -270,8 +275,11 @@ impl Tracker {
                         tracker.announce(),
                         peers.len()
                     );
-                    let cmd = DiscoverPeerAddr { peers, source: PeerSource::Tracker }.into();
-                    send_to_gasket.send(cmd).await.unwrap();
+                    let cmd = DiscoverPeerAddr {
+                        peers,
+                        source: PeerSource::Tracker,
+                    };
+                    send_to_gasket.send(cmd.into()).await.unwrap();
                     match announce.min_interval {
                         Some(interval) => interval,
                         None => announce.interval,
@@ -300,12 +308,12 @@ impl Tracker {
         let mut join_handle = vec![];
 
         for tracker in trackers.iter() {
-            let handle = tokio::spawn(Self::tracker_handle_process(
+            let handle = tokio::spawn(Box::pin(Self::tracker_handle_process(
                 tracker.clone(),
                 scan_time,
                 info.clone(),
                 send_to_gasket.clone(),
-            ).pin());
+            )));
             join_handle.push(handle);
         }
 
@@ -316,7 +324,7 @@ impl Tracker {
 
         interval
     }
-    
+
     /// 本地环境测试
     #[allow(dead_code)]
     async fn local_env_test(&self) -> u64 {
@@ -324,7 +332,6 @@ impl Tracker {
         let cmd = DiscoverPeerAddr {
             peers: vec![
                 // SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-                
                 SocketAddr::from_str("192.168.2.113:6881").unwrap(),
                 SocketAddr::from_str("192.168.2.113:6882").unwrap(),
                 SocketAddr::from_str("192.168.2.113:6883").unwrap(),
@@ -333,7 +340,6 @@ impl Tracker {
                 SocketAddr::from_str("192.168.2.113:6886").unwrap(),
                 SocketAddr::from_str("192.168.2.113:6887").unwrap(),
                 SocketAddr::from_str("192.168.2.113:6888").unwrap(),
-                
                 // SocketAddr::from_str("209.141.46.35:15982").unwrap(),
                 // SocketAddr::from_str("123.156.68.196:20252").unwrap(),
                 // SocketAddr::from_str("1.163.51.40:42583").unwrap(),
@@ -341,10 +347,9 @@ impl Tracker {
                 // SocketAddr::from_str("106.73.62.197:40370").unwrap(),
             ],
             source: PeerSource::Tracker,
-        }
-            .into();
+        };
         Emitter::global()
-            .send(&self.gasket_transfer_id, cmd)
+            .send(&self.gasket_transfer_id, cmd.into())
             .await
             .unwrap();
         9999999
@@ -356,8 +361,9 @@ impl Tracker {
         let scan_time = self.scan_time;
         let info = self.info.clone();
 
-        let send_to_gasket: Sender<TransferPtr> = Emitter::global().get(&self.gasket_transfer_id).unwrap();
-        
+        let send_to_gasket: Sender<TransferPtr> =
+            Emitter::global().get(&self.gasket_transfer_id).unwrap();
+
         Box::pin(async move {
             loop {
                 let task = Tracker::scan_tracker(
@@ -382,8 +388,10 @@ impl Runnable for Tracker {
         self.gasket_transfer_id.to_string()
     }
 
-    fn register_lt_future(&mut self) -> FuturesUnordered<Pin<Box<dyn Future<Output=CustomTaskResult> + Send + 'static>>> {
-        let futures = FuturesUnordered::new();        
+    fn register_lt_future(
+        &mut self,
+    ) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
+        let futures = FuturesUnordered::new();
         // fixme - 正式记得取消下面这行注释
         futures.push(self.create_scan_task());
         futures

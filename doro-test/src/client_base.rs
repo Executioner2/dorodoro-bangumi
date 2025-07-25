@@ -2,6 +2,15 @@ use anyhow::{Result, anyhow};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dashmap::DashMap;
+use doro::control::{
+    CODE_SIZE, ControlStatus, LENGTH_SIZE, STATUS_SIZE, Status, TRAN_ID_SIZE, TranId,
+};
+use doro::protocol::remote_control::{PASSWORD_LEN_SIZE, USERNAME_LEN_SIZE};
+use doro::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
+use doro::router::Code;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::net::{FutureRet, ReaderHandle};
+use doro_util::{is_disconnect, pin_poll};
 use serde::Serialize;
 use std::io;
 use std::io::ErrorKind;
@@ -15,14 +24,6 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use doro::control::{ControlStatus, Status, TranId, CODE_SIZE, LENGTH_SIZE, STATUS_SIZE, TRAN_ID_SIZE};
-use doro::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
-use doro::protocol::remote_control::{PASSWORD_LEN_SIZE, USERNAME_LEN_SIZE};
-use doro::router::Code;
-use doro::runtime::FuturePin;
-use doro_util::{is_disconnect, pin_poll};
-use doro_util::bytes_util::Bytes2Int;
-use doro_util::net::{FutureRet, ReaderHandle};
 
 pub struct Auth {
     pub username: String,
@@ -133,7 +134,7 @@ impl ClientHandle {
             cancel_token: cancel_token.clone(),
         };
 
-        tokio::spawn(client_handle.run().pin());
+        tokio::spawn(Box::pin(client_handle.run()));
 
         Ok(Client {
             write,
@@ -376,7 +377,7 @@ impl<T: AsyncRead + Unpin> Future for HandshakeParse<'_, T> {
                 if protocol != REMOTE_CONTROL_PROTOCOL {
                     return Poll::Ready(FutureRet::Err(io::Error::new(
                         ErrorKind::InvalidData,
-                        "协议错误"
+                        "协议错误",
                     )));
                 }
                 this.reader_handle.reset(STATUS_SIZE);
@@ -385,7 +386,7 @@ impl<T: AsyncRead + Unpin> Future for HandshakeParse<'_, T> {
             HandshakeState::Status => {
                 let status = Status::from_be_slice(&buf);
                 if status == ControlStatus::Ok as u32 {
-                    return Poll::Ready(FutureRet::Ok(()))
+                    return Poll::Ready(FutureRet::Ok(()));
                 }
                 this.reader_handle.reset(LENGTH_SIZE);
                 this.state = HandshakeState::ErrorMsgLen;
@@ -398,19 +399,15 @@ impl<T: AsyncRead + Unpin> Future for HandshakeParse<'_, T> {
             HandshakeState::ErrorMsg => {
                 this.state = HandshakeState::Finished;
                 return match String::from_utf8(buf.to_vec()) {
-                    Ok(error_msg) => {
-                        Poll::Ready(FutureRet::Err(io::Error::new(
-                            ErrorKind::PermissionDenied,
-                            error_msg
-                        )))
-                    }
-                    Err(_) => {
-                        Poll::Ready(FutureRet::Err(io::Error::new(
-                            ErrorKind::InvalidData,
-                            "错误信息格式错误"
-                        )))
-                    }
-                }
+                    Ok(error_msg) => Poll::Ready(FutureRet::Err(io::Error::new(
+                        ErrorKind::PermissionDenied,
+                        error_msg,
+                    ))),
+                    Err(_) => Poll::Ready(FutureRet::Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "错误信息格式错误",
+                    ))),
+                };
             }
             HandshakeState::Finished => {
                 return Poll::Ready(FutureRet::Err(io::Error::new(

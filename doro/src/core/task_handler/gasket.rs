@@ -17,11 +17,11 @@ use crate::peer;
 use crate::peer::rate_control::RateControl;
 use crate::peer::rate_control::probe::Dashbord;
 use crate::peer::{Peer, Piece};
-use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, FuturePin, RunContext, Runnable};
+use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext, Runnable};
 use crate::store::Store;
 use crate::task_handler::gasket::command::{Command, SaveProgress, Shutdown, StartWaittingAddr};
 use crate::task_handler::gasket::coordinator::Coordinator;
-use crate::task_handler::gasket::error::{deadly_error, ErrorType, PeerExitReason};
+use crate::task_handler::gasket::error::{ErrorType, PeerExitReason, deadly_error};
 use crate::task_handler::{PeerId, TaskHandler};
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
@@ -30,6 +30,7 @@ use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
 use doro_util::global::{GlobalId, Id};
+use doro_util::sync::{wait_join_handle_close, wait_join_handles_close};
 use doro_util::{bytes_util, if_else, net};
 use fnv::FnvHashSet;
 use futures::stream::FuturesUnordered;
@@ -44,7 +45,6 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use tracing::{Level, debug, error, info, level_enabled, trace};
-use doro_util::sync::{wait_join_handle_close, wait_join_handles_close};
 
 /// 每间隔一分钟扫描一次 peers
 const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
@@ -536,9 +536,8 @@ impl GasketContext {
                 .map(|item| *item.key())
                 .collect::<Vec<_>>();
             for peer_no in peers.iter() {
-                self.notify_peer_stop(
-                    *peer_no, PeerExitReason::DownloadFinished
-                ).await;
+                self.notify_peer_stop(*peer_no, PeerExitReason::DownloadFinished)
+                    .await;
             }
 
             // 关闭 gasket
@@ -673,7 +672,7 @@ impl Gasket {
             dashbord.clone(),
         );
 
-        let join_handle = tokio::spawn(peer.run().pin());
+        let join_handle = tokio::spawn(Box::pin(peer.run()));
         let mut peer = PeerInfo::new(peer_no, addr, dashbord, Some(join_handle));
         peer.lt_running = lt;
         self.ctx.peers.insert(peer_no, peer);
@@ -722,12 +721,12 @@ impl Gasket {
             transfer_id,
             cancel_token,
         );
-        tokio::spawn(tracker.run().pin())
+        tokio::spawn(Box::pin(tracker.run()))
     }
 
     fn start_coordinator(&self, cancel_token: CancellationToken) -> JoinHandle<()> {
         let coor = Coordinator::new(self.ctx.clone(), cancel_token);
-        tokio::spawn(coor.run().pin())
+        tokio::spawn(Box::pin(coor.run()))
     }
 
     #[inline]

@@ -1,7 +1,8 @@
 use doro::bootstrap;
+#[cfg(not(feature = "dev"))]
 use doro_util::default_logger;
+#[cfg(not(feature = "dev"))]
 use tracing::Level;
-
 
 #[cfg(not(feature = "dev"))]
 default_logger!();

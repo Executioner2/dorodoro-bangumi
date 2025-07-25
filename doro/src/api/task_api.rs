@@ -1,8 +1,8 @@
+use crate::router::ret::Ret;
 use crate::{register_route, task_service};
+use anyhow::Result;
 use doro_macro::route;
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
-use crate::router::ret::Ret;
 
 /// 种子来源
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
@@ -62,8 +62,9 @@ pub struct File {
 
 /// 解析 torrent 链接，支持磁力链接和文件哈希值
 #[route(code = 1001)]
-pub async fn parse_torrent_link(_link: String) -> Result<Ret<TorrentRet>> {
-    todo!("parse_torrent_link")
+pub async fn parse_torrent_link(link: String) -> Result<Ret<TorrentRet>> {
+    let r = task_service::parse_torrent_link(link.as_str())?;
+    Ok(Ret::ok(r))
 }
 
 /// 解析本地种子文件

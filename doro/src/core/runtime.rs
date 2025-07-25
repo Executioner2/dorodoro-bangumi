@@ -172,19 +172,3 @@ pub trait Runnable {
     #[allow(async_fn_in_trait)]
     async fn shutdown(&mut self, _reason: ExitReason) {}
 }
-
-pub trait FuturePin<F>
-where
-    F: Future + Send + 'static,
-{
-    fn pin(self) -> Pin<Box<F>>;
-}
-
-impl<F> FuturePin<F> for F
-where
-    F: Future + Send + 'static,
-{
-    fn pin(self) -> Pin<Box<F>> {
-        Box::pin(self)
-    }
-}

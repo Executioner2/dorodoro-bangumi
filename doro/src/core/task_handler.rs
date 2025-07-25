@@ -1,7 +1,7 @@
 use crate::context::Context;
 use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
 use crate::rss::RSS;
-use crate::runtime::{FuturePin, Runnable};
+use crate::runtime::Runnable;
 use crate::store::Store;
 use crate::task_handler::gasket::Gasket;
 use crate::torrent::TorrentArc;
@@ -143,7 +143,7 @@ impl TaskHandler {
             self.store.clone(),
         ).await;
 
-        let join_handle = tokio::spawn(gasket.run().pin());
+        let join_handle = tokio::spawn(Box::pin(gasket.run()));
         let gasket_info = GasketInfo {
             id,
             join_handle: Some(join_handle),
