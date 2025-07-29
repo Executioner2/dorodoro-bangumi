@@ -3,17 +3,17 @@
 #[cfg(test)]
 mod tests;
 
-use std::net::SocketAddr;
-use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
+use crate::task_manager::PeerId;
 use crate::tracker::{AnnounceInfo, Event};
 use anyhow::{Result, anyhow};
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
+use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::warn;
-use crate::task_handler::PeerId;
 
 #[derive(Debug)]
 pub struct Announce {
@@ -95,8 +95,16 @@ impl FromBencode for Announce {
         let interval = interval.ok_or_else(|| Error::missing_field("interval"))?;
         let incomplete = incomplete.ok_or_else(|| Error::missing_field("incomplete"))?;
         let complete = complete.ok_or_else(|| Error::missing_field("complete"))?;
-        let peers = peers.unwrap_or_default().into_iter().map(|x| x.into()).collect::<Vec<SocketAddr>>();
-        let peers6 = peers6.unwrap_or_default().into_iter().map(|x| x.into()).collect::<Vec<SocketAddr>>();
+        let peers = peers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.into())
+            .collect::<Vec<SocketAddr>>();
+        let peers6 = peers6
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.into())
+            .collect::<Vec<SocketAddr>>();
 
         Ok(Announce {
             interval,
@@ -149,13 +157,13 @@ impl HttpTracker {
         let query_url = format!(
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
             self.announce,
-            percent_encode(self.info_hash.as_slice(), NON_ALPHANUMERIC).to_string(),
-            percent_encode(self.peer_id.value().as_slice(), NON_ALPHANUMERIC).to_string(),
+            percent_encode(self.info_hash.as_slice(), NON_ALPHANUMERIC),
+            percent_encode(self.peer_id.value().as_slice(), NON_ALPHANUMERIC),
             info.port,
             info.uploaded.load(Ordering::Acquire),
             download,
             left,
-            event.to_string(),
+            event,
         );
         let response = if let Ok(Ok(response)) =
             tokio::time::timeout(HTTP_REQUEST_TIMEOUT, reqwest::get(&query_url)).await

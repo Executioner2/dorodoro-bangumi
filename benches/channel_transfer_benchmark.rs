@@ -1,10 +1,10 @@
 //! 通道不同传输方式的测试
-//! 
+//!
 //! 测试对象：
 //!  - enum transfer                直接使用枚举传输
 //!  - unsafe ptr transfer          传输裸指针
 //!  - dynamic dispatch transfer    动态分发
-//! 
+//!
 //! 测试结果：
 //!     Finished `bench` profile [optimized] target(s) in 0.10s
 //!     Running benches/channel_transfer_benchmark.rs (target/release/deps/channel_transfer_benchmark-18302fcba3578faf)
@@ -27,14 +27,14 @@
 //!     Performance has improved.
 //!     Found 1 outliers among 100 measurements (1.00%)
 //!     1 (1.00%) high mild
-//! 
+//!
 //! 结论：
 //! 这里的测试去掉了发送端准备数据的过程，相当于是只测试了接收端转换数据的性能。结果而言，原生枚举会快
 //! 一点。但是综合项目可维护性，可扩展性，裸指针和动态分发必然是优先选择项。动态分发不支持原始数据还原
 //! ，也不支持消耗原始数据。handle 接口的定义是需要指令的处理者消耗掉这个指令的。所以 emiiter 采用
 //! 裸指针实现。
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::sync::Arc;
 use transfer_data::*;
@@ -188,8 +188,8 @@ pub mod transfer1 {
 
 pub mod transfer2 {
     use crate::transfer_data::{CommandHandler, Scheduler, TransferPtr};
-    use std::sync::mpsc::channel;
     use std::sync::Arc;
+    use std::sync::mpsc::channel;
     use std::thread;
 
     pub fn unsafe_ptr_transfer(objs: Arc<Vec<Arc<TransferPtr>>>) -> u64 {
@@ -214,8 +214,8 @@ pub mod transfer2 {
 
 pub mod transfer3 {
     use crate::transfer_data::TransferDynBox;
-    use std::sync::mpsc::channel;
     use std::sync::Arc;
+    use std::sync::mpsc::channel;
     use std::thread;
 
     pub fn dynamic_dispatch_transfer(objs: Arc<Vec<Arc<TransferDynBox>>>) -> u64 {
@@ -247,15 +247,15 @@ fn generate_test_data1(len: usize) -> Vec<Arc<Scheduler>> {
             0 => {
                 let data: Scheduler = Shoutown.into();
                 list.push(Arc::new(data))
-            },
+            }
             1 => {
                 let data: Scheduler = AddTorrent("test").into();
-                list.push(Arc::new(data)) 
-            },
+                list.push(Arc::new(data))
+            }
             2 => {
                 let data: Scheduler = OtherData(A(1, 2, false)).into();
                 list.push(Arc::new(data))
-            },
+            }
             _ => (),
         }
     }
@@ -269,16 +269,22 @@ fn generate_test_data2(len: usize) -> Vec<Arc<TransferPtr>> {
         match i % 4 {
             0 => {
                 let data: Scheduler = Shoutown.into();
-                list.push(Arc::new(TransferPtr::new(Box::into_raw(Box::new(data)) as *const ())))
+                list.push(Arc::new(TransferPtr::new(
+                    Box::into_raw(Box::new(data)) as *const ()
+                )))
             }
             1 => {
                 let data: Scheduler = AddTorrent("test").into();
                 // list.push(TransferPtr::new(Box::into_raw(Box::new(data)) as *const ()))
-                list.push(Arc::new(TransferPtr::new(Box::into_raw(Box::new(data)) as *const ())))
+                list.push(Arc::new(TransferPtr::new(
+                    Box::into_raw(Box::new(data)) as *const ()
+                )))
             }
             2 => {
                 let data: Scheduler = OtherData(A(1, 2, false)).into();
-                list.push(Arc::new(TransferPtr::new(Box::into_raw(Box::new(data)) as *const ())))
+                list.push(Arc::new(TransferPtr::new(
+                    Box::into_raw(Box::new(data)) as *const ()
+                )))
             }
             _ => (),
         }
@@ -327,7 +333,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             black_box(sum)
         })
     });
-    
+
     // 使用裸指针的方式
     c.bench_function("unsafe ptr transfer", |b| {
         b.iter(|| {

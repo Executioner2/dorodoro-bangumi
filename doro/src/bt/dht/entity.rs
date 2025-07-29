@@ -1,11 +1,11 @@
+use crate::dht::routing::NodeId;
 use alloc::borrow::Cow;
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
 use bendy::value::Value;
-use tracing::warn;
 use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use doro_util::bytes_util::Bytes2Int;
-use crate::dht::routing::NodeId;
+use tracing::warn;
 
 impl Bytes2Object<Host> for [u8] {
     fn to_object(&self) -> Result<Host, Error> {
@@ -13,13 +13,16 @@ impl Bytes2Object<Host> for [u8] {
             return Err(Error::unexpected_token(
                 "26 or 38 bytes expected",
                 format!("Invalid host length: {}", self.len()),
-            ))
+            ));
         }
 
         let mut id = [0u8; 20];
         id.copy_from_slice(&self[..20]);
         let addr = self[20..].to_object()?;
-        Ok(Host { id: NodeId::from(id), addr })
+        Ok(Host {
+            id: NodeId::from(id),
+            addr,
+        })
     }
 }
 
@@ -88,7 +91,7 @@ impl<'a, T> DHTBase<'a, T> {
             reqq: None,
         }
     }
-    
+
     pub fn t(&self) -> u16 {
         if let Value::Bytes(ref bytes) = self.t {
             u16::from_be_slice(bytes.as_ref())
@@ -130,9 +133,7 @@ impl<'a, T: FromBencode> FromBencode for DHTBase<'a, T> {
                         .map(Some)?;
                 }
                 (b"t", value) => {
-                    t = Value::decode_bencode_object(value)
-                        .context("t")
-                        .map(Some)?;
+                    t = Value::decode_bencode_object(value).context("t").map(Some)?;
                 }
                 (b"y", value) => {
                     y = String::decode_bencode_object(value)
@@ -234,7 +235,7 @@ impl<'a> ToBencode for Ping<'a> {
         encoder.emit_dict(|mut e| {
             e.emit_pair(b"id", self.id.as_ref())?;
             if let Some(port) = self.port {
-                e.emit_pair(b"port", &port)?;
+                e.emit_pair(b"port", port)?;
             }
             Ok(())
         })
@@ -258,9 +259,7 @@ impl<'a> FromBencode for Ping<'a> {
                         .map(Some)?;
                 }
                 (b"p", value) => {
-                    port = u16::decode_bencode_object(value)
-                        .context("p")
-                        .map(Some)?;
+                    port = u16::decode_bencode_object(value).context("p").map(Some)?;
                 }
                 (unknown_field, _) => {
                     warn!("未知的字段: {:?}", String::from_utf8_lossy(unknown_field));
@@ -333,7 +332,7 @@ impl<'a> FromBencode for GetPeersResp<'a> {
             nodes,
             values,
             token,
-            p
+            p,
         })
     }
 }
@@ -395,11 +394,11 @@ pub struct FindNodeResp<'a> {
 impl<'a> FromBencode for FindNodeResp<'a> {
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
-        Self: Sized
+        Self: Sized,
     {
         let mut id = None;
         let mut nodes = None;
-        
+
         let mut dict = object.try_into_dictionary()?;
         while let Some(pair) = dict.next_pair()? {
             match pair {
@@ -423,7 +422,7 @@ impl<'a> FromBencode for FindNodeResp<'a> {
 
         Ok(FindNodeResp {
             id: Cow::Owned(id),
-            nodes
+            nodes,
         })
     }
 }

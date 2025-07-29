@@ -16,7 +16,7 @@ impl Deref for Id {
 
 impl Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.to_string())
+        write!(f, "{}", self.0)
     }
 }
 
@@ -35,10 +35,11 @@ impl GlobalId {
         })
     }
 
-    pub fn next_id(&self) -> Id {
+    pub fn next_id() -> Id {
         // 正常使用，几乎是不会出触发 id 用尽的情况。
         // todo - 后续再看看有没有更好的方案
-        let id = self.id_counter.fetch_add(1, Ordering::Acquire);
+        let this = GlobalId::global();
+        let id = this.id_counter.fetch_add(1, Ordering::Acquire);
         if id == 0 {
             panic!("id counter overflow")
         }

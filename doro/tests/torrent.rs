@@ -2,15 +2,15 @@
 
 use bendy::decoding::FromBencode;
 use byteorder::{BigEndian, WriteBytesExt};
+use doro::torrent::{Parse, Torrent};
+use doro::tracker::http_tracker::Announce;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::default_logger;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
 use std::fs;
 use std::net::UdpSocket;
 use tracing::{Level, debug};
-use doro::torrent::{Parse, Torrent};
-use doro::tracker::http_tracker::Announce;
-use doro_util::bytes_util::Bytes2Int;
-use doro_util::default_logger;
 
 default_logger!(Level::DEBUG);
 
@@ -108,8 +108,7 @@ fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
     let encoded_peer = percent_encode(&peer_id, NON_ALPHANUMERIC).to_string();
 
     let url = format!(
-        "{}?info_hash={}&peer_id={}&port={}&uploaded=0&downloaded={}&compact=1",
-        announce, encoded_info, encoded_peer, port, downloaded
+        "{announce}?info_hash={encoded_info}&peer_id={encoded_peer}&port={port}&uploaded=0&downloaded={downloaded}&compact=1"
     );
 
     let response = reqwest::blocking::get(url)?;

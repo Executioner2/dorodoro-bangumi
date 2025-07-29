@@ -1,8 +1,10 @@
+pub mod base_peer;
 mod constant;
-pub mod peer;
-pub mod torrent;
-pub mod tracker;
-pub mod store;
+pub mod default_servant;
 pub mod dht;
 mod pe_crypto;
+pub mod servant;
 mod socket;
+pub mod store;
+pub mod torrent;
+pub mod tracker;

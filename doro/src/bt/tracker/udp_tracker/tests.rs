@@ -1,26 +1,26 @@
 //! udp_tracker 的单元测试
 
-use crate::bt::peer::MsgType;
-use doro_util::bytes_util::Bytes2Int;
+use crate::bt::base_peer::MsgType;
+use crate::task_manager::PeerId;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::udp_tracker::UdpTracker;
 use crate::tracker::{AnnounceInfo, Event};
 use byteorder::{BigEndian, WriteBytesExt};
+use doro_util::bytes_util::Bytes2Int;
 use sha1::{Digest, Sha1};
 use std::cmp::min;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::TcpStream;
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 use tracing::{error, info};
-use crate::task_handler::PeerId;
 
 /// 测试是否能发起 connect 请求
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn test_connect() {
     let mut tracker = UdpTracker::new(
         "tracker.torrent.eu.org:451".to_string(),
         Arc::new(info_hash),
-        PeerId::from_peer_id(peer_id),
+        PeerId::new(peer_id),
     );
     info!("connect before: {:?}", tracker.connect);
     tracker.update_connect().await.unwrap();
@@ -48,7 +48,7 @@ async fn test_announce() {
     let mut tracker = UdpTracker::new(
         "tracker.torrent.eu.org:451".to_string(),
         Arc::new(torrent.info_hash),
-        PeerId::from_peer_id(peer_id),
+        PeerId::new(peer_id),
     );
     let info = AnnounceInfo {
         download: Arc::new(AtomicU64::new(0)),
@@ -122,7 +122,7 @@ async fn request_download() {
     let info_hash = torrent.info_hash;
     let peer_id = b"L4AZCBzQ_h5yo6djjbSL";
     info!("peer_id: {}", String::from_utf8_lossy(peer_id));
-    info!("info_hash: {}", hex::encode(&info_hash));
+    info!("info_hash: {}", hex::encode(info_hash));
 
     let peer = "192.168.2.177:3115";
     // 下面两个是直接从 tracker 中获取到的远端 peer。测试是可以连接上并下载资源的。
@@ -163,57 +163,53 @@ async fn request_download() {
 
     info!(
         "区块数量: {}",
-        (torrent.info.length + torrent.info.piece_length - 1) / torrent.info.piece_length
+        torrent.info.length.div_ceil(torrent.info.piece_length)
     );
 
     // return;
 
     async fn reader_handler(reader: &mut OwnedReadHalf, torrent: &Torrent) {
-        loop {
-            match timeout(Duration::from_secs(5), reader.readable()).await {
-                Ok(Ok(())) => {
-                    // info!("reader 可读");
-                    ()
+        match timeout(Duration::from_secs(5), reader.readable()).await {
+            Ok(Ok(())) => {
+                // info!("reader 可读");
+            }
+            Ok(Err(e)) => {
+                error!("reader 读错误: {}", e);
+                return;
+            }
+            Err(_) => {
+                error!("reader 读超时");
+                return;
+            }
+        }
+        // info!("================分割线================");
+
+        let mut length = [0u8; 4];
+        reader.read_exact(&mut length).await.unwrap();
+        let length = u32::from_be_bytes(length);
+        // info!("对方响应的长度: {}", length);
+
+        let mut resp = vec![0u8; length as usize];
+        reader.read_exact(&mut resp).await.unwrap();
+        // info!("对方响应的内容: {:?}", resp);
+
+        if let Ok(msg_type) = MsgType::try_from(resp[0]) {
+            match msg_type {
+                MsgType::Piece => {
+                    let data = &resp[1..];
+                    writer_handler(data, &torrent.info.name, torrent.info.piece_length).await;
                 }
-                Ok(Err(e)) => {
-                    error!("reader 读错误: {}", e);
-                    break;
-                }
-                Err(_) => {
-                    error!("reader 读超时");
-                    break;
+                _ => {
+                    info!("其它响应，暂不处理: {:?}", resp)
                 }
             }
-            // info!("================分割线================");
-
-            let mut length = [0u8; 4];
-            reader.read_exact(&mut length).await.unwrap();
-            let length = u32::from_be_bytes(length);
-            // info!("对方响应的长度: {}", length);
-
-            let mut resp = vec![0u8; length as usize];
-            reader.read_exact(&mut resp).await.unwrap();
-            // info!("对方响应的内容: {:?}", resp);
-
-            if let Ok(msg_type) = MsgType::try_from(resp[0]) {
-                match msg_type {
-                    MsgType::Piece => {
-                        let data = &resp[1..];
-                        writer_handler(data, &torrent.info.name, torrent.info.piece_length).await;
-                    }
-                    _ => {
-                        info!("其它响应，暂不处理: {:?}", resp)
-                    }
-                }
-            }
-            break;
         }
     }
 
     async fn writer_handler(writer: &[u8], filename: &str, piece_length: u64) {
         let mut file = OpenOptions::new()
             .write(true)
-            .create(true)
+            .truncate(true)
             .open(filename)
             .unwrap();
 
@@ -269,8 +265,7 @@ async fn request_download() {
 
     // 我要开始向你请求数据了
     let sharding_size = 1 << 14; // 分片大小
-    let piece_num =
-        (torrent.info.length + torrent.info.piece_length - 1) / torrent.info.piece_length;
+    let piece_num = torrent.info.length.div_ceil(torrent.info.piece_length);
     for i in 0..piece_num {
         let mut sharding_offset = 0u64;
         let piece_length = torrent.info.piece_length.min(
@@ -315,7 +310,8 @@ async fn request_download() {
         file.seek(SeekFrom::Start(i * torrent.info.piece_length))
             .unwrap();
         let mut data = vec![0u8; piece_length as usize];
-        file.read(&mut data).unwrap();
+        let size = file.read(&mut data).unwrap();
+        assert_eq!(size, piece_length as usize);
 
         let mut hasher = Sha1::new();
         hasher.update(data);
@@ -367,7 +363,7 @@ fn test_write_data_on_seek_to_file() {
     // let data = [1u8; 10];
     let filename = "write_test";
     let mut file = OpenOptions::new()
-        .create(true)
+        .truncate(true)
         .write(true)
         .open(filename)
         .unwrap();
@@ -377,7 +373,8 @@ fn test_write_data_on_seek_to_file() {
 
     let mut file = OpenOptions::new().read(true).open(filename).unwrap();
     let mut read_data = [0u8; 20];
-    file.read(&mut read_data).unwrap();
+    let size = file.read(&mut read_data).unwrap();
+    assert_eq!(size, 20);
     assert_eq!(read_data[0..5], [0; 5]);
     assert_eq!(read_data[5..16], b"hello world"[..]);
     assert_eq!(read_data[16..], [0; 4]);

@@ -9,21 +9,21 @@
 //!     <protocol_len:u8><protocol_name:bytes><status:u32>[length:u32][error_msg:bytes]
 //!
 
-use doro_util::bytes_util::Bytes2Int;
 use crate::config::ClientAuth;
 use crate::control::{ControlStatus, LENGTH_SIZE, STATUS_SIZE};
-use doro_util::net::{FutureRet, ReaderHandle};
-use anyhow::{anyhow, Result};
+use crate::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
+use anyhow::{Result, anyhow};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::net::{FutureRet, ReaderHandle};
+use doro_util::pin_poll;
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use doro_util::pin_poll;
-use crate::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
 
 #[derive(Debug)]
 pub struct AuthInfo {
@@ -105,10 +105,10 @@ impl<'a, T: AsyncRead + Unpin> Future for HandshakeParse<'a, T> {
 }
 
 pub fn auth_verify(client_auth: &ClientAuth, auth_info: &AuthInfo) -> Result<()> {
-    let username = String::from_utf8(auth_info.username.to_vec())
-        .map_err(|_| anyhow!("username invalid"))?;
-    let password = String::from_utf8(auth_info.password.to_vec())
-        .map_err(|_| anyhow!("password invalid"))?;
+    let username =
+        String::from_utf8(auth_info.username.to_vec()).map_err(|_| anyhow!("username invalid"))?;
+    let password =
+        String::from_utf8(auth_info.password.to_vec()).map_err(|_| anyhow!("password invalid"))?;
 
     if client_auth.username != username || client_auth.password != password {
         return Err(anyhow!("auth failed"));
@@ -132,11 +132,7 @@ pub async fn send_handshake_failed<T: AsyncWrite + Unpin>(
     error_msg: String,
 ) -> Result<()> {
     let mut buf = Vec::with_capacity(
-        PROTOCOL_SIZE
-            + REMOTE_CONTROL_PROTOCOL.len()
-            + STATUS_SIZE
-            + LENGTH_SIZE
-            + error_msg.len(),
+        PROTOCOL_SIZE + REMOTE_CONTROL_PROTOCOL.len() + STATUS_SIZE + LENGTH_SIZE + error_msg.len(),
     );
     let error_msg = error_msg.as_bytes();
     WriteBytesExt::write_u8(&mut buf, REMOTE_CONTROL_PROTOCOL.len() as u8)?;

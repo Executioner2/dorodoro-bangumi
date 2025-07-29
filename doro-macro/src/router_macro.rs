@@ -68,8 +68,7 @@ use quote::{ToTokens, quote};
 use std::mem;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Expr, ExprLit, FnArg, Result, parse_quote};
-use syn::{Meta, Token, parse_macro_input};
+use syn::{Expr, ExprLit, FnArg, Meta, Result, Token, parse_macro_input, parse_quote};
 
 #[derive(Debug)]
 struct Attributes {
@@ -79,7 +78,7 @@ struct Attributes {
 impl Parse for Attributes {
     fn parse(input: ParseStream) -> Result<Self> {
         Ok(Attributes {
-            args: Punctuated::parse_terminated(&input)?,
+            args: Punctuated::parse_terminated(input)?,
         })
     }
 }
@@ -170,10 +169,7 @@ fn is_option_ty_from_fn_arg(fn_arg: &FnArg) -> Result<bool> {
 
 fn has_param_attr(arg: &FnArg) -> Result<bool> {
     let attrs = get_attrs_from_fn_arg(arg)?;
-    Ok(attrs
-        .iter()
-        .find(|a| path_to_string(&a.path()) == "param")
-        .is_some())
+    Ok(attrs.iter().any(|a| path_to_string(a.path()) == "param"))
 }
 
 fn replace_fn_args(
@@ -286,7 +282,7 @@ fn generate_registration(
         &format!("__register_route_{code}"),
         proc_macro2::Span::call_site(),
     );
-    quote! { register_route!(#register_fn, #code, #fn_ident, #has_args); }.into()
+    quote! { register_route!(#register_fn, #code, #fn_ident, #has_args); }
 }
 
 fn path_to_string(path: &syn::Path) -> String {

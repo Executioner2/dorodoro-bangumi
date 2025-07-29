@@ -55,7 +55,7 @@ impl BufInner {
         self.capacity = capacity;
         self.resize(capacity);
     }
-    
+
     fn clear(&mut self) {
         self.size = 0;
     }
@@ -162,6 +162,10 @@ impl ByteBuffer {
         self.inner.size
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.inner.size == 0
+    }
+
     pub fn capacity(&self) -> usize {
         self.inner.capacity
     }
@@ -171,7 +175,7 @@ impl ByteBuffer {
         mem::swap(&mut self.inner, &mut inner);
         Bytes::from_owner(inner)
     }
-    
+
     pub fn clear(&mut self) {
         self.inner.clear()
     }

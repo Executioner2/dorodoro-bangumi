@@ -1,8 +1,8 @@
 //! 写日志基准性能测试
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use tracing::{info, Level};
 use doro_util::default_logger;
+use tracing::{Level, info};
 
 default_logger!(Level::INFO);
 

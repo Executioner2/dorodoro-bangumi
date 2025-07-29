@@ -220,7 +220,7 @@ async fn test_transfer_unsafe_ptr() {
 
     let emitter = Emitter::global();
     emitter.register("scheduler", send1);
-    emitter.register("task_handler", send2);
+    emitter.register("task_manager", send2);
 
     let t1 = tokio::spawn(scheduler_loop(recv1));
     let t2 = tokio::spawn(peer_manager_loop(recv2));
@@ -240,7 +240,7 @@ async fn test_transfer_unsafe_ptr() {
         let data: PeerManager = NewDownload.into();
         let cmd = Box::into_raw(Box::new(data)) as *const ();
         emitter
-            .send("task_handler", TransferPtr::new(cmd))
+            .send("task_manager", TransferPtr::new(cmd))
             .await
             .unwrap();
     }

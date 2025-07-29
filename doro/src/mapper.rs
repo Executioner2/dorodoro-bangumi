@@ -1,7 +1,7 @@
-pub mod torrent;
 pub mod context;
 pub mod dht;
 pub mod rss;
+pub mod torrent;
 
 /// db 保存路径
 pub static DB_SAVE_PATH: &str = "db";

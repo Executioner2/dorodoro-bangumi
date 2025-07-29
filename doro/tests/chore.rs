@@ -1,21 +1,21 @@
 //! 这个是一些杂项的验证测试
 
 use dashmap::DashMap;
+use doro_util::default_logger;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use doro_util::default_logger;
 
 default_logger!(Level::DEBUG);
 
@@ -191,15 +191,15 @@ async fn test_dashmap_deadlock1() {
 async fn test_dashmap_deadlock2() {
     let map = Arc::new(DashMap::new());
     map.insert(1u32, "xx");
-    
+
     info!("before: {:?}", map.get(&1).unwrap().value());
-    
+
     // 这样写会有死锁风险，所以避免在拿到分段锁中，再进行一次可能会对这个 dashmap 进行操作的调用
     // if let Some(item) = map.get(&1) {
     //     info!("enter if let");
     //     do_test_dashmap_deadlock2(map.clone(), item.key()).await;
     // }
-    
+
     info!("done");
 }
 

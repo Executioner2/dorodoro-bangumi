@@ -1,7 +1,7 @@
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, Ordering};
 use super::ByteBuffer;
 use bytes::Bytes;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 测试是否能正常回收内存，因为有 println，需要添加 --nocapture 保证不会被兜住
 #[test]
@@ -46,5 +46,4 @@ impl<A: GlobalAlloc> TrackingAllocator<A> {
 }
 
 #[global_allocator]
-static GLOBAL_ALLOCATOR: TrackingAllocator<System> =
-    TrackingAllocator(System, AtomicU64::new(0));
+static GLOBAL_ALLOCATOR: TrackingAllocator<System> = TrackingAllocator(System, AtomicU64::new(0));

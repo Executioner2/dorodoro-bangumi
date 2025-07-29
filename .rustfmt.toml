@@ -1,0 +1,13 @@
+edition="2024"
+
+# 每个 use 独立一行（粒度为 item）
+imports_granularity = "Module"
+
+# 每个 use 独占一行，不嵌套
+imports_layout = "Mixed"
+
+# 使用块级缩进
+imports_indent = "Block"
+
+# 控制每行最大长度（建议 80-100）
+max_width = 100

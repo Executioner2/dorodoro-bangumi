@@ -1,14 +1,14 @@
+pub mod ret;
 #[cfg(test)]
 mod tests;
-pub mod ret;
 
-use anyhow::{anyhow, Result};
+use crate::router::ret::Ret;
+use anyhow::{Result, anyhow};
+use async_trait::async_trait;
+use json_value::JsonValue;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
-use async_trait::async_trait;
-use json_value::JsonValue;
-use crate::router::ret::Ret;
 
 pub type Code = u32;
 
@@ -23,7 +23,7 @@ pub enum HandlerFnType<F1, F2> {
 }
 
 #[async_trait]
-pub trait HandlerTrait<T: Serialize + Send + Sync +'static>: Send + Sync {
+pub trait HandlerTrait<T: Serialize + Send + Sync + 'static>: Send + Sync {
     async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret<T>>;
 }
 
@@ -84,7 +84,7 @@ where
 
 #[derive(Default)]
 pub struct Router {
-    routes: RwLock<HashMap<u32, Arc<dyn RouteHandler>>>
+    routes: RwLock<HashMap<u32, Arc<dyn RouteHandler>>>,
 }
 
 impl Router {
@@ -95,12 +95,15 @@ impl Router {
 
     pub fn register_handler(&self, code: Code, handler: Arc<dyn RouteHandler>) {
         if self.routes.write().unwrap().insert(code, handler).is_some() {
-            panic!("Route for code {} already registered", code)
+            panic!("Route for code {code} already registered")
         }
     }
 
     pub async fn handle_request(&self, code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
-        let handler = self.routes.read().unwrap()
+        let handler = self
+            .routes
+            .read()
+            .unwrap()
             .get(&code)
             .ok_or_else(|| anyhow!("No handler for code {}", code))
             .cloned()?;
@@ -113,7 +116,7 @@ macro_rules! register_route {
     ($register_fn:ident, $code:expr, $handler:ident, true) => {
         #[ctor::ctor]
         fn $register_fn() {
-            use crate::core::router::{HandlerWrapper, Router, HasInputHandler};
+            use $crate::core::router::{HandlerWrapper, HasInputHandler, Router};
             let wrapper = HandlerWrapper {
                 handle: std::sync::Arc::new(HasInputHandler {
                     f: $handler,
@@ -126,7 +129,7 @@ macro_rules! register_route {
     ($register_fn:ident, $code:expr, $handler:ident, false) => {
         #[ctor::ctor]
         fn $register_fn() {
-            use crate::core::router::{HandlerWrapper, Router, NoneInputHandler};
+            use $crate::core::router::{HandlerWrapper, NoneInputHandler, Router};
             let wrapper = HandlerWrapper {
                 handle: std::sync::Arc::new(NoneInputHandler {
                     f: $handler,
@@ -140,7 +143,7 @@ macro_rules! register_route {
 
 fn handle_ret_after<T: Serialize + Send + Sync + 'static>(ret: Result<Ret<T>>) -> Ret<T> {
     ret.unwrap_or_else(|e| Ret::default_err(e.to_string()))
-} 
+}
 
 pub async fn handle_request(code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
     Router::global().handle_request(code, body).await

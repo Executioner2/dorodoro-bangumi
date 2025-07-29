@@ -1,15 +1,15 @@
+use crate::protocol;
+use crate::protocol::{Identifier, PROTOCOL_SIZE, Protocol};
+use bytes::Bytes;
+use doro_util::net::{FutureRet, ReaderHandle};
+use doro_util::pin_poll;
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
-use doro_util::net::{FutureRet, ReaderHandle};
-use crate::protocol::{Identifier, Protocol, PROTOCOL_SIZE};
-use bytes::Bytes;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 use tokio::net::TcpStream;
 use tracing::warn;
-use doro_util::pin_poll;
-use crate::protocol;
 
 pub struct Accept<'a> {
     reader_handle: ReaderHandle<'a, TcpStream>,
@@ -51,7 +51,7 @@ impl<'a> Accept<'a> {
     }
 }
 
-impl<'a> Future for Accept<'_> {
+impl Future for Accept<'_> {
     type Output = FutureRet<Protocol>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -74,7 +74,7 @@ impl<'a> Future for Accept<'_> {
                     warn!("未知协议: {}", String::from_utf8_lossy(protocol));
                     return Poll::Ready(FutureRet::Err(io::Error::new(
                         ErrorKind::InvalidData,
-                       "unknown protocol",
+                        "unknown protocol",
                     )));
                 }
             }

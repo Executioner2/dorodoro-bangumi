@@ -3,21 +3,21 @@
 #[cfg(test)]
 mod tests;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use bendy::encoding::AsString;
 use bincode::{Decode, Encode};
+use bytes::Bytes;
+use doro_util::if_else;
 use sha1::{Digest, Sha1};
 use std::fs;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use bytes::Bytes;
 use tracing::warn;
-use doro_util::if_else;
 
 /// 种子，多线程共享
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Default)]
 pub struct TorrentArc {
     inner: Arc<Torrent>,
 }
@@ -36,7 +36,7 @@ impl TorrentArc {
     }
 
     pub fn inner(&self) -> &Torrent {
-        &*self.inner
+        &self.inner
     }
 }
 
@@ -49,7 +49,7 @@ impl Deref for TorrentArc {
 }
 
 /// 种子结构体
-#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode, Default)]
 pub struct Torrent {
     pub announce: String,                // Tracker地址
     pub announce_list: Vec<Vec<String>>, // Tracker列表
@@ -62,33 +62,11 @@ pub struct Torrent {
 }
 
 impl Torrent {
-    fn new(
-        announce: String,
-        announce_list: Vec<Vec<String>>,
-        created_by: Option<String>,
-        creation_date: u64,
-        info: Info,
-        info_hash: [u8; 20],
-        comment: Option<String>,
-        encoding: Option<String>,
-    ) -> Self {
-        Self {
-            announce,
-            announce_list,
-            created_by,
-            creation_date,
-            info,
-            info_hash,
-            comment,
-            encoding,
-        }
-    }
-
     /// 根据分片下标，查询处相关文件
     #[rustfmt::skip]
     pub fn find_file_of_piece_index(
         &self,
-        path_buf: &PathBuf,
+        path_buf: &Path,
         piece_index: u32,
         offset: u32,
         len: usize,
@@ -153,8 +131,8 @@ impl FromBencode for Torrent {
                 }
                 (b"info", Object::Dict(dict)) => {
                     let info_bytes = dict.into_raw()?;
-                    info_hash = Some(calculate_info_hash(&info_bytes));
-                    info = Info::from_bencode(&info_bytes).context("info").map(Some)?;
+                    info_hash = Some(calculate_info_hash(info_bytes));
+                    info = Info::from_bencode(info_bytes).context("info").map(Some)?;
                 }
                 (b"comment", value) => {
                     comment = String::decode_bencode_object(value)
@@ -178,7 +156,7 @@ impl FromBencode for Torrent {
         let info = info.ok_or_else(|| Error::missing_field("info"))?;
         let info_hash = info_hash.ok_or_else(|| Error::missing_field("info_hash"))?;
 
-        Ok(Self::new(
+        Ok(Self {
             announce,
             announce_list,
             created_by,
@@ -187,12 +165,12 @@ impl FromBencode for Torrent {
             info_hash,
             comment,
             encoding,
-        ))
+        })
     }
 }
 
 /// 种子信息结构体
-#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode)]
+#[derive(Debug, Hash, Eq, PartialEq, Encode, Decode, Default)]
 pub struct Info {
     pub length: u64,             // 文件大小
     pub piece_length: u64,       // 分片大小
@@ -234,7 +212,7 @@ impl Info {
         for file in files {
             let start = (prev + (sum % piece_length == 0) as i64) as u64;
             sum += file.length;
-            let end = (sum + piece_length - 1) / piece_length;
+            let end = sum.div_ceil(piece_length);
             file_piece.push((start as u32 - 1, end as u32 - 1));
             prev = end as i64;
             file.length_prefix_sum = sum;
@@ -244,7 +222,7 @@ impl Info {
 
     fn find_file_of_piece_index(
         &self,
-        path_buf: &PathBuf,
+        path_buf: &Path,
         piece_index: u32,
         offset: u32,
         len: usize,
@@ -352,8 +330,7 @@ impl FromBencode for Info {
         let name = name.ok_or_else(|| Error::missing_field("name"))?;
         let piece_length = piece_length.ok_or_else(|| Error::missing_field("piece length"))?;
         let pieces = pieces.ok_or_else(|| Error::missing_field("pieces"))?;
-        let length =
-        if let Some(files) = files.as_ref() {
+        let length = if let Some(files) = files.as_ref() {
             files.iter().map(|file| file.length).sum()
         } else {
             length.ok_or_else(|| Error::missing_field("length"))?
@@ -457,9 +434,7 @@ impl Parse<Vec<u8>> for Torrent {
     fn parse_torrent(data: Vec<u8>) -> Result<Torrent> {
         match Torrent::from_bencode(&data) {
             Ok(torrent) => Ok(torrent),
-            Err(e) => {
-                Err(anyhow!("解析种子文件失败: {}", e))
-            }
+            Err(e) => Err(anyhow!("解析种子文件失败: {}", e)),
         }
     }
 }
@@ -468,9 +443,7 @@ impl Parse<Bytes> for Torrent {
     fn parse_torrent(data: Bytes) -> Result<Self> {
         match Torrent::from_bencode(&data) {
             Ok(torrent) => Ok(torrent),
-            Err(e) => {
-                Err(anyhow!("解析种子文件失败: {}", e))
-            }
+            Err(e) => Err(anyhow!("解析种子文件失败: {}", e)),
         }
     }
 }

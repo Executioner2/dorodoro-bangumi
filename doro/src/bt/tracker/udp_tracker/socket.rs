@@ -5,12 +5,13 @@
 //! 比拼中败下阵来，在差不多的吞吐量下，它会比后者使用更多的 CPU 资源。
 
 use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE};
-use doro_util::buffer::ByteBuffer;
+use anyhow::Result;
 use bytes::Bytes;
+use doro_util::buffer::ByteBuffer;
 use std::net::UdpSocket;
 use std::sync::Arc;
-use anyhow::Result;
 
+#[derive(Default)]
 pub struct SocketBuilder<'a> {
     local_addr: &'a str,
     read_timeout: Option<u64>,
@@ -22,9 +23,7 @@ impl<'a> SocketBuilder<'a> {
     pub fn new() -> Self {
         Self {
             local_addr: DEFAULT_ADDR,
-            read_timeout: None,
-            write_timeout: None,
-            nonblocking: false,
+            ..Default::default()
         }
     }
 

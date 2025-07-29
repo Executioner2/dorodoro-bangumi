@@ -1,6 +1,6 @@
 use crate::db::ConnWrapper;
 use anyhow::Result;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 #[derive(Default)]
 pub struct RSSEntity {
@@ -118,7 +118,9 @@ pub trait RSSMapper {
 
 impl RSSMapper for ConnWrapper {
     fn get_rss_by_url(&self, url: &str) -> Result<Option<RSSEntity>> {
-        let mut stmt = self.prepare_cached("select id, title, url, hash, last_update from rss where url = ? limit 1")?;
+        let mut stmt = self.prepare_cached(
+            "select id, title, url, hash, last_update from rss where url = ? limit 1",
+        )?;
         stmt.query_row(params![url], |row| {
             Ok(RSSEntity {
                 id: row.get(0)?,
@@ -127,7 +129,9 @@ impl RSSMapper for ConnWrapper {
                 hash: row.get(3)?,
                 last_update: row.get(4)?,
             })
-        }).optional().map_err(Into::into)
+        })
+        .optional()
+        .map_err(Into::into)
     }
 
     fn add_subscribe(&mut self, re: RSSEntity) -> Result<bool> {
@@ -141,7 +145,7 @@ impl RSSMapper for ConnWrapper {
         // 先查询有没有这个 url
         let count: i64 = tx
             .prepare_cached("select count(*) from rss where url = ?")?
-            .query_row(&[&url], |row| row.get(0))?;
+            .query_row([&url], |row| row.get(0))?;
 
         if count > 0 {
             tx.commit()?;
@@ -157,7 +161,9 @@ impl RSSMapper for ConnWrapper {
     }
 
     fn list_subscribe_not_update(&self, last_update: u64) -> Result<Vec<RSSEntity>> {
-        let mut stmt = self.prepare_cached("select id, title, url, hash, last_update from rss where last_update < ?")?;
+        let mut stmt = self.prepare_cached(
+            "select id, title, url, hash, last_update from rss where last_update < ?",
+        )?;
         let mut rows = stmt.query(params![&last_update])?;
         let mut result = Vec::new();
 
@@ -175,9 +181,11 @@ impl RSSMapper for ConnWrapper {
     }
 
     fn list_mark_read_guid(&self, url: &str) -> Result<Vec<String>> {
-        let mut stmt = self.prepare_cached(r#"
+        let mut stmt = self.prepare_cached(
+            r#"
             select guid from rss_mark_read where rss_id = (select id from rss where url = ? limit 1)
-        "#)?;
+        "#,
+        )?;
         let mut res = Vec::new();
         let mut rows = stmt.query(params![url])?;
         while let Some(row) = rows.next()? {
@@ -187,17 +195,21 @@ impl RSSMapper for ConnWrapper {
     }
 
     fn update_subscribe(&self, id: u64, last_update: u64, hash: &str) -> Result<usize> {
-        let mut stmt = self.prepare_cached(r#"
+        let mut stmt = self.prepare_cached(
+            r#"
             update rss set last_update = ?, hash = ? where id = ?
-        "#)?;
-        stmt.execute(params![&last_update, &hash, &id]).map_err(Into::into)
+        "#,
+        )?;
+        stmt.execute(params![&last_update, &hash, &id])
+            .map_err(Into::into)
     }
 
     fn mark_read(&mut self, rss_id: u64, guid: &str) -> Result<bool> {
         let tx = self.transaction()?;
 
         // 检查是否已经标记了未读
-        let count: i64 = tx.prepare_cached("select count(*) from rss_mark_read where rss_id = ? and guid = ?")?
+        let count: i64 = tx
+            .prepare_cached("select count(*) from rss_mark_read where rss_id = ? and guid = ?")?
             .query_row(params![&rss_id, &guid], |row| row.get(0))?;
 
         if count > 0 {
@@ -214,7 +226,8 @@ impl RSSMapper for ConnWrapper {
     }
 
     fn mark_not_read(&mut self, rss_id: u64, guid: &str) -> Result<usize> {
-        let mut stmt = self.prepare_cached("delete from rss_mark_read where rss_id = ? and guid = ?")?;
+        let mut stmt =
+            self.prepare_cached("delete from rss_mark_read where rss_id = ? and guid = ?")?;
         stmt.execute(params![&rss_id, &guid]).map_err(Into::into)
     }
 }

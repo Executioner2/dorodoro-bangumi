@@ -1,20 +1,23 @@
 //! bug 多多，不要使用
 
-#![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables, unused_mut))]
+#![cfg_attr(
+    debug_assertions,
+    allow(dead_code, unused_imports, unused_variables, unused_mut)
+)]
 
 #[cfg(test)]
 mod tests;
 
-use crate::bt::peer::rate_control::bbr::State::*;
+use crate::bt::base_peer::rate_control::bbr::State::*;
 use doro_util::timer::CountdownTimer;
 use doro_util::win_minmax::Minmax;
+use doro_util::{datetime, if_else};
 use libc::{socklen_t, tcp_connection_info};
 use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::debug;
-use doro_util::{datetime, if_else};
 
 /// 带宽扩大
 const BW_SCALE: u8 = 24;
@@ -137,7 +140,8 @@ impl Throttle {
         self.acc_delivered.fetch_add(1, Ordering::Relaxed);
         self.delivered_time
             .store(datetime::now_micros() as u64, Ordering::Relaxed);
-        self.inflight.store(inflight.min(self.inflight() - 1), Ordering::Relaxed);
+        self.inflight
+            .store(inflight.min(self.inflight() - 1), Ordering::Relaxed);
         // self.inflight_dec();
     }
 
@@ -151,7 +155,7 @@ impl Throttle {
     //     }
     //     (recv_size, delivered, app_limited)
     // }
-    
+
     fn take_app_limited(&self) -> u64 {
         let mut app_limited = self.app_limited.load(Ordering::Relaxed);
         if app_limited != 0 && self.acc_delivered() >= app_limited {
@@ -337,10 +341,10 @@ pub struct BBRRateControl {
 
     /// 重传计数
     arq: u64,
-    
+
     /// 上一次采样时间戳
     prior_sampling_stamp: u64,
-    
+
     /// 上一次采样时的交付数量
     prior_sampling_delivered: u64,
 }
@@ -349,7 +353,7 @@ impl BBRRateControl {
     pub fn new(mss: u32) -> Self {
         let throttle = Throttle::default();
         throttle.set_cwnd(TCP_INIT_CWND);
-        throttle.set_pacing_rate((TCP_INIT_CWND * HIGH_GAIN >> BBR_SCALE) as u64);
+        throttle.set_pacing_rate(((TCP_INIT_CWND * HIGH_GAIN) >> BBR_SCALE) as u64);
         throttle.rtt.store(u32::MAX, Ordering::Relaxed);
 
         Self {
@@ -393,7 +397,7 @@ impl BBRRateControl {
     /// 获取速率样本
     fn get_rate_sample(&mut self, fd: RawFd) -> RateSample {
         let ni = get_net_info(fd).unwrap();
-        
+
         // let interval_us = self.update_interval_timer.elapsed().as_micros() as u64;
         self.update_interval_timer = Instant::now();
         // let (recv_size_total, delivered, app_limited) = self.throttle.take_sample();
@@ -542,7 +546,8 @@ impl BBRRateControl {
     /// 更新带宽
     fn update_bw(&mut self, rs: &RateSample) {
         self.round_start = false;
-        if self.min_rtt_us != u32::MAX && self.throttle.delivered_time() >= self.next_rtt_cnt_mstamp {
+        if self.min_rtt_us != u32::MAX && self.throttle.delivered_time() >= self.next_rtt_cnt_mstamp
+        {
             self.next_rtt_cnt_mstamp = self.throttle.delivered_time() + self.min_rtt_us as u64;
             self.rtt_cnt += 1;
             self.round_start = true;
@@ -550,7 +555,7 @@ impl BBRRateControl {
 
         // self.lt_bw_sampling(rs);
 
-        let bw = ((rs.delivered as u64 * BW_UNIT + rs.interval_us - 1) / rs.interval_us) as u32;
+        let bw = (rs.delivered as u64 * BW_UNIT).div_ceil(rs.interval_us) as u32;
 
         if !rs.is_app_limited || bw >= self.bw.minmax_get() {
             self.bw.minmax_running_max(BW_RTTS, self.rtt_cnt, bw);
@@ -563,7 +568,7 @@ impl BBRRateControl {
             return;
         }
 
-        let bw_thresh = self.full_bw * FULL_BW_THRESH >> BBR_SCALE;
+        let bw_thresh = (self.full_bw * FULL_BW_THRESH) >> BBR_SCALE;
 
         if self.max_bw() > bw_thresh {
             self.full_bw_cnt = 0;
@@ -592,7 +597,7 @@ impl BBRRateControl {
         }
 
         let bdp = bw as u64 * self.min_rtt_us as u64;
-        ((((bdp * gain as u64) >> BBR_SCALE as u64) + BW_UNIT - 1) / BW_UNIT) as u32
+        ((bdp * gain as u64) >> BBR_SCALE as u64).div_ceil(BW_UNIT) as u32
 
         // let bdp = bw as u64 * self.min_rtt_us as u64 / MICROS_PER_SEC;
         // (bdp * gain as u64 >> BBR_SCALE) as u32
@@ -749,7 +754,7 @@ impl BBRRateControl {
             }
         }
     }
-    
+
     /// 更新采样间隔
     fn update_sampling_interval(&mut self) {
         if self.state == Startup && self.min_rtt_us != u32::MAX {
@@ -793,7 +798,10 @@ impl BBRRateControl {
 
         if self.full_bw_reached {
             cwnd = target_cwnd.min(cwnd + rs.delivered);
-        } else if self.state == Startup || cwnd < target_cwnd || self.prior_sampling_delivered < TCP_INIT_CWND as u64 {
+        } else if self.state == Startup
+            || cwnd < target_cwnd
+            || self.prior_sampling_delivered < TCP_INIT_CWND as u64
+        {
             cwnd += rs.delivered; // 不要升得太猛，避免波动造成的 min rtt 变高，bdp 异常的高
         }
 
@@ -819,8 +827,8 @@ impl BBRRateControl {
 
             let origin_state = self.state;
             if origin_state != ProbeRtt && origin_state != ProbeBW {
-            // if origin_state != ProbeBW {
-            // if true {
+                // if origin_state != ProbeBW {
+                // if true {
                 debug!(
                     "\ninflight: {}\tcwnd: {}\t\
                 send rate: {}\t发送间隔: {}\t\
@@ -907,7 +915,7 @@ pub struct NetInfo {
 
     /// 累计被确认的包
     delivered: u64,
-    
+
     /// 采集时的时间戳，单位微秒
     time_stamp: u64,
 

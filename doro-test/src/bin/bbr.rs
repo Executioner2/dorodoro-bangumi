@@ -26,6 +26,9 @@
 
 use crate::BBRState::{Drain, ProbeBW, ProbeRtprop, Startup};
 use doro_util::win_minmax::Minmax;
+use doro_util::{datetime, default_logger, if_else};
+use fnv::FnvHashMap;
+use futures::future::BoxFuture;
 use std::cmp::max;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -33,14 +36,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
-use fnv::FnvHashMap;
-use futures::future::BoxFuture;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tracing::{info, Level};
-use doro_util::{datetime, default_logger, if_else};
+use tracing::{Level, info};
 
 default_logger!(Level::DEBUG);
 
@@ -132,16 +132,11 @@ impl Default for StartupState {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[allow(dead_code)]
 struct ProbeBWState {
     /// 一个周期中的第 n 个 RTT（一共 8 个周期）
     index: u8,
-}
-
-impl Default for ProbeBWState {
-    fn default() -> Self {
-        Self { index: 0 }
-    }
 }
 
 /// BBR 状态机
@@ -157,7 +152,7 @@ enum BBRState {
     /// 排空阶段
     ///
     /// - Startup 阶段会探索带宽上限，造成排队分组注入，因此需
-    /// 要排空，使得 inflight = BDP
+    ///   要排空，使得 inflight = BDP
     /// - 排空排队分组，能够在低延迟下保持高速率
     Drain,
 
@@ -253,6 +248,8 @@ enum Command<K: Hash + Eq + 'static + Send> {
     Ack((Option<K>, u32)),
 }
 
+type CommandChannel<K> = Option<(Sender<Command<K>>, Receiver<Command<K>>)>;
+
 /// bbr 拥塞控制
 struct BBRCongestion<T, P, K>
 where
@@ -323,7 +320,7 @@ where
     write: OwnedWriteHalf,
 
     /// 接收 ReadHandle 的消息
-    channel: Option<(Sender<Command<K>>, Receiver<Command<K>>)>,
+    channel: CommandChannel<K>,
 
     /// 累计收到的数据包
     delivered: u64,
@@ -395,7 +392,7 @@ where
             probe_rtt_round_done: false,
             min_rtt_us: 0,
             min_rtt_stamp: 0,
-            pacing_rate: (TCP_INIT_CWND * BBR_HIGH_GAIN >> BBR_SCALE) as u64,
+            pacing_rate: ((TCP_INIT_CWND * BBR_HIGH_GAIN) >> BBR_SCALE) as u64,
             bw: Minmax::new(),
             full_bw: 0,
             full_bw_cnt: 0,
@@ -494,7 +491,7 @@ where
 
         // 带宽延迟积乘上增益，然后缩放（bw 是放大了 BBR_UNIT 的，这里需要缩小）。再使用 BW_UNIT 进行
         // 毛刺处理，避免初始阶段，小包过快得到 ack，导致速率拔尖的高。
-        ((((bdp * gain as u64) >> BBR_SCALE) + BW_UNIT as u64 - 1) / BW_UNIT as u64) as u32
+        ((bdp * gain as u64) >> BBR_SCALE).div_ceil(BW_UNIT as u64) as u32
     }
 
     /// 如果因为限速导致带宽一直处于一个稳定值，则在 48 个 rtt 内保持这个速率，
@@ -514,7 +511,7 @@ where
     /// 更新带宽
     fn update_bw(&mut self, rs: &RateSample) {
         self.round_start = false;
-        if rs.delivered <= 0 || rs.rtt_us <= 0 {
+        if rs.delivered == 0 || rs.rtt_us <= 0 {
             return;
         }
 
@@ -528,7 +525,7 @@ where
             self.next_rtt_delivered = self.delivered
         }
 
-        self.lt_bw_sampling(&rs);
+        self.lt_bw_sampling(rs);
 
         let bw = (rs.delivered * BW_UNIT as u64 / rs.interval_us as u64) as u32;
         if !rs.is_app_limited || bw >= self.max_bw() {
@@ -582,7 +579,7 @@ where
             return;
         }
 
-        let bw_thresh = self.full_bw * BBR_FULL_BW_THRESH >> BBR_SCALE;
+        let bw_thresh = (self.full_bw * BBR_FULL_BW_THRESH) >> BBR_SCALE;
         info!("当前带宽最大值: {}\t受限值: {}", self.max_bw(), bw_thresh);
         if self.max_bw() >= bw_thresh {
             // 当前带宽最大值大于等于受限值，则更新受限值
@@ -910,10 +907,13 @@ pub mod rd {
     use crate::{BBRReadCallback, LoadSendPackage, PacketId};
     use byteorder::{BigEndian, WriteBytesExt};
     use bytes::Bytes;
+    use doro::base_peer::MsgType;
+    use doro::base_peer::peer_resp::PeerResp;
+    use doro::base_peer::peer_resp::RespType::Normal;
     use doro_util::bytes_util::Bytes2Int;
     use doro_util::collection::FixedQueue;
-    use doro::peer::MsgType;
-    use doro::peer::peer_resp::PeerResp;
+    use doro_util::net::FutureRet;
+    use doro_util::option_ext::OptionExt;
     use futures::future::BoxFuture;
     use std::net::SocketAddr;
     use std::ops::{Deref, DerefMut};
@@ -922,8 +922,6 @@ pub mod rd {
     use std::time::{Duration, Instant};
     use tokio::net::tcp::OwnedReadHalf;
     use tracing::info;
-    use doro_util::net::FutureRet;
-    use doro::peer::peer_resp::RespType::Normal;
 
     pub struct ReqDataFactory {
         pub tick: Instant,
@@ -1066,7 +1064,7 @@ pub mod rd {
                 _ = timer.tick() => {
                     let read_count = read_count.swap(0, Ordering::Relaxed);
                     sum += read_count;
-                    queue.push(read_count).map(|val| sum -= val);
+                    queue.push(read_count).map_ext(|val| sum -= val);
                     info!("当前速率: {}Mib/s", sum / queue.len() as u64 / 1024 / 1024);
                 }
             }

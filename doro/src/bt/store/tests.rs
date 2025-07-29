@@ -1,15 +1,18 @@
+use dashmap::DashMap;
+use doro_util::buffer::ByteBuffer;
+use doro_util::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
+use memmap2::MmapMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
-use dashmap::DashMap;
-use memmap2::MmapMut;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
+use tokio::io::{
+    AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
+    SeekFrom,
+};
 use tokio::time::Duration;
 use tracing::info;
-use doro_util::buffer::ByteBuffer;
-use doro_util::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
 
 // 包装 File 并记录写入次数
 struct InstrumentedFile {
@@ -73,7 +76,7 @@ impl AsyncSeek for InstrumentedFile {
 async fn test_buf_writer() {
     let file = OpenOptions::new()
         .write(true)
-        .create(true)
+        .truncate(true)
         .open("../../../../tests/resources/test_buf_writer.txt")
         .await
         .unwrap();
@@ -108,7 +111,7 @@ async fn test_buf_writer() {
 }
 
 /// 测试在刷新数据到磁盘之前读取
-/// 
+///
 /// 结论：不 flush 到磁盘，是读不到的
 #[tokio::test]
 async fn test_flush_before_read() {
@@ -119,9 +122,9 @@ async fn test_flush_before_read() {
         .open_with_parent_dirs("../../../../tests/resources/test_flush_before_read.txt")
         .await
         .unwrap();
-    
+
     let mut writer = BufWriter::new(file);
-    writer.write(b"hello world").await.unwrap();
+    let _ = writer.write(b"hello world").await.unwrap();
     // writer.flush().await.unwrap();
 
     let file = OpenOptions::new()
@@ -145,7 +148,7 @@ fn test_iter_remove() {
     map.insert(1, 1);
     map.insert(2, 2);
     map.insert(3, 3);
-    
+
     for item in map.iter_mut() {
         info!("key: {}\tvalue: {}", item.key(), item.value());
         // map.remove(&item.key()); // 不能在里面删除，会卡死
@@ -156,7 +159,7 @@ fn test_iter_remove() {
     //     info!("key: {}\tvalue: {}", item.key(), item.value());
     //     map.remove(&1);
     // }
-    
+
     info!("{:?}", map);
 }
 
@@ -170,7 +173,7 @@ fn test_mmap() {
         .open_with_parent_dirs("../../../../tests/resources/test_mmap.txt")
         .unwrap();
     file.set_len(10).unwrap();
-    
+
     let mut mmap = unsafe { MmapMut::map_mut(&file) }.unwrap();
     mmap[0..5].copy_from_slice(b"hello");
     // thread::sleep(Duration::from_secs(5));

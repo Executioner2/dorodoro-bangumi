@@ -2,12 +2,6 @@ use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::RngCore;
 
-/// 随机生成一个用于 tracker 通信的 transaction id
-#[inline]
-pub fn gen_tran_id() -> u32 {
-    rand::rng().next_u32()
-}
-
 lazy_static! {
     /// 进程 id，发送给 Tracker 的，用于区分多开情况
     static ref PROCESS_KEY: u32 = rand::rng().next_u32();
@@ -34,13 +28,19 @@ pub fn gen_peer_id() -> [u8; 20] {
     id
 }
 
+/// 随机生成一个用于 tracker 通信的 transaction id
+#[inline]
+pub fn gen_tran_id() -> u32 {
+    rand::rng().next_u32()
+}
+
 /// 随机生成一个 4 字节的 process_key。实际上这个 key 只在程序启动时生成一次。
 ///
 /// # Examples
 ///
 /// ```
 /// use doro_util::rand::gen_process_key;
-/// 
+///
 /// let key = gen_process_key();
 /// println!("process_key: {}", key);
 /// ```

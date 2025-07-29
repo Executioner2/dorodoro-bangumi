@@ -28,7 +28,7 @@ impl<'a, T: AsyncRead + Unpin> ReaderHandle<'a, T> {
     }
 }
 
-impl<'a, T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
+impl<T: AsyncRead + Unpin> Future for ReaderHandle<'_, T> {
     type Output = Result<Bytes, io::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -206,7 +206,7 @@ macro_rules! pin_poll {
 #[macro_export]
 macro_rules! is_disconnect {
     ($e:expr) => {
-        $e.kind() == std::io::ErrorKind::ConnectionAborted ||
-        $e.kind() == std::io::ErrorKind::ConnectionReset 
+        $e.kind() == std::io::ErrorKind::ConnectionAborted
+            || $e.kind() == std::io::ErrorKind::ConnectionReset
     };
 }

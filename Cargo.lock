@@ -734,6 +734,7 @@ dependencies = [
  "anyhow",
  "bendy",
  "bincode",
+ "byteorder",
  "bytes",
  "ctor",
  "hashlink",

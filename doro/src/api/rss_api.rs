@@ -1,11 +1,11 @@
-use crate::{register_route, rss_service};
-use serde::{Deserialize, Serialize};
-use doro_macro::route;
 use crate::router::ret::Ret;
+use crate::{register_route, rss_service};
 use anyhow::Result;
+use doro_macro::route;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct  RSSFeed {
+pub struct RSSFeed {
     /// 订阅名
     pub name: Option<String>,
 

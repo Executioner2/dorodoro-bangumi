@@ -22,7 +22,7 @@ impl<T> FixedQueue<T> {
         self.queue.push_back(item);
         res
     }
-    
+
     pub fn limit(&self) -> usize {
         self.limit
     }
@@ -34,15 +34,15 @@ impl<T> FixedQueue<T> {
     pub fn len(&self) -> usize {
         self.queue.len()
     }
-    
+
     pub fn clear(&mut self) {
         self.queue.clear();
     }
-    
+
     pub fn back(&self) -> Option<&T> {
         self.queue.back()
     }
-    
+
     pub fn pop_front(&mut self) -> Option<T> {
         self.queue.pop_front()
     }
@@ -50,7 +50,7 @@ impl<T> FixedQueue<T> {
     pub fn peek_front(&self) -> Option<&T> {
         self.queue.front()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }

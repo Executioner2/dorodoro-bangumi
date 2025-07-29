@@ -1,19 +1,11 @@
 //! dht 实现
 
-use crate::command::CommandHandler;
 use crate::context::Context;
-use crate::dht::command::Command;
 use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
 use crate::dht::routing::{Node, NodeId, REFRESH_INTERVAL, RoutingTable};
-use crate::emitter::Emitter;
-use crate::emitter::constant::DHT;
-use crate::emitter::transfer::TransferPtr;
 use crate::mapper::dht::DHTMapper;
-use crate::runtime::{CommandHandleResult, CustomTaskResult, Runnable};
-use crate::task_handler::gasket;
-use crate::task_handler::gasket::command::PeerSource;
+use crate::task::{HostSource, ReceiveHost};
 use crate::udp_server::UdpServer;
-use anyhow::Result;
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
 use doro_util::bendy_ext::SocketAddrExt;
@@ -23,15 +15,12 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tokio::sync::mpsc::Sender;
-use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, trace};
 
-pub mod command;
 pub mod entity;
 pub mod routing;
 
@@ -135,7 +124,7 @@ impl DHTRequest {
     }
 }
 
-pub struct DHT {
+pub struct DHTInner {
     /// 自己的节点 ID
     own_id: Arc<NodeId>,
 
@@ -152,175 +141,51 @@ pub struct DHT {
     gpcs: Arc<Semaphore>,
 }
 
+static DHT_INSTANCE: OnceLock<DHT> = OnceLock::new();
+
+#[derive(Clone)]
+pub struct DHT(Arc<DHTInner>);
+
+impl Deref for DHT {
+    type Target = Arc<DHTInner>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl DHT {
-    pub fn new(
+    pub fn init(
         udp_server: UdpServer,
         routing_table: RoutingTable,
         bootstrap_nodes: Vec<String>,
-    ) -> Self {
+    ) -> &'static Self {
         let own_id = Arc::new(routing_table.get_own_id().clone());
         let dht_request = DHTRequest::new(own_id.clone(), udp_server);
-        Self {
+        let dht = Self(Arc::new(DHTInner {
             own_id,
             dht_request: Arc::new(dht_request),
             routing_table: Arc::new(Mutex::new(routing_table)),
             bootstrap_nodes,
             gpcs: Arc::new(Semaphore::new(GET_PEERS_CONCURRENCY)),
-        }
+        }));
+        DHT_INSTANCE.get_or_init(|| dht)
+    }
+
+    pub fn global() -> &'static Self {
+        DHT_INSTANCE.get().unwrap()
     }
 
     async fn domain_resolve(&self, domain: &str) -> Option<SocketAddr> {
         tokio::net::lookup_host(domain).await.ok()?.next()
     }
 
-    /// 检查队列中的 nodes 是否可用，并加入到路由表中
-    async fn check_add_node(
-        rt: &RoutingTableAM,
-        dr: &DHTRequestA,
-        node_id: Option<NodeId>,
-        addr: &SocketAddr,
-    ) -> bool {
-        let ping_resp = dr.ping(&addr).await;
-        if ping_resp.is_none() || ping_resp.as_ref().unwrap().r.is_none() {
-            node_id.map(|node_id| rt.lock_pe().mark_node_unresponsive(&node_id));
-            debug!("ping 不通[{}]", addr);
-            return false;
-        }
-
-        // 能 ping 通，那么加入到路由表中
-        let ping_resp = ping_resp.unwrap();
-        let mut routing_table = rt.lock_pe();
-        let node_id = ping_resp.r.unwrap().id.into_owned();
-        routing_table.add_node(Node::new(node_id, addr.clone()));
-        true // 只要能 ping 通，就认为是可用节点（和有没有成功加入到路由表无关）
-    }
-
-    /// 异步寻找 peers
-    async fn async_find_peers(
-        rt: RoutingTableAM,
-        dr: DHTRequestA,
-        node_id: Option<NodeId>,
-        addr: SocketAddr,
-        info_hash: Arc<NodeId>,
-        resp_tx: Sender<TransferPtr>,
-        min_dist: Arc<[u8; 20]>,
-    ) -> Option<(VecDeque<(Option<NodeId>, SocketAddr)>, [u8; 20], usize)> {
-        debug!("向 [{addr}] 查询 peers");
-        let mut queue = VecDeque::new();
-
-        if !Self::check_add_node(&rt, &dr, node_id, &addr).await {
-            return None;
-        }
-
-        // 可以连通，那么开始广播查询 peers
-        let (nodes, values) = dr.get_peers(&addr, &info_hash).await;
-        let mut min = *min_dist.clone();
-        for node in nodes {
-            let dist = node.id.distance(&info_hash);
-            if *min_dist >= dist {
-                queue.push_back((Some(node.id), node.addr.into()));
-                min = min.min(dist);
-            }
-        }
-
-        if !values.is_empty() {
-            trace!("新增了的peer: {:?}", values);
-            let cmd = gasket::command::DiscoverPeerAddr {
-                peers: values.iter().map(|p| p.addr.into()).collect(),
-                source: PeerSource::DHT,
-            };
-            if let Err(e) = resp_tx.send(cmd.into()).await {
-                error!("寻找 peer 任务的响应失败: {}", e);
-            }
-        }
-
-        Some((queue, min, values.len()))
-    }
-
-    /// 寻找 peers
-    async fn find_peers(
-        &self,
-        info_hash: NodeId,
-        resp_tx: Sender<TransferPtr>,
-        gasket_id: Id,
-        expect_peers: usize,
-    ) {
-        // 从路由表中查询出 N 个最近的节点
-        debug!("gasket [{gasket_id}] 委托我们寻找资源 [{info_hash}] 的 peers");
-        let nodes = {
-            let routing_table = self.routing_table.lock_pe();
-            routing_table.find_closest_nodes(&info_hash, EXPECT_CLOSEST_NODE_NUM)
-        };
-
-        let mut queue = VecDeque::new();
-        nodes.into_iter().for_each(|node| {
-            let addr = node.addr();
-            queue.push_back((Some(node.take_id()), addr))
-        });
-        let mut used_bootstrap_num = 0; // 使用过的 bootstrap 节点数量
-        let mut min_dist = self.own_id.distance(&info_hash);
-        let mut count = 0;
-        let mut futures = FuturesUnordered::new();
-        let info_hash = Arc::new(info_hash);
-
-        'LOOP: loop {
-            if queue.is_empty() {
-                while used_bootstrap_num < self.bootstrap_nodes.len() {
-                    let domain = &self.bootstrap_nodes[used_bootstrap_num];
-                    used_bootstrap_num += 1;
-                    if let Some(addr) = self.domain_resolve(domain).await {
-                        queue.push_back((None, addr));
-                        break;
-                    }
-                }
-            }
-
-            if self.gpcs.available_permits() == 0 || queue.is_empty() {
-                if let Some(Ok(Some((mut nodes, md, find)))) = futures.next().await {
-                    queue.append(&mut nodes);
-                    count += find;
-                    if count >= expect_peers {
-                        debug!("通过 dht 找到了足够的 peers");
-                        while let Some((node_id, addr)) = queue.pop_front() {
-                            Self::check_add_node(
-                                &self.routing_table,
-                                &self.dht_request,
-                                node_id,
-                                &addr,
-                            )
-                            .await;
-                        }
-                        break 'LOOP;
-                    }
-                    min_dist = md;
-                }
-            }
-
-            if let Some((node_id, addr)) = queue.pop_front() {
-                let permit = self.gpcs.clone().acquire_owned().await.unwrap();
-                let rt = self.routing_table.clone();
-                let dr = self.dht_request.clone();
-                let info_hash = info_hash.clone();
-                let resp_tx = resp_tx.clone();
-                let md = Arc::new(min_dist.clone());
-
-                futures.push(tokio::spawn(async move {
-                    let res =
-                        Self::async_find_peers(rt, dr, node_id, addr, info_hash, resp_tx, md).await;
-                    drop(permit);
-                    res
-                }));
-            } else if futures.is_empty() {
-                debug!("没有可用的节点");
-                break;
-            }
-        }
-
-        debug!("find peers 结束");
+    pub fn min_dist(&self, info_hash: &NodeId) -> Arc<[u8; 20]> {
+        Arc::new(self.own_id.distance(info_hash))
     }
 
     /// 刷新路由表
-    async fn refresh_routing_table(&mut self) {
+    async fn refresh_routing_table(&self) {
         let routing_table = self.routing_table.clone();
         let dht_request = self.dht_request.clone();
         let conn = Context::global().get_conn().await.unwrap();
@@ -341,7 +206,7 @@ impl DHT {
                         let target_id = bucket.random_node();
                         update_traget = routing_table
                             .find_closest_nodes(&target_id, 1)
-                            .get(0)
+                            .first()
                             .map(|node| (target_id, node.addr()))
                     }
                 }
@@ -364,49 +229,165 @@ impl DHT {
             // 更新路由表
             let routing_table = routing_table.lock_pe();
             debug!("更新 dht 路由表到本地");
-            conn.update_routing_table(&*routing_table).unwrap();
+            conn.update_routing_table(&routing_table).unwrap();
             let node_num = routing_table.get_node_num();
             debug!("刷新 dht 路由表结束\t当前已知节点数: {}", node_num);
         }));
     }
 
-    /// 注册定时刷新路由表任务
-    fn register_interval_refresh(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>> {
-        let id = Self::get_transfer_id(self.get_suffix());
-        Box::pin(async move {
-            loop {
-                let _ = Emitter::global()
-                    .send(&id, command::RefreshRoutingTable.into())
-                    .await;
-                tokio::time::sleep(REFRESH_INTERVAL).await;
+    /// 开始定时刷新路由表
+    pub async fn start_interval_refresh(self) {
+        let mut tick = tokio::time::interval(REFRESH_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = Context::global().cancelled() => {
+                    break;
+                }
+                _ = tick.tick() => {
+                    self.refresh_routing_table().await;
+                }
             }
-        })
+        }
     }
 }
 
-impl Runnable for DHT {
-    fn get_transfer_id<T: ToString>(_suffix: T) -> String {
-        DHT.to_string()
+/// 检查队列中的 nodes 是否可用，并加入到路由表中
+async fn check_add_node(
+    rt: &RoutingTableAM,
+    dr: &DHTRequestA,
+    node_id: Option<NodeId>,
+    addr: &SocketAddr,
+) -> bool {
+    let ping_resp = dr.ping(addr).await;
+    if ping_resp.is_none() || ping_resp.as_ref().unwrap().r.is_none() {
+        if let Some(node_id) = node_id {
+            rt.lock_pe().mark_node_unresponsive(&node_id)
+        }
+        debug!("ping 不通[{}]", addr);
+        return false;
     }
 
-    fn register_lt_future(
-        &mut self,
-    ) -> FuturesUnordered<Pin<Box<dyn Future<Output = CustomTaskResult> + Send + 'static>>> {
-        // 注册一个定时任务的 future 就行了
-        let futs = FuturesUnordered::new();
-        futs.push(self.register_interval_refresh());
-        futs
+    // 能 ping 通，那么加入到路由表中
+    let ping_resp = ping_resp.unwrap();
+    let mut routing_table = rt.lock_pe();
+    let node_id = ping_resp.r.unwrap().id.into_owned();
+    routing_table.add_node(Node::new(node_id, *addr));
+    true // 只要能 ping 通，就认为是可用节点（和有没有成功加入到路由表无关）
+}
+
+/// 异步寻找 peers
+async fn async_find_peers<T>(
+    node_id: Option<NodeId>,
+    addr: SocketAddr,
+    info_hash: Arc<NodeId>,
+    receive_host: T,
+    min_dist: Arc<[u8; 20]>,
+) -> Option<(VecDeque<(Option<NodeId>, SocketAddr)>, [u8; 20], usize)>
+where
+    T: ReceiveHost + Send + Sync + Clone + 'static,
+{
+    let rt: RoutingTableAM = DHT::global().routing_table.clone();
+    let dr: DHTRequestA = DHT::global().dht_request.clone();
+
+    debug!("向 [{addr}] 查询 peers");
+    let mut queue = VecDeque::new();
+
+    if !check_add_node(&rt, &dr, node_id, &addr).await {
+        return None;
     }
 
-    fn cancelled(&self) -> WaitForCancellationFuture<'_> {
-        Context::global().cancelled()
+    // 可以连通，那么开始广播查询 peers
+    let (nodes, values) = dr.get_peers(&addr, &info_hash).await;
+    let mut min = *min_dist.clone();
+    for node in nodes {
+        let dist = node.id.distance(&info_hash);
+        if *min_dist >= dist {
+            queue.push_back((Some(node.id), node.addr.into()));
+            min = min.min(dist);
+        }
     }
 
-    async fn command_handle(&mut self, cmd: TransferPtr) -> Result<CommandHandleResult> {
-        let cmd: Command = cmd.instance();
-        cmd.handle(self).await?;
-        Ok(CommandHandleResult::Continue)
+    if !values.is_empty() {
+        trace!("新增了的peer: {:?}", values);
+        let peers = values.iter().map(|p| p.addr).collect();
+        receive_host.receive_hosts(peers, HostSource::DHT).await;
     }
+
+    Some((queue, min, values.len()))
+}
+
+/// 寻找 peers
+#[rustfmt::skip]
+pub async fn find_peers<T>(
+    info_hash: NodeId,
+    receive_host: T,
+    gasket_id: Id,
+    expect_peers: usize,
+) where
+    T: ReceiveHost + Send + Sync + Clone + 'static,
+{
+    // 从路由表中查询出 N 个最近的节点
+    debug!("gasket [{gasket_id}] 委托我们寻找资源 [{info_hash}] 的 peers");
+    let this = DHT::global();
+    let nodes = {
+        let routing_table = this.routing_table.lock_pe();
+        routing_table.find_closest_nodes(&info_hash, EXPECT_CLOSEST_NODE_NUM)
+    };
+
+    let mut queue = VecDeque::new();
+    nodes.into_iter().for_each(|node| {
+        let addr = node.addr();
+        queue.push_back((Some(node.take_id()), addr))
+    });
+    let mut used_bootstrap_num = 0; // 使用过的 bootstrap 节点数量
+    let mut min_dist = this.own_id.distance(&info_hash);
+    let mut count = 0;
+    let mut futures = FuturesUnordered::new();
+    let info_hash = Arc::new(info_hash);
+
+    'LOOP: loop {
+        if queue.is_empty() {
+            while used_bootstrap_num < this.bootstrap_nodes.len() {
+                let domain = &this.bootstrap_nodes[used_bootstrap_num];
+                used_bootstrap_num += 1;
+                if let Some(addr) = this.domain_resolve(domain).await {
+                    queue.push_back((None, addr));
+                    break;
+                }
+            }
+        }
+
+        if this.gpcs.available_permits() == 0 || queue.is_empty() {
+            if let Some(Ok(Some((mut nodes, md, find)))) = futures.next().await {
+                queue.append(&mut nodes);
+                count += find;
+                if count >= expect_peers {
+                    debug!("通过 dht 找到了足够的 peers");
+                    while let Some((node_id, addr)) = queue.pop_front() {
+                        check_add_node(&this.routing_table, &this.dht_request, node_id, &addr).await;
+                    }
+                    break 'LOOP;
+                }
+                min_dist = md;
+            }
+        }
+
+        if let Some((node_id, addr)) = queue.pop_front() {
+            let permit = this.gpcs.clone().acquire_owned().await.unwrap();
+            let info_hash = info_hash.clone();
+            let receive_host = receive_host.clone();
+            let md = Arc::new(min_dist);
+
+            futures.push(tokio::spawn(async move {
+                let res = async_find_peers(node_id, addr, info_hash, receive_host, md).await;
+                drop(permit);
+                res
+            }));
+        } else if futures.is_empty() {
+            debug!("没有可用的节点");
+            break;
+        }
+    }
+
+    debug!("find peers 结束");
 }

@@ -1,11 +1,11 @@
 //! 全局上下文
 
-use core::fmt::Formatter;
 use crate::config::Config;
 use crate::db::{ConnWrapper, Db};
+use anyhow::Result;
+use core::fmt::Formatter;
 use std::sync::{Arc, OnceLock};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
-use anyhow::Result;
 
 #[derive(Clone)]
 pub struct Context {
@@ -25,11 +25,13 @@ static CONTEXT: OnceLock<Context> = OnceLock::new();
 impl Context {
     /// 实例化全局上下文
     pub fn init(db: Db, config: Config) {
-        CONTEXT.set(Self {
-            db: Arc::new(db),
-            config,
-            cancel_token: CancellationToken::new(),
-        }).unwrap();
+        CONTEXT
+            .set(Self {
+                db: Arc::new(db),
+                config,
+                cancel_token: CancellationToken::new(),
+            })
+            .unwrap();
     }
 
     pub fn global() -> &'static Self {
@@ -56,7 +58,7 @@ impl Context {
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
     }
-    
+
     /// 关机
     pub fn cancel(&self) {
         self.cancel_token.cancel()

@@ -1,9 +1,9 @@
 use crate::register_route;
+use crate::router::ret::Ret;
+use anyhow::Result;
 use doro_macro::route;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-use anyhow::Result;
-use crate::router::ret::Ret;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct Info {
@@ -16,7 +16,7 @@ struct Info {
 struct TorrentSource {
     magent: String,
     name: String,
-    info: Info
+    info: Info,
 }
 
 #[derive(Serialize)]

@@ -1,8 +1,7 @@
-use std::net::SocketAddr;
-use std::ops::{Deref, DerefMut};
 use bendy::decoding::{Error, FromBencode, Object};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
-
+use std::net::SocketAddr;
+use std::ops::{Deref, DerefMut};
 
 /// bytes 转为具体对象
 pub trait Bytes2Object<T> {
@@ -20,9 +19,9 @@ impl From<SocketAddr> for SocketAddrExt {
     }
 }
 
-impl Into<SocketAddr> for SocketAddrExt {
-    fn into(self) -> SocketAddr {
-        self.addr
+impl From<SocketAddrExt> for SocketAddr {
+    fn from(val: SocketAddrExt) -> Self {
+        val.addr
     }
 }
 
@@ -43,7 +42,7 @@ impl DerefMut for SocketAddrExt {
 impl FromBencode for SocketAddrExt {
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
-        Self: Sized
+        Self: Sized,
     {
         let bytes = object.try_into_bytes()?;
         if bytes.len() == 6 {
@@ -132,11 +131,11 @@ impl Bytes2Object<Vec<SocketAddrExt>> for [u8] {
         };
 
         let mut addrs = Vec::new();
-        
+
         for data in self.chunks(chunk_size) {
             addrs.push(data.to_object()?);
         }
-        
+
         Ok(addrs)
     }
 }

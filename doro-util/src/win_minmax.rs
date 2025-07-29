@@ -4,7 +4,7 @@
 use std::mem;
 
 /// minmax 样本
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct MinmaxSample {
     /// 时间戳
     t: u32,
@@ -13,6 +13,7 @@ struct MinmaxSample {
     v: u32,
 }
 
+#[derive(Default)]
 pub struct Minmax {
     /// minmax 样本队列
     s: [MinmaxSample; 3],
@@ -20,9 +21,7 @@ pub struct Minmax {
 
 impl Minmax {
     pub fn new() -> Self {
-        Self {
-            s: [MinmaxSample { t: 0, v: 0 }; 3],
-        }
+        Self::default()
     }
 
     /// 获取最大值
@@ -68,7 +67,7 @@ impl Minmax {
     fn minmax_subwin_update(&mut self, win: u32, mut val: MinmaxSample) -> u32 {
         let dt = val.t - self.s[0].t;
         if dt > win {
-            let mut t = val.clone();
+            let mut t = val;
             mem::swap(&mut self.s[2], &mut t);
             mem::swap(&mut self.s[1], &mut t);
             mem::swap(&mut self.s[0], &mut t);

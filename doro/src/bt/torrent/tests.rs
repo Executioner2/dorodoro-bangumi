@@ -2,7 +2,12 @@ use crate::torrent::{File, Info};
 
 #[test]
 fn test_calculate_file_piece() {
-    let mut files = vec![File::new(10, vec![], None), File::new(10, vec![], None), File::new(11, vec![], None), File::new(10, vec![], None)];
+    let mut files = vec![
+        File::new(10, vec![], None),
+        File::new(10, vec![], None),
+        File::new(11, vec![], None),
+        File::new(10, vec![], None),
+    ];
     let res = Info::calculate_file_piece(&mut files, 10);
     assert_eq!(res, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
 }
@@ -30,7 +35,7 @@ fn test_find_intervals() {
     }
 
     let ars = [(1, 3), (3, 5), (6, 8), (8, 10), (11, 21)];
-    
+
     assert_eq!(&[(1, 3), (3, 5)], find_intervals(&ars, 3));
     assert_eq!(&[(3, 5)], find_intervals(&ars, 5));
     assert_eq!(&[(6, 8), (8, 10)], find_intervals(&ars, 8));

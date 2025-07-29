@@ -8,27 +8,27 @@
 //! 5. A->B: ENCRYPT2(Payload Stream)
 //!
 //! 若需快速失败行为，可使用以下条件立即断开对等节点连接。若倾向更隐蔽的识别模式，可延后断开连接。满足任一条件即可判定握手无效：
-//! 
+//!
 //! **步骤2（由B方终止）**
 //! 1. 若A方在30秒内发送字节数少于96字节
 //! 2. 若A方发送字节数超过608字节
-//! 
+//!
 //! **步骤3（由A方终止）**
 //! 1. 若B方在30秒内发送字节数少于96字节
 //! 2. 若B方发送字节数超过608字节
-//! 
+//!
 //! **步骤4（由B方终止）**
 //! 1. 若A方在连接启动后628字节内（同步点）未发送正确的S哈希值
 //! 2. 若A方在S哈希值后未发送受支持的SKEY哈希值
 //! 3. 若SKEY哈希值后VC无法被正确解码
 //! 4. 若未支持任何crypto_provide选项或位字段被清零
 //! 5. 此后连接终止交由下一协议层处理
-//! 
+//!
 //! **步骤5（由A方终止）**
 //! 1. 若在连接启动后616字节内（同步点）无法正确解码VC
 //! 2. 若选定的加密方法未被提供
 //! 3. 此后连接终止交由下一协议层处理
-//! 
+//!
 //! 参考资料：
 //! - [Message Stream Encryption](https://web.archive.org/web/20120206163648/http://wiki.vuze.com/w/Message_Stream_Encryption#Implementation_Notes_for_BitTorrent_Clients)
 //! - [libtorrent pe_crypto.cpp](https://github.com/arvidn/libtorrent/blob/RC_2_0/src/pe_crypto.cpp#L329)
@@ -36,24 +36,24 @@
 #[cfg(test)]
 mod tests;
 
-use std::time::Duration;
+use crate::bt::socket::{Crypto, TcpStreamWrapper};
+use anyhow::{Result, anyhow};
+use bytes::BytesMut;
+use doro_util::buffer::ByteBuffer;
 use doro_util::bytes_util::Bytes2Int;
+use doro_util::net::{AsyncReadExtExt, TcpStreamExt};
 use lazy_static::lazy_static;
 use num_bigint::BigUint;
 use num_traits::Num;
 use rand::{Rng, RngCore};
-use rc4::Rc4;
 use rc4::cipher::StreamCipherCoreWrapper;
-use rc4::{KeyInit, Rc4Core, StreamCipher, consts::*};
+use rc4::consts::*;
+use rc4::{KeyInit, Rc4, Rc4Core, StreamCipher};
 use sha1::{Digest, Sha1};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tracing::debug;
-use crate::bt::socket::{Crypto, TcpStreamWrapper};
-use doro_util::net::{AsyncReadExtExt, TcpStreamExt};
-use anyhow::{anyhow, Result};
-use bytes::BytesMut;
 use tokio::net::TcpStream;
-use doro_util::buffer::ByteBuffer;
+use tracing::debug;
 
 lazy_static! {
     static ref PRIME: BigUint = BigUint::from_str_radix("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63A36210000000000090563", 16).unwrap();
@@ -162,7 +162,7 @@ fn compute_secret(data: &mut [u8], lprk: &BigUint) -> BigUint {
     }
 
     let rpuk = BigUint::from_bytes_be(&data[..SHARE_KEY_LEN]);
-    rpuk.modpow(&lprk, &PRIME)
+    rpuk.modpow(lprk, &PRIME)
 }
 
 /// 准备发送方的加密密钥
@@ -175,7 +175,7 @@ fn encrypt_key(key_type: KeyType, s: &BigUint, skey: &[u8]) -> Vec<u8> {
 fn generate_cipher(s: &BigUint, skey: &[u8], key_type: KeyType) -> Rc4Cipher {
     let key = encrypt_key(key_type, s, skey);
     let mut cipher = Rc4::<U20>::new(key.as_slice().into());
-    let mut discard = DISCARD.clone();
+    let mut discard = DISCARD;
     cipher.apply_keystream(&mut discard); // 安全规定，使用前需要初始化，即丢弃 1024 个字节的密钥流
     cipher
 }
@@ -235,16 +235,25 @@ fn encrypt_a2b_handshake_packet(
 }
 
 /// 解密第四步，B->A 的握手包
-async fn decrypt_b2a_handshake_packet(socket: &mut TcpStream, remote_cipher: &mut Rc4Cipher, recv: &mut BytesMut) -> Result<(CryptoProvide, usize)> {
+async fn decrypt_b2a_handshake_packet(
+    socket: &mut TcpStream,
+    remote_cipher: &mut Rc4Cipher,
+    recv: &mut BytesMut,
+) -> Result<(CryptoProvide, usize)> {
     // 解析出 VC
     let mut pos = 0usize;
     let vc_len = VC.len();
-    
-    while pos < VC_MAX_OFFSET { // 规定最多读取 616 字节
+
+    while pos < VC_MAX_OFFSET {
+        // 规定最多读取 616 字节
         if recv.len() < pos + vc_len {
             let mut append = vec![0u8; pos + vc_len - recv.len()];
             if let Err(e) = socket.read_exact_with_timeout(&mut append, TIMEOUT).await {
-                return Err(anyhow!("vc 数据不足\t已遍历偏移量[{pos}\t需要读取[{}]个字节\n{:?}", append.len(), e));
+                return Err(anyhow!(
+                    "vc 数据不足\t已遍历偏移量[{pos}\t需要读取[{}]个字节\n{:?}",
+                    append.len(),
+                    e
+                ));
             }
             recv.extend_from_slice(append.as_slice())
         }
@@ -264,35 +273,39 @@ async fn decrypt_b2a_handshake_packet(socket: &mut TcpStream, remote_cipher: &mu
     // 解析出 crypto_select 和 len(padD)
     if recv.len() < pos + CRYPTO_OPTION_LEN + PAD_LEN_UNIT {
         let mut append = vec![0u8; CRYPTO_OPTION_LEN + PAD_LEN_UNIT - recv.len()];
-        if let Err(_) = socket.read_exact_with_timeout(&mut append, TIMEOUT).await {
-            return Err(anyhow!("crypto_select 和 len(padD) 长度不足"))
+        if (socket.read_exact_with_timeout(&mut append, TIMEOUT).await).is_err() {
+            return Err(anyhow!("crypto_select 和 len(padD) 长度不足"));
         }
         recv.extend_from_slice(append.as_slice());
     }
-    
+
     remote_cipher.apply_keystream(&mut recv[pos..pos + CRYPTO_OPTION_LEN + PAD_LEN_UNIT]);
     let crypto_select = u32::from_be_slice(&recv[pos..pos + CRYPTO_OPTION_LEN]);
-    let pad_d_len = u16::from_be_slice(&recv[pos + CRYPTO_OPTION_LEN..pos + CRYPTO_OPTION_LEN + PAD_LEN_UNIT]) as usize;
+    let pad_d_len =
+        u16::from_be_slice(&recv[pos + CRYPTO_OPTION_LEN..pos + CRYPTO_OPTION_LEN + PAD_LEN_UNIT])
+            as usize;
     pos += CRYPTO_OPTION_LEN + PAD_LEN_UNIT; // 跳过 crypto_select
-    
-    let crypto_select =
-        if crypto_select & CryptoProvide::Rc4 as u32 != 0 {
-            CryptoProvide::Rc4    
-        } else if crypto_select & CryptoProvide::Plaintext as u32 != 0 {
-            CryptoProvide::Plaintext
-        } else {
-            return Err(anyhow!("不支持的加密方式"));
-        };
-    
+
+    let crypto_select = if crypto_select & CryptoProvide::Rc4 as u32 != 0 {
+        CryptoProvide::Rc4
+    } else if crypto_select & CryptoProvide::Plaintext as u32 != 0 {
+        CryptoProvide::Plaintext
+    } else {
+        return Err(anyhow!("不支持的加密方式"));
+    };
+
     if recv.len() < pos + pad_d_len {
         let mut append = ByteBuffer::new(pos + pad_d_len - recv.len());
-        match socket.read_exact_with_timeout(append.as_mut(), TIMEOUT).await {
+        match socket
+            .read_exact_with_timeout(append.as_mut(), TIMEOUT)
+            .await
+        {
             Ok(size) => append.resize(size),
-            Err(_) => return Err(anyhow!("padD 长度不足"))
+            Err(_) => return Err(anyhow!("padD 长度不足")),
         }
         recv.extend_from_slice(append.as_ref());
     }
-    
+
     // 注意这里要对 pad 数据也进行解密，不然这里的 remote_cipher 流会和对端的 remote_cipher 不一致
     remote_cipher.apply_keystream(&mut recv[pos..pos + pad_d_len]);
     pos += pad_d_len; // 跳过 PadD
@@ -323,12 +336,20 @@ pub fn decrypt_payload(remote_cipher: &mut Rc4Cipher, payload: &mut [u8]) {
 /// * `info_hash`: 种子哈希值
 ///
 /// returns: 正常情况返回 TcpStreamWrapper，包含密钥，实现读取和写入的加解密封装
-pub async fn init_handshake(mut socket: TcpStream, info_hash: &[u8], cp: CryptoProvide) -> Result<TcpStreamWrapper> {
+pub async fn init_handshake(
+    mut socket: TcpStream,
+    info_hash: &[u8],
+    cp: CryptoProvide,
+) -> Result<TcpStreamWrapper> {
     debug!("进行 pe crypto 握手");
     if cp == CryptoProvide::Plaintext {
-        return Ok(TcpStreamWrapper::new(socket, Crypto::Plaintext, Crypto::Plaintext));
+        return Ok(TcpStreamWrapper::new(
+            socket,
+            Crypto::Plaintext,
+            Crypto::Plaintext,
+        ));
     }
-    
+
     // 生成本地端密钥
     let (lprk, lpuk) = generate_key_pair();
     socket.write_all(&send_local_public_key(&lpuk)).await?;
@@ -350,7 +371,7 @@ pub async fn init_handshake(mut socket: TcpStream, info_hash: &[u8], cp: CryptoP
     let data = encrypt_a2b_handshake_packet(
         &mut local_cipher,
         &s,
-        &info_hash,
+        info_hash,
         &VC,
         cp as u32,
         &[],
@@ -362,15 +383,18 @@ pub async fn init_handshake(mut socket: TcpStream, info_hash: &[u8], cp: CryptoP
     // VC最大长度（616） + crypto_select（4） + len_padD（2） + padD（512）
     let mut recv = BytesMut::with_capacity(1134);
     socket.read_buf_with_timeout(&mut recv, TIMEOUT).await?;
-    let (crypto_select, _) = decrypt_b2a_handshake_packet(&mut socket, &mut remote_cipher, &mut recv).await?;
+    let (crypto_select, _) =
+        decrypt_b2a_handshake_packet(&mut socket, &mut remote_cipher, &mut recv).await?;
     debug!("加密方式: {:?}", crypto_select);
-    
-    let (lc, rc) =
-        if crypto_select == CryptoProvide::Rc4 {
-            (Crypto::Rc4(local_cipher), Crypto::Rc4(remote_cipher))
-        } else {
-            (Crypto::Plaintext, Crypto::Plaintext)
-        };
+
+    let (lc, rc) = if crypto_select == CryptoProvide::Rc4 {
+        (
+            Crypto::Rc4(Box::new(local_cipher)),
+            Crypto::Rc4(Box::new(remote_cipher)),
+        )
+    } else {
+        (Crypto::Plaintext, Crypto::Plaintext)
+    };
 
     Ok(TcpStreamWrapper::new(socket, lc, rc))
 }

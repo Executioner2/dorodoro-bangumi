@@ -65,7 +65,7 @@ impl TcpServer {
 
     fn get_conn_context(socket: TcpStream, cc: Arc<DashMap<Id, ConnInfo>>) -> ConnContext {
         ConnContext {
-            id: GlobalId::global().next_id(),
+            id: GlobalId::next_id(),
             socket: Some(socket),
             conns: cc,
         }
@@ -173,17 +173,16 @@ impl Runnable for TcpServer {
     }
 
     async fn run_before_handle(&mut self, _rc: RunContext) -> Result<()> {
-        let listener: TcpListener;
-        match TcpListener::bind(&self.addr).await {
+        let listener: TcpListener = match TcpListener::bind(&self.addr).await {
             Ok(l) => {
                 info!("tcp server 正在监听 {}", self.addr);
-                listener = l;
+                l
             }
             Err(e) => {
                 Context::global().cancel();
                 return Err(anyhow!("tcp server 绑定地址失败: {}", e));
             }
-        }
+        };
         self.listener = Some(listener);
         Ok(())
     }

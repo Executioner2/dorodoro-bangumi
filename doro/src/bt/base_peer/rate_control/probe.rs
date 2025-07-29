@@ -13,13 +13,13 @@
 //!      - 上下浮动相对来说有延迟，不平滑，会受到毛刺影响
 //!      - 暂时无法进行速率估算，因为需要测量 rtt
 
+use super::{PacketAck, PacketSend, RateControl};
 use doro_util::collection::FixedQueue;
-use crate::peer::rate_control::{PacketAck, PacketSend, RateControl};
 use doro_util::win_minmax::Minmax;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use tracing::{level_enabled, trace, Level};
 use doro_util::{datetime, if_else};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use tracing::{Level, level_enabled, trace};
 
 #[derive(Clone, Default, Debug)]
 pub struct Dashbord {
@@ -34,7 +34,6 @@ pub struct Dashbord {
 
     /// 近期平均带宽
     bw: Arc<Mutex<TimeFixeQueue>>,
-
     // 发送速率
     // rate: Arc<AtomicU32>,
 }
@@ -53,7 +52,7 @@ impl Dashbord {
 impl Dashbord {
     pub fn update_bw(&self, bw: u32) {
         let item = (bw, datetime::now_millis() as u64);
-        match self.bw.lock().as_mut() { 
+        match self.bw.lock().as_mut() {
             Ok(x) => {
                 x.push(item);
             }
@@ -119,7 +118,7 @@ const BW_DOWN_THRESH: u64 = UNIT as u64 * 4 / 5;
 const MILLIS_PER_SEC: u64 = 1000;
 
 /// 采样更新的时间间隔 1s
-const UPDATE_INTERVAL: u64 = 1 * MILLIS_PER_SEC;
+const UPDATE_INTERVAL: u64 = MILLIS_PER_SEC;
 
 /// 最大带宽持续时间，三个样本更新周期
 const MAX_BW_CWND: u32 = 3;
@@ -149,7 +148,7 @@ const FULL_BW_CNT: u32 = 3;
 const STARTUP_GAIN: u32 = UNIT * 3 / 2;
 
 /// 带宽受限阈值
-const FULL_BW_THRESH: u32 = UNIT * 1 / 2;
+const FULL_BW_THRESH: u32 = UNIT / 2;
 
 /// 高增益探索保持率
 const MAX_GAIN_KEEP_RATE: u32 = UNIT * 2 / 3;
@@ -189,16 +188,16 @@ impl TimeFixeQueue {
     pub fn push(&mut self, item: (u32, u64)) {
         self.expires();
         self.sum += item.0 as u64;
-        self.queue.push(item).map(|x| {
+        if let Some(x) = self.queue.push(item) {
             self.sum -= x.0 as u64;
-        });
+        }
     }
-    
+
     pub fn sum(&mut self) -> u64 {
         self.expires();
         self.sum
     }
-    
+
     pub fn avg(&mut self) -> u64 {
         self.expires();
         self.sum / self.queue.limit() as u64
@@ -308,7 +307,7 @@ impl Probe {
         self.sample_update_cnt += 1;
 
         RateSample {
-            bw: (interval_bytes * MILLIS_PER_SEC + interval_ms - 1) / interval_ms,
+            bw: (interval_bytes * MILLIS_PER_SEC).div_ceil(interval_ms),
         }
     }
 
@@ -326,7 +325,7 @@ impl Probe {
     fn check_full_bw(&mut self) {
         if self.full_bw_reached {
             if self.dashbord.cwnd() <= MIN_CWND
-                || self.bw.minmax_get() < self.full_bw * FULL_BW_THRESH >> SCALE
+                || self.bw.minmax_get() < (self.full_bw * FULL_BW_THRESH) >> SCALE
             {
                 self.full_bw = 0;
                 self.full_bw_reached = false;
@@ -344,7 +343,7 @@ impl Probe {
         }
 
         self.starup_gain = false;
-        let bw_thresh = (self.full_bw as u64 * BW_UP_THRESH >> SCALE) as u32;
+        let bw_thresh = ((self.full_bw as u64 * BW_UP_THRESH) >> SCALE) as u32;
 
         if self.bw.minmax_get() > bw_thresh {
             self.full_bw_keep_cnt = FULL_BW_KEEP_CYCLE;
@@ -425,7 +424,7 @@ impl Probe {
         cwnd = ((cwnd as u64 * gain as u64) >> SCALE) as u32;
         self.dashbord
             .cwnd
-            .store(cwnd.max(MIN_CWND).min(MAX_CWND), Ordering::Release);
+            .store(cwnd.clamp(MIN_CWND, MAX_CWND), Ordering::Release);
     }
 
     pub fn dashbord(&self) -> Dashbord {
@@ -458,14 +457,16 @@ impl PacketAck for Probe {
                 "\ncwnd: {}\tmax bw: {:.2}{}\tnew bw: {:.2}{}\tcwnd_gain: {}\t\
                 down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}\tfbr: {}",
                 self.dashbord.cwnd(),
-                rate1, unit1,
-                rate2, unit2,
+                rate1,
+                unit1,
+                rate2,
+                unit2,
                 self.cwnd_gain,
-                origin_bw as u64 * BW_DOWN_THRESH >> SCALE,
+                (origin_bw as u64 * BW_DOWN_THRESH) >> SCALE,
                 rs.bw,
-                rs.bw <= origin_bw as u64 * BW_DOWN_THRESH >> SCALE,
+                rs.bw <= (origin_bw as u64 * BW_DOWN_THRESH) >> SCALE,
                 self.full_bw_reached
-            );   
+            );
         }
     }
 }

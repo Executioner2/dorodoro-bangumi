@@ -1,24 +1,21 @@
-use crate::bt::peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
-use doro_util::bytes_util::Bytes2Int;
-use doro_util::collection::FixedQueue;
-use crate::peer::peer_resp::PeerResp;
-use crate::peer::peer_resp::RespType::*;
-use doro_util::timer::CountdownTimer;
+use crate::base_peer::peer_resp::PeerResp;
+use crate::base_peer::peer_resp::RespType::*;
+use crate::bt::base_peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dashmap::DashMap;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::collection::FixedQueue;
+use doro_util::log;
+use doro_util::net::FutureRet;
+use doro_util::option_ext::OptionExt;
+use doro_util::timer::CountdownTimer;
 use libc::socklen_t;
 use nix::sys::socket;
-use nix::sys::socket::AddressFamily;
-use nix::sys::socket::CmsgIterator;
-use nix::sys::socket::ControlMessageOwned;
-use nix::sys::socket::MsgFlags;
-use nix::sys::socket::SockFlag;
-use nix::sys::socket::SockType;
-use nix::sys::socket::SockaddrIn;
-use nix::sys::socket::SockaddrStorage;
-use nix::sys::socket::socket;
-use nix::sys::socket::sockopt;
+use nix::sys::socket::{
+    AddressFamily, CmsgIterator, ControlMessageOwned, MsgFlags, SockFlag, SockType, SockaddrIn,
+    SockaddrStorage, socket, sockopt,
+};
 use nix::sys::time::TimeVal;
 use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, RawFd};
@@ -30,8 +27,6 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
 use tracing::{Level, error, info};
-use doro_util::log;
-use doro_util::net::FutureRet;
 
 const BLOCK_SIZE: u32 = 1 << 14;
 const MSS: u32 = 17;
@@ -88,7 +83,7 @@ async fn uniform_send_data(
 }
 
 fn next_idx(idx: &mut Idx) -> (u32, u32) {
-    let res = idx.clone();
+    let res = *idx;
     if idx.1 > u32::MAX - BLOCK_SIZE {
         idx.1 = 0;
         idx.0 += 1;
@@ -240,7 +235,7 @@ async fn do_tick_update_cwnd(
                 let rate = recv_size - prev_recv_size;
                 prev_recv_size = recv_size;
                 sum += rate;
-                window.push(rate).map(|prev| sum -= prev);
+                window.push(rate).map_ext(|prev| sum -= prev);
                 let current_n = update(rate, prev_rate, &current_n);
                 info!("并发请求数: {}\t平均速率: {:.2} Mib/s", current_n, sum as f64 / window.len() as f64 / 1024.0 / 1024.0);
                 prev_rate = rate;

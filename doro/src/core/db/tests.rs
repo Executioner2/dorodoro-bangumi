@@ -1,6 +1,6 @@
-use anyhow::Result;
 use crate::core::db::Db;
 use crate::torrent::{Parse, Torrent};
+use anyhow::Result;
 use bincode::config;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +46,7 @@ async fn test_insert_and_query_torrent() -> Result<()> {
     let conn = db.get_conn().await?;
 
     let torrent = Torrent::parse_torrent("./tests/resources/test6.torrent")?;
-    let info_hash = hex::encode(&torrent.info_hash);
+    let info_hash = hex::encode(torrent.info_hash);
     let serial = bincode::encode_to_vec(&torrent, config::standard())?;
 
     let mut stmt = conn.prepare_cached("replace into torrent(info_hash, serial, status, download, uploaded) values (?1, ?2, ?3, ?4, ?5)")?;
@@ -54,8 +54,7 @@ async fn test_insert_and_query_torrent() -> Result<()> {
 
     let mut stmt = conn.prepare_cached("select serial from torrent where info_hash = ?1")?;
     let serial: Vec<u8> = stmt.query_row([&info_hash], |row| row.get(0))?;
-    let res: Torrent = bincode::decode_from_slice(&serial, config::standard())?
-        .0;
+    let res: Torrent = bincode::decode_from_slice(&serial, config::standard())?.0;
 
     assert_eq!(res, torrent);
 
@@ -75,9 +74,7 @@ async fn test_get_conn() -> Result<()> {
             info!("第 {i} 个 task 获得了链接");
             tokio::time::sleep(Duration::from_secs(3)).await;
             let mut stmt = conn.prepare_cached("select count(*) from torrent").unwrap();
-            let res: u32 = stmt.query_row([], |row| {
-                row.get(0)
-            }).unwrap();
+            let res: u32 = stmt.query_row([], |row| row.get(0)).unwrap();
             info!("第 {i} 个 task 的查询结果: {res}");
         }))
     }
@@ -90,11 +87,11 @@ async fn test_get_conn() -> Result<()> {
         Ok(pool) => {
             info!("当前连接池的长度: {}", pool.len());
             assert_eq!(pool.len(), 10);
-        },
+        }
         Err(e) => {
-            error!("当前连接池为空: {}", e);    
+            error!("当前连接池为空: {}", e);
         }
     }
-    
+
     Ok(())
 }

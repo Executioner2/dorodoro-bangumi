@@ -1,12 +1,12 @@
 //! DHT 测试
 
+use doro_util::default_logger;
 use rand::Rng;
+use rand::prelude::IteratorRandom;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use rand::prelude::IteratorRandom;
 use tracing::Level;
-use doro_util::default_logger;
 
 default_logger!(Level::DEBUG);
 //
@@ -224,6 +224,7 @@ impl NodeId {
     /// 计算与另一个节点的异或距离
     pub fn distance(&self, other: &NodeId) -> [u8; 20] {
         let mut res = [0u8; 20];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..20 {
             res[i] = self.0[i] ^ other.0[i];
         }
@@ -271,7 +272,7 @@ struct KBucket {
     prefix_len: usize,     // 前缀长度（位）
     nodes: VecDeque<Node>, // 使用双端队列以便于移动节点
     last_accessed: Instant,
-    can_split: bool,       // 桶是否可以分裂（包含自身节点）
+    can_split: bool, // 桶是否可以分裂（包含自身节点）
 }
 
 impl KBucket {
@@ -359,7 +360,7 @@ impl KBucket {
         let byte_index = self.prefix_len / 8;
         let bit_index = 7 - (self.prefix_len % 8);
         prefix0.0[byte_index] &= !(1 << bit_index); // 设置为0
-        prefix1.0[byte_index] |= 1 << bit_index;   // 设置为1
+        prefix1.0[byte_index] |= 1 << bit_index; // 设置为1
 
         let new_prefix_len = self.prefix_len + 1;
 
@@ -369,7 +370,7 @@ impl KBucket {
 
         (
             KBucket::new(prefix0, new_prefix_len, can_split0),
-            KBucket::new(prefix1, new_prefix_len, can_split1)
+            KBucket::new(prefix1, new_prefix_len, can_split1),
         )
     }
 }
@@ -475,7 +476,8 @@ impl RoutingTable {
     /// 查找最近的邻居节点
     pub fn find_closest_nodes(&self, target_id: &NodeId, count: usize) -> Vec<Node> {
         // 收集所有节点
-        let mut nodes: Vec<Node> = self.buckets
+        let mut nodes: Vec<Node> = self
+            .buckets
             .iter()
             .flat_map(|bucket| bucket.nodes.iter().cloned())
             .collect();
@@ -495,8 +497,10 @@ impl RoutingTable {
             if bucket.last_accessed.elapsed() > REFRESH_INTERVAL {
                 if let Some(node) = bucket.random_node() {
                     // 在实际应用中，这里会发送PING请求
-                    println!("Refreshing bucket with prefix len {} with node {}",
-                             bucket.prefix_len, node.addr);
+                    println!(
+                        "Refreshing bucket with prefix len {} with node {}",
+                        bucket.prefix_len, node.addr
+                    );
                 }
                 bucket.last_accessed = Instant::now();
             }
@@ -534,8 +538,13 @@ impl RoutingTable {
     pub fn print_state(&self) {
         println!("Routing Table ({} buckets):", self.buckets.len());
         for (i, bucket) in self.buckets.iter().enumerate() {
-            println!("Bucket {}: prefix_len={}, nodes={}, can_split={}",
-                     i, bucket.prefix_len, bucket.nodes.len(), bucket.can_split);
+            println!(
+                "Bucket {}: prefix_len={}, nodes={}, can_split={}",
+                i,
+                bucket.prefix_len,
+                bucket.nodes.len(),
+                bucket.can_split
+            );
         }
     }
 }

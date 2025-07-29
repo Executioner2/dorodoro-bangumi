@@ -1,6 +1,6 @@
+use crate::client_base::{Auth, Client, ClientHandle, Ret};
 use doro::control::{ControlStatus, Status};
 use doro::router::Code;
-use crate::client_base::{Auth, Client, ClientHandle, Ret};
 
 /// 创建一个 client 实例
 pub async fn client() -> anyhow::Result<Client> {
@@ -9,7 +9,7 @@ pub async fn client() -> anyhow::Result<Client> {
         username: "admin".to_string(),
         password: "admin".to_string(),
     };
-    ClientHandle::new(addr, auth).await
+    ClientHandle::build(addr, auth).await
 }
 
 pub fn verification_result(code: &Code, ret: &Ret) {

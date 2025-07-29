@@ -47,13 +47,13 @@
 //! 结论：吞吐量基本差不多。但是，在测试时，通过观察 mac 的活动监视器，发现方案2的CPU负载对比方案1是显著的低，具体截图
 //! 见 tests/udp_socket 目录。因此设计上直接采用`方案2`
 
+use doro_util::default_logger;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use tracing::{debug, Level};
-use doro_util::default_logger;
+use tracing::{Level, debug};
 
 default_logger!(Level::DEBUG);
 

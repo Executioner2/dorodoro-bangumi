@@ -1,4 +1,7 @@
+use std::io;
+
 use bincode::{config, de, enc};
+use byteorder::{BigEndian, WriteBytesExt};
 
 /// 字节数组转无符号整数
 macro_rules! impl_bytes2int {
@@ -76,10 +79,60 @@ pub fn bitmap_offset<T: Into<usize> + Copy>(size: T) -> (usize, u8) {
 
 /// 解码二进制数据
 pub fn decode<D: de::Decode<()>>(src: &[u8]) -> D {
-    bincode::decode_from_slice(src, config::standard()).unwrap().0
+    bincode::decode_from_slice(src, config::standard())
+        .unwrap()
+        .0
 }
 
 /// 编码二进制数据
 pub fn encode<T: enc::Encode>(src: &T) -> Vec<u8> {
     bincode::encode_to_vec(src, config::standard()).unwrap()
 }
+
+pub trait WriteBytesBigEndian: io::Write {
+    fn write_u8(&mut self, n: u8) -> io::Result<()> {
+        WriteBytesExt::write_u8(self, n)
+    }
+
+    fn write_u16(&mut self, n: u16) -> io::Result<()> {
+        WriteBytesExt::write_u16::<BigEndian>(self, n)
+    }
+
+    fn write_u32(&mut self, n: u32) -> io::Result<()> {
+        WriteBytesExt::write_u32::<BigEndian>(self, n)
+    }
+
+    fn write_u64(&mut self, n: u64) -> io::Result<()> {
+        WriteBytesExt::write_u64::<BigEndian>(self, n)
+    }
+
+    fn write_i8(&mut self, n: i8) -> io::Result<()> {
+        WriteBytesExt::write_i8(self, n)
+    }
+
+    fn write_i16(&mut self, n: i16) -> io::Result<()> {
+        WriteBytesExt::write_i16::<BigEndian>(self, n)
+    }
+
+    fn write_i32(&mut self, n: i32) -> io::Result<()> {
+        WriteBytesExt::write_i32::<BigEndian>(self, n)
+    }
+
+    fn write_i64(&mut self, n: i64) -> io::Result<()> {
+        WriteBytesExt::write_i64::<BigEndian>(self, n)
+    }
+
+    fn write_f32(&mut self, n: f32) -> io::Result<()> {
+        WriteBytesExt::write_f32::<BigEndian>(self, n)
+    }
+
+    fn write_f64(&mut self, n: f64) -> io::Result<()> {
+        WriteBytesExt::write_f64::<BigEndian>(self, n)
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.write_all(data).map(|()| data.len())
+    }
+}
+
+impl<W: io::Write> WriteBytesBigEndian for W {}

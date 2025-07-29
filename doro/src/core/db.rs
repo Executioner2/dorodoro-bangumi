@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod tests;
 
+use anyhow::Result;
+use doro_util::sync::MutexExt;
 use rusqlite::Connection;
 use std::collections::VecDeque;
 use std::fs;
@@ -11,8 +13,6 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use anyhow::Result;
-use doro_util::sync::MutexExt;
 
 type Pool = Arc<Mutex<VecDeque<Connection>>>;
 
@@ -77,7 +77,7 @@ impl Db {
     }
 
     fn init(filepath: &PathBuf, init_sql: &str) -> Result<()> {
-        if fs::exists(&filepath)? {
+        if fs::exists(filepath)? {
             return Ok(());
         }
 

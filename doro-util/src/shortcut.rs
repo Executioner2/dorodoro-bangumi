@@ -39,6 +39,7 @@ macro_rules! linked_hashmap {
 
 /// 命令宏
 #[macro_export]
+#[allow(clippy::crate_in_macro_def)]
 macro_rules! command_system {
     (ctx: $ctx:ty) => {
         use crate::core::command::CommandHandler;
@@ -60,7 +61,7 @@ macro_rules! command_system {
     (ctx: $ctx:ty, Command { $($variant:ident),+ $(,)? }) => {
         use crate::core::command::CommandHandler;
         use crate::emitter::transfer::{CommandEnum, TransferPtr};
-        
+
         #[derive(Debug)]
         pub enum Command {
             $(
@@ -102,6 +103,72 @@ macro_rules! command_system {
     };
 }
 
+/// 命令宏 todo - 临时，后面改成过程宏
+#[macro_export]
+#[allow(clippy::crate_in_macro_def)]
+macro_rules! command_system_ref {
+    (ctx: $ctx:ty) => {
+        use crate::core::command::CommandHandler;
+        use crate::emitter::transfer::{CommandEnum, TransferPtr};
+
+        #[derive(Debug)]
+        pub enum Command {}
+
+        impl CommandEnum for Command {}
+
+        impl<'a> CommandHandler<'a, Result<()>> for Command {
+            type Target = &'a $ctx;
+
+            async fn handle(self, _ctx: Self::Target) -> Result<()> {
+                Ok(())
+            }
+        }
+    };
+    (ctx: $ctx:ty, Command { $($variant:ident),+ $(,)? }) => {
+        use crate::core::command::CommandHandler;
+        use crate::emitter::transfer::{CommandEnum, TransferPtr};
+
+        #[derive(Debug)]
+        pub enum Command {
+            $(
+                $variant($variant),
+            )+
+        }
+
+        impl CommandEnum for Command {}
+
+        $(
+            impl From<$variant> for Command {
+                #[inline]
+                fn from(cmd: $variant) -> Self {
+                    Self::$variant(cmd)
+                }
+            }
+
+            impl Into<TransferPtr> for $variant {
+                #[inline]
+                fn into(self) -> TransferPtr {
+                    Command::$variant(self).into()
+                }
+            }
+        )+
+
+        impl<'a> CommandHandler<'a, Result<()>> for Command {
+            type Target = &'a $ctx;
+
+            async fn handle(self, ctx: Self::Target) -> Result<()> {
+                match self {
+                    $(
+                        Self::$variant(cmd) => {
+                            cmd.handle(ctx).await
+                        }
+                    )+
+                }
+            }
+        }
+    };
+}
+
 // ===========================================================================
 // anyhow 宏扩展
 // ===========================================================================
@@ -112,7 +179,7 @@ macro_rules! command_system {
 ///
 /// * `left` - 左值表达式
 /// * `right` - 右值表达式
-/// * `msg` - 错误信息 
+/// * `msg` - 错误信息
 ///
 /// # Examples
 ///
@@ -141,7 +208,7 @@ macro_rules! anyhow_eq {
 ///
 /// * `left` - 左值表达式
 /// * `right` - 右值表达式
-/// * `msg` - 错误信息 
+/// * `msg` - 错误信息
 ///
 /// # Examples
 ///
@@ -164,12 +231,12 @@ macro_rules! anyhow_ne {
 }
 
 /// 检查左值表达式是否小于等于右值表达式，如果不小于等于则返回错误信息
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `left` - 左值表达式
 /// * `right` - 右值表达式
-/// * `msg` - 错误信息 
+/// * `msg` - 错误信息
 ///
 /// # Examples
 ///
@@ -184,7 +251,7 @@ macro_rules! anyhow_ne {
 /// anyhow_le!(a, c, "a should be less than or equal to c"); // Ok(())
 /// ```
 #[macro_export]
-macro_rules! anyhow_le {    
+macro_rules! anyhow_le {
     ($left:expr, $right:expr, $($arg:tt)*) => {
         if $left > $right {
             return Err(anyhow::anyhow!($($arg)*))
@@ -198,7 +265,7 @@ macro_rules! anyhow_le {
 ///
 /// * `left` - 左值表达式
 /// * `right` - 右值表达式
-/// * `msg` - 错误信息 
+/// * `msg` - 错误信息
 ///
 /// # Examples
 ///
@@ -227,7 +294,7 @@ macro_rules! anyhow_lt {
 ///
 /// * `left` - 左值表达式
 /// * `right` - 右值表达式
-/// * `msg` - 错误信息 
+/// * `msg` - 错误信息
 ///
 /// # Examples
 ///
@@ -256,7 +323,7 @@ macro_rules! anyhow_ge {
 ///
 /// * `left` - 左值表达式
 /// * `right` - 右值表达式
-/// * `msg` - 错误信息 
+/// * `msg` - 错误信息
 ///
 /// # Examples
 ///

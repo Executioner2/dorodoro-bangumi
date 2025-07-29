@@ -2,7 +2,7 @@ use crate::config::DATABASE_CONN_LIMIT;
 use crate::core::config::Config;
 use crate::core::context::Context;
 use crate::core::runtime::Runnable;
-use crate::core::task_handler::TaskHandler;
+use crate::core::task_manager::TaskManager;
 use crate::core::tcp_server::TcpServer;
 use crate::core::udp_server::UdpServer;
 use crate::db::Db;
@@ -30,11 +30,11 @@ pub async fn start() {
 
     trace!("启动 dht");
     let (routing_table, bootstrap_nodes) = load_routing_table(&context).await;
-    let dht_server = DHT::new(udp_server, routing_table, bootstrap_nodes);
-    let dht_server_handle = tokio::spawn(Box::pin(dht_server.run()));
+    let dht_server = DHT::init(udp_server, routing_table, bootstrap_nodes);
+    let dht_server_handle = tokio::spawn(Box::pin(dht_server.clone().start_interval_refresh()));
 
     trace!("初始化任务处理器");
-    TaskHandler::init().await;
+    TaskManager::init().await;
 
     info!("dorodoro bangumi 运行中...");
     dht_server_handle.await.unwrap();

@@ -117,7 +117,7 @@ pub struct ClientHandle {
 }
 
 impl ClientHandle {
-    pub async fn new(addr: SocketAddr, auth: Auth) -> Result<Client> {
+    pub async fn build(addr: SocketAddr, auth: Auth) -> Result<Client> {
         let mut stream = TcpStream::connect(addr).await?;
         Self::handshake(&mut stream, &auth).await?;
 
@@ -186,7 +186,7 @@ impl ClientHandle {
                         FutureRet::Ok((code, tran_id, status, data)) => {
                             if let Some((_, resp)) = self.inflight.remove(&tran_id) {
                                 self.result_store.insert(tran_id, (code, status, data.clone()));
-                                resp.map(|waker| waker.wake());
+                                if let Some(waker) = resp { waker.wake() }
                             }
                         }
                         FutureRet::Err(e) => {

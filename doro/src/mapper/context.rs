@@ -1,7 +1,7 @@
-use doro_util::bytes_util;
 use crate::config::Config;
 use crate::db::ConnWrapper;
 use anyhow::Result;
+use doro_util::bytes_util;
 use rusqlite::OptionalExtension;
 
 #[derive(Default)]
@@ -59,8 +59,7 @@ impl ContextMapper for ConnWrapper {
     fn store_context(&self, entity: ContextEntity) -> Result<usize> {
         let config = entity.config.unwrap();
         let serial_config = bytes_util::encode(&config);
-        let mut stmt = self
-            .prepare_cached("insert into context (config) values (?)")?;
+        let mut stmt = self.prepare_cached("insert into context (config) values (?)")?;
         stmt.execute([&serial_config]).map_err(Into::into)
     }
 }

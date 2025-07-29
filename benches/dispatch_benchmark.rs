@@ -42,10 +42,10 @@
 //!  2. trait 泛型无法指定具体类型实现：如果被 dispatch 的 trait 上定义了泛型，连接的枚举无法指定具体的类型。详见 `test/enum_dispatch.rs`
 //!
 //! 因此还是用原生的静态分发，后续有时间再抽象 match 的手动匹配。
-//! 
-//! 
+//!
+//!
 //! 更新：
-//! 
+//!
 //!     Compiling dorodoro-bangumi v0.1.0 (/Users/data/project/rust/dorodoro-bangumi)
 //!     Finished `bench` profile [optimized] target(s) in 1.50s
 //!     Running benches/dispatch_benchmark.rs (target/release/deps/dispatch_benchmark-a316daf6d352b010)
@@ -77,9 +77,8 @@
 //!     Found 6 outliers among 100 measurements (6.00%)
 //!     2 (2.00%) high mild
 //!     4 (4.00%) high severe
-//! 
+//!
 //! 增加了裸指针的伪动态分发实现。性能和用枚举以及第三方库差不多。实际应用中会是枚举➕裸指针的方案
-
 
 use crate::dispatch1::Torrent;
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -223,6 +222,7 @@ pub mod dispatch3 {
         }
     }
 
+    #[allow(clippy::borrowed_box)]
     pub fn dynamic_dispatch(obj: &Box<dyn Dispatchable>) -> f64 {
         obj.dispatch()
     }
@@ -258,7 +258,7 @@ pub mod dispatch4 {
 fn generate_test_data1(size: usize) -> Vec<Torrent> {
     let mut data = Vec::with_capacity(size);
     for i in 0..size {
-        let value = format!("value_{}", i);
+        let value = format!("value_{i}");
         match i % 4 {
             0 => data.push(Torrent::Add(Add { data: value })),
             1 => data.push(Torrent::Delete(Delete { data: value })),
@@ -273,7 +273,7 @@ fn generate_test_data1(size: usize) -> Vec<Torrent> {
 fn generate_test_data2(size: usize) -> Vec<dispatch2::Torrent> {
     let mut data: Vec<dispatch2::Torrent> = Vec::with_capacity(size);
     for i in 0..size {
-        let value = format!("value_{}", i);
+        let value = format!("value_{i}");
         match i % 4 {
             0 => data.push(dispatch2::Torrent::Add(dispatch2::Add { data: value })),
             1 => data.push(dispatch2::Torrent::Delete(dispatch2::Delete {
@@ -292,7 +292,7 @@ fn generate_test_data2(size: usize) -> Vec<dispatch2::Torrent> {
 fn generate_test_data3(size: usize) -> Vec<Box<dyn Dispatchable>> {
     let mut data: Vec<Box<dyn Dispatchable>> = Vec::with_capacity(size);
     for i in 0..size {
-        let value = format!("value_{}", i);
+        let value = format!("value_{i}");
         match i % 4 {
             0 => data.push(Box::new(Add { data: value })),
             1 => data.push(Box::new(Delete { data: value })),
@@ -305,26 +305,26 @@ fn generate_test_data3(size: usize) -> Vec<Box<dyn Dispatchable>> {
 }
 
 fn generate_test_data4(size: usize) -> Vec<*const ()> {
-    let mut data: Vec<*const()> = Vec::with_capacity(size);
+    let mut data: Vec<*const ()> = Vec::with_capacity(size);
     for i in 0..size {
-        let value = format!("value_{}", i);
+        let value = format!("value_{i}");
         let ptr = match i % 4 {
             0 => {
                 let data = Box::new(Add { data: value });
                 Box::into_raw(data) as *const ()
-            },
+            }
             1 => {
                 let data = Box::new(Delete { data: value });
                 Box::into_raw(data) as *const ()
-            },
+            }
             2 => {
                 let data = Box::new(Get { data: value });
                 Box::into_raw(data) as *const ()
-            },
+            }
             3 => {
                 let data = Box::new(Update { data: value });
                 Box::into_raw(data) as *const ()
-            },
+            }
             _ => unreachable!(),
         };
         data.push(ptr)

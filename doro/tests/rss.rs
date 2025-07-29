@@ -1,7 +1,7 @@
 use anyhow::Result;
-use rss::Channel;
-use tracing::{info, Level};
 use doro_util::default_logger;
+use rss::Channel;
+use tracing::{Level, info};
 
 default_logger!(Level::DEBUG);
 

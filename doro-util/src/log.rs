@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use time::format_description;
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{EnvFilter, fmt, Layer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 /// 文件拆分数量 chunks，虽然最低要求为 1。但不建议使用 1，否则容量刚好达到上限时，日志会被清空掉。
 struct SizeBasedWriter {
@@ -226,8 +226,8 @@ pub fn default_logger(level: Level) -> Result<WorkerGuard, std::io::Error> {
 #[macro_export]
 macro_rules! default_logger {
     () => {
-        use std::sync::OnceLock;
         use ctor::ctor;
+        use std::sync::OnceLock;
         use tracing_appender::non_blocking::WorkerGuard;
 
         static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
@@ -240,12 +240,14 @@ macro_rules! default_logger {
                 Level::INFO
             };
             let guard: WorkerGuard = $crate::log::default_logger(default_level).unwrap();
-            LOG_GUARD.set(guard).expect("Failed to initialize logger guard");
+            LOG_GUARD
+                .set(guard)
+                .expect("Failed to initialize logger guard");
         }
     };
     ($level:expr) => {
-        use std::sync::OnceLock;
         use ctor::ctor;
+        use std::sync::OnceLock;
         use tracing_appender::non_blocking::WorkerGuard;
 
         static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
@@ -253,7 +255,9 @@ macro_rules! default_logger {
         #[ctor]
         fn init() {
             let guard: WorkerGuard = $crate::log::default_logger($level).unwrap();
-            LOG_GUARD.set(guard).expect("Failed to initialize logger guard");
+            LOG_GUARD
+                .set(guard)
+                .expect("Failed to initialize logger guard");
         }
     };
 }

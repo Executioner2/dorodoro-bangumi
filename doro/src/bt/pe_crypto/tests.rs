@@ -1,6 +1,6 @@
+use crate::base_peer::reserved;
 use crate::bt::pe_crypto;
 use crate::bt::pe_crypto::CryptoProvide;
-use crate::peer::reserved;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use byteorder::{BigEndian, WriteBytesExt};
 use tokio::net::TcpStream;

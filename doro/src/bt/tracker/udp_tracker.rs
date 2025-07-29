@@ -6,16 +6,14 @@ pub mod socket;
 mod tests;
 
 use crate::bt::constant::udp_tracker::*;
-use crate::task_handler::PeerId;
+use crate::task_manager::PeerId;
 use crate::tracker;
 use crate::tracker::{AnnounceInfo, Event};
 use anyhow::Result;
-use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use doro_util::buffer::ByteBuffer;
-use doro_util::bytes_util::Bytes2Int;
+use doro_util::bytes_util::{Bytes2Int, WriteBytesBigEndian};
 use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime};
-use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -102,16 +100,16 @@ impl UdpTracker {
 
         let download = info.download.load(Ordering::Acquire);
         let left = info.resource_size.saturating_sub(download);
-        req.write(self.info_hash.as_slice())?;
-        req.write(self.peer_id.value().as_slice())?;
-        req.write_u64::<BigEndian>(download)?;
-        req.write_u64::<BigEndian>(left)?;
-        req.write_u64::<BigEndian>(info.uploaded.load(Ordering::Acquire))?;
-        req.write_u32::<BigEndian>(event as u32)?;
-        req.write_u32::<BigEndian>(0)?; // ip
-        req.write_u32::<BigEndian>(doro_util::rand::gen_process_key())?;
-        req.write_i32::<BigEndian>(-1)?; // 期望的 peer 数量
-        req.write_u16::<BigEndian>(info.port)?;
+        req.write_bytes(self.info_hash.as_slice())?;
+        req.write_bytes(self.peer_id.value().as_slice())?;
+        req.write_u64(download)?;
+        req.write_u64(left)?;
+        req.write_u64(info.uploaded.load(Ordering::Acquire))?;
+        req.write_u32(event as u32)?;
+        req.write_u32(0)?; // ip
+        req.write_u32(doro_util::rand::gen_process_key())?;
+        req.write_i32(-1)?; // 期望的 peer 数量
+        req.write_u16(info.port)?;
 
         let resp = self.send(&req, -1).await?;
 
@@ -250,9 +248,9 @@ impl UdpTracker {
     fn gen_protocol_head(connect_id: u64, action: Action) -> (u32, Buffer) {
         let mut buffer = Buffer::with_capacity(16);
         let req_tran_id = doro_util::rand::gen_tran_id();
-        buffer.write_u64::<BigEndian>(connect_id).unwrap();
-        buffer.write_u32::<BigEndian>(action as u32).unwrap();
-        buffer.write_u32::<BigEndian>(req_tran_id).unwrap();
+        buffer.write_u64(connect_id).unwrap();
+        buffer.write_u32(action as u32).unwrap();
+        buffer.write_u32(req_tran_id).unwrap();
         (req_tran_id, buffer)
     }
 

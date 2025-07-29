@@ -1,15 +1,15 @@
 //! torrent 数据持久化
 
-use doro_util::bytes_util;
 use crate::db::ConnWrapper;
-use crate::task_handler::gasket::PieceStatus;
 use crate::torrent::TorrentArc;
 use anyhow::{Error, Result, anyhow};
+use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
+use doro_util::bytes_util;
 use rusqlite::params;
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -34,14 +34,23 @@ impl TryFrom<u8> for TorrentStatus {
 
     fn try_from(value: u8) -> Result<Self> {
         if value <= 8 {
-            Ok(unsafe { mem::transmute(value) })
+            Ok(unsafe { mem::transmute::<u8, TorrentStatus>(value) })
         } else {
             Err(anyhow!("invalid torrent status: {}", value))
         }
     }
 }
 
-#[derive(Default)]
+#[derive(Eq, PartialEq, Decode, Encode, Clone, Debug)]
+pub enum PieceStatus {
+    /// 进行中
+    Ing(u32),
+
+    /// 暂停，未开始也用这个标记
+    Pause(u32),
+}
+
+#[derive(Default, Debug)]
 pub struct TorrentEntity {
     /// id
     pub id: Option<u64>,
@@ -73,7 +82,7 @@ pub struct TorrentEntity {
 
 pub trait TorrentMapper {
     /// 保存 bytefield
-    ///  
+    ///
     /// # Arguments
     ///
     /// * `bytefield`: 下载完成的分块信息
@@ -113,7 +122,7 @@ pub trait TorrentMapper {
     /// * `save_path`: 保存路径
     ///
     /// returns: bool `true`: 添加成功 `false`: 添加失败
-    fn add_torrent(&mut self, torrent: &TorrentArc, save_path: &PathBuf) -> Result<bool>;
+    fn add_torrent(&mut self, torrent: &TorrentArc, save_path: &Path) -> Result<bool>;
 
     /// 列出所有种子
     ///
@@ -131,7 +140,7 @@ impl TorrentMapper for ConnWrapper {
     ) -> Result<usize> {
         let ub = ub
             .iter()
-            .map(|item| (item.key().clone(), (*item.value()).clone()))
+            .map(|item| (*item.key(), (*item.value()).clone()))
             .collect::<Vec<(u32, PieceStatus)>>();
         let mut stmt = self.prepare_cached(
             "update torrent set bytefield = ?1, underway_bytefield = ?2 where info_hash = ?3",
@@ -176,7 +185,7 @@ impl TorrentMapper for ConnWrapper {
     }
 
     /// 添加下载任务
-    fn add_torrent(&mut self, torrent: &TorrentArc, save_path: &PathBuf) -> Result<bool> {
+    fn add_torrent(&mut self, torrent: &TorrentArc, save_path: &Path) -> Result<bool> {
         let tx = self.transaction()?;
 
         let count: u32 = tx

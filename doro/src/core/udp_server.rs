@@ -10,13 +10,14 @@
 //!
 //! 暂时先用上面的后者作为唯一标识。
 
-use doro_util::buffer::ByteBuffer;
 use crate::context::Context;
 use crate::dht::entity::DHTBase;
+use anyhow::Result;
 use bendy::decoding::FromBencode;
 use bendy::value::Value;
 use bytes::Bytes;
 use dashmap::DashMap;
+use doro_util::buffer::ByteBuffer;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -24,7 +25,6 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::task::{Poll, Waker};
 use tokio::net::UdpSocket;
 use tracing::{error, info};
-use anyhow::Result;
 
 /// 循环 id
 struct CycleId {
@@ -33,7 +33,9 @@ struct CycleId {
 
 impl CycleId {
     fn new() -> Self {
-        Self { val: AtomicU16::new(0) }
+        Self {
+            val: AtomicU16::new(0),
+        }
     }
 
     fn next_tran_id(&self) -> u16 {
@@ -76,18 +78,15 @@ impl UdpServer {
         addr: &SocketAddr,
     ) -> Result<Response, std::io::Error> {
         if self.inflight.contains_key(&tran_id) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "same tran_id",
-            ));
+            return Err(std::io::Error::other("same tran_id"));
         }
 
         self.inflight.insert(tran_id, None);
-        if let Err(e) = self.socket.send_to(data, addr).await{
+        if let Err(e) = self.socket.send_to(data, addr).await {
             self.inflight.remove(&tran_id);
             return Err(e);
         }
-        
+
         Ok(Response::new(
             tran_id,
             self.inflight.clone(),
@@ -111,7 +110,9 @@ impl UdpServer {
                 let id = base.t();
                 if let Some((_, resp)) = self.inflight.remove(&id) {
                     self.result_store.insert(id, (data, addr));
-                    resp.map(|waker| waker.wake());
+                    if let Some(waker) = resp {
+                        waker.wake()
+                    }
                 }
             }
             Err(e) => {

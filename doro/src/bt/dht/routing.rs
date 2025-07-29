@@ -3,9 +3,12 @@ mod tests;
 
 use alloc::borrow::Cow;
 use anyhow::{Error, anyhow};
+use bendy::decoding::{FromBencode, Object};
+use bendy::encoding::{SingleItemEncoder, ToBencode};
 use bincode::{Decode, Encode};
 use core::fmt::Formatter;
 use core::str::FromStr;
+use doro_util::datetime;
 use rand::{Rng, RngCore};
 use sha1::{Digest, Sha1};
 use std::cmp::Ordering;
@@ -13,10 +16,7 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::net::SocketAddr;
 use std::ops::{Range, RangeFrom};
 use std::time::Duration;
-use bendy::decoding::{FromBencode, Object};
-use bendy::encoding::{SingleItemEncoder, ToBencode};
 use tracing::trace;
-use doro_util::datetime;
 
 /// Kademlia K 值
 const K_BUCKET_SIZE: usize = 8;
@@ -37,7 +37,7 @@ impl NodeId {
         let mut bytes = [0u8; 20];
         rand::rng().fill_bytes(&mut bytes);
         let mut hasher = Sha1::new();
-        hasher.update(&bytes);
+        hasher.update(bytes);
         NodeId(hasher.finalize().into())
     }
 
@@ -119,7 +119,7 @@ impl std::ops::IndexMut<RangeFrom<usize>> for NodeId {
 
 impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NodeId({})", hex::encode(&self.0))
+        write!(f, "NodeId({})", hex::encode(self.0))
     }
 }
 
@@ -137,21 +137,21 @@ impl FromStr for NodeId {
 
 impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", hex::encode(&self.0))
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 
 impl FromBencode for NodeId {
     fn decode_bencode_object(object: Object) -> Result<Self, bendy::decoding::Error>
     where
-        Self: Sized
+        Self: Sized,
     {
         let bytes = object.try_into_bytes()?;
-        match NodeId::try_from(bytes){
+        match NodeId::try_from(bytes) {
             Ok(node_id) => Ok(node_id),
             Err(_) => Err(bendy::decoding::Error::unexpected_token(
                 "expected 20-byte node ID",
-                format!("Invalid id length: {}", bytes.len())
+                format!("Invalid id length: {}", bytes.len()),
             )),
         }
     }
@@ -191,7 +191,7 @@ impl Node {
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
-    
+
     pub fn take_id(self) -> NodeId {
         self.id
     }
@@ -207,10 +207,7 @@ enum AddResult {
 
 impl AddResult {
     fn is_success(&self) -> bool {
-        match self {
-            AddResult::BucketFull(_) => false,
-            _ => true,
-        }
+        !matches!(self, AddResult::BucketFull(_))
     }
 }
 
@@ -233,15 +230,15 @@ impl Bucket {
             can_split,
         }
     }
-    
+
     pub fn get_prefix(&self) -> &NodeId {
         &self.prefix
     }
-    
+
     pub fn get_prefix_len(&self) -> usize {
         self.prefix_len
     }
-    
+
     pub fn update_lastchange(&mut self) {
         self.lastchange = now_secs();
     }
@@ -276,7 +273,10 @@ impl Bucket {
         }
 
         if let Some(pos) = self.pop_stale_node() {
-            trace!("桶[{}]节点[{}]替换\t被替换的节点: {}", self.prefix, node.id, self.nodes[pos].id);
+            trace!(
+                "桶[{}]节点[{}]替换\t被替换的节点: {}",
+                self.prefix, node.id, self.nodes[pos].id
+            );
             self.nodes.remove(pos);
             self.nodes.push_back(node);
             self.lastchange = now_secs();
@@ -295,7 +295,7 @@ impl Bucket {
             rng.fill_bytes(&mut info_hash[index + 1..]);
         }
         info_hash[index] =
-            (info_hash[index] & u8::MAX - (offset - 1)) | rng.random_range(..offset);
+            (info_hash[index] & (u8::MAX - (offset - 1))) | rng.random_range(..offset);
         info_hash
     }
 
@@ -403,7 +403,10 @@ impl RoutingTable {
                 // 这里什么都不做，桶满了，但是不能分裂。我们尝试过更新
                 // 节点和替换节点，但是此node都不满足更新节点和替换节点
                 // 的条件。
-                trace!("桶[{}]不能分裂，因为 own_id [{}] 不在桶内", bucket.prefix, self.own_id);
+                trace!(
+                    "桶[{}]不能分裂，因为 own_id [{}] 不在桶内",
+                    bucket.prefix, self.own_id
+                );
             }
         }
 
@@ -443,7 +446,6 @@ impl RoutingTable {
         self.buckets
             .iter_mut()
             .find(|bucket| now_secs().saturating_sub(bucket.lastchange) > REFRESH_INTERVAL)
-            
     }
 
     pub fn mark_node_responded(&mut self, node_id: &NodeId) {
@@ -470,11 +472,11 @@ impl RoutingTable {
             }
         }
     }
-    
+
     pub fn get_own_id(&self) -> &NodeId {
         &self.own_id
     }
-    
+
     pub fn get_node_num(&self) -> usize {
         self.buckets.iter().map(|b| b.nodes.len()).sum()
     }
@@ -487,7 +489,7 @@ struct NodeWithDistance<'a> {
     distance: [u8; 20],
 }
 
-impl<'a> Ord for NodeWithDistance<'_> {
+impl Ord for NodeWithDistance<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         // 比较距离（使用 XOR 距离的字典序比较）
         self.distance
@@ -497,7 +499,7 @@ impl<'a> Ord for NodeWithDistance<'_> {
     }
 }
 
-impl<'a> PartialOrd for NodeWithDistance<'_> {
+impl PartialOrd for NodeWithDistance<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }

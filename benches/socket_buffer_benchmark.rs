@@ -71,18 +71,18 @@ fn buffer_default_return_vec() -> Vec<u8> {
 /// 性能测试
 fn criterion_benchmark(c: &mut Criterion) {
     // time: [618.91 ns 624.28 ns 629.96 ns]
-    c.bench_function("buffer_default", |b| b.iter(|| buffer_default()));
+    c.bench_function("buffer_default", |b| b.iter(buffer_default));
 
     // time: [619.14 ns 625.56 ns 631.76 ns]
     c.bench_function("buffer_default_return_vec", |b| {
-        b.iter(|| buffer_default_return_vec())
+        b.iter(buffer_default_return_vec)
     });
 
     // time: [127.10 ns 129.61 ns 132.27 ns]
-    c.bench_function("buffer_alloc", |b| b.iter(|| buffer_alloc()));
+    c.bench_function("buffer_alloc", |b| b.iter(buffer_alloc));
 
     // time: [286.99 ns 290.55 ns 294.41 ns]
-    c.bench_function("buffer_realloc", |b| b.iter(|| buffer_realloc()));
+    c.bench_function("buffer_realloc", |b| b.iter(buffer_realloc));
 }
 
 criterion_group!(benches, criterion_benchmark);

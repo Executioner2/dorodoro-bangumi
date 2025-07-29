@@ -3,12 +3,12 @@
 use crate::peer::PeerManager;
 use crate::torrent::Torrent;
 use doro_util::buffer::ByteBuffer;
+use doro_util::default_logger;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, error, info, warn};
-use doro_util::default_logger;
 
 pub mod torrent {
     /// Torrent
@@ -59,7 +59,7 @@ pub mod peer {
                         match result {
                             Ok(len) => {
                                 let mut buf = ByteBuffer::new(len as usize);
-                                match self.socket.read(&mut buf.as_mut()).await {
+                                match self.socket.read(buf.as_mut()).await {
                                     Ok(n) => {
                                         info!("读取到对端 peer 传来的数据，长度为 {}", n);
                                         true
@@ -280,7 +280,7 @@ impl TcpServer {
         }
         info!("protocol_len: {}", protocol_len);
         let mut protocol = ByteBuffer::new(protocol_len as usize);
-        socket.read(&mut protocol.as_mut()).await.unwrap();
+        let _ = socket.read(protocol.as_mut()).await.unwrap();
         match protocol.as_ref() {
             b"BitTorrent protocol" => {
                 info!("收到 BitTorrent 请求");

@@ -5,8 +5,8 @@ pub mod constant;
 mod test;
 pub mod transfer;
 
+use anyhow::{Result, anyhow};
 use dashmap::DashMap;
-use anyhow::{anyhow, Result};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::Sender;
 use transfer::TransferPtr;
@@ -20,12 +20,10 @@ unsafe impl Send for Emitter {}
 unsafe impl Sync for Emitter {}
 
 impl Emitter {
-    pub fn global() -> &'static Self { 
+    pub fn global() -> &'static Self {
         static EMITTER: OnceLock<Emitter> = OnceLock::new();
-        EMITTER.get_or_init(|| {
-            Self {
-                mpsc_senders: Arc::new(DashMap::default()),
-            }
+        EMITTER.get_or_init(|| Self {
+            mpsc_senders: Arc::new(DashMap::default()),
         })
     }
 

@@ -3,26 +3,23 @@
 #[cfg(test)]
 mod tests;
 
-use doro_util::buffer::ByteBuffer;
 use crate::config::Config;
-use doro_util::fs::OpenOptionsExt;
+use crate::context::Context;
 use crate::torrent::BlockInfo;
 use anyhow::Result;
 use bytes::Bytes;
 use dashmap::DashMap;
+use doro_util::anyhow_le;
+use doro_util::buffer::ByteBuffer;
+use doro_util::fs::OpenOptionsExt;
 use memmap2::MmapMut;
 use sha1::{Digest, Sha1};
 use std::fs::{File, OpenOptions};
-use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
-use doro_util::anyhow_le;
-use crate::context::Context;
 
 struct FileWriter {
     /// 文件路径
@@ -86,11 +83,17 @@ impl FileWriter {
             self.mmap = Some(unsafe { MmapMut::map_mut(&self.get_file()?)? })
         }
         let end = (offset + data.len() as u64) as usize;
-        anyhow_le!(end as u64, self.file_len, "文件长度错误，期望值: {}，实际值: {}", self.file_len, end);
-        
-        self.mmap.as_mut().map(|mmap| {
+        anyhow_le!(
+            end as u64,
+            self.file_len,
+            "文件长度错误，期望值: {}，实际值: {}",
+            self.file_len,
+            end
+        );
+
+        if let Some(mmap) = self.mmap.as_mut() {
             mmap[offset as usize..end].copy_from_slice(&data);
-        });
+        }
         let mmap = match self.mmap.take() {
             None => unsafe { MmapMut::map_mut(&self.get_file()?)? },
             Some(mmap) => mmap,
@@ -116,15 +119,18 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new() -> Self {
-        let config = Context::global().get_config().clone();
-        let permits = config.hash_concurrency();
-        Self {
-            config,
-            file_writer: Arc::new(DashMap::new()),
-            buf_size: Arc::new(AtomicUsize::new(0)),
-            hash_semaphore: Arc::new(Semaphore::new(permits)),
-        }
+    pub fn global() -> &'static Self {
+        static STORE: OnceLock<Store> = OnceLock::new();
+        STORE.get_or_init(|| {
+            let config = Context::global().get_config().clone();
+            let permits = config.hash_concurrency();
+            Self {
+                config,
+                file_writer: Arc::new(DashMap::new()),
+                buf_size: Arc::new(AtomicUsize::new(0)),
+                hash_semaphore: Arc::new(Semaphore::new(permits)),
+            }
+        })
     }
 
     pub fn flush(&self, path: &PathBuf) -> Result<()> {
