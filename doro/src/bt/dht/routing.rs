@@ -2,20 +2,21 @@
 mod tests;
 
 use alloc::borrow::Cow;
-use anyhow::{Error, anyhow};
-use bendy::decoding::{FromBencode, Object};
-use bendy::encoding::{SingleItemEncoder, ToBencode};
-use bincode::{Decode, Encode};
 use core::fmt::Formatter;
 use core::str::FromStr;
-use doro_util::datetime;
-use rand::{Rng, RngCore};
-use sha1::{Digest, Sha1};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::net::SocketAddr;
 use std::ops::{Range, RangeFrom};
 use std::time::Duration;
+
+use anyhow::{Error, anyhow};
+use bendy::decoding::{FromBencode, Object};
+use bendy::encoding::{SingleItemEncoder, ToBencode};
+use bincode::{Decode, Encode};
+use doro_util::datetime;
+use rand::{Rng, RngCore};
+use sha1::{Digest, Sha1};
 use tracing::trace;
 
 /// Kademlia K 值
@@ -78,6 +79,7 @@ impl From<[u8; 20]> for NodeId {
 
 impl std::ops::Index<usize> for NodeId {
     type Output = u8;
+
     fn index(&self, index: usize) -> &Self::Output {
         &self.0[index]
     }
@@ -125,6 +127,7 @@ impl std::fmt::Debug for NodeId {
 
 impl FromStr for NodeId {
     type Err = Error;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = hex::decode(s).map_err(|e| anyhow!("Invalid hex string: {}", e))?;
         if bytes.len() == 20 {

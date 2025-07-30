@@ -1,4 +1,5 @@
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+
 use tokio::task::JoinHandle;
 use tracing::{error, warn};
 
@@ -33,6 +34,7 @@ impl<T> MutexExt<T> for RwLock<T> {
         = RwLockWriteGuard<'a, T>
     where
         T: 'a;
+
     fn lock_pe(&self) -> Self::Target<'_> {
         match self.write() {
             Ok(mg) => mg,

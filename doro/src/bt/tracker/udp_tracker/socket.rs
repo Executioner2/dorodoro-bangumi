@@ -4,12 +4,14 @@
 //! 这个模块其实已经过时不会再用到了。它在和 `一个 Tracker 一个 Socket` 的
 //! 比拼中败下阵来，在差不多的吞吐量下，它会比后者使用更多的 CPU 资源。
 
-use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE};
+use std::net::UdpSocket;
+use std::sync::Arc;
+
 use anyhow::Result;
 use bytes::Bytes;
 use doro_util::buffer::ByteBuffer;
-use std::net::UdpSocket;
-use std::sync::Arc;
+
+use crate::bt::constant::udp_tracker::{DEFAULT_ADDR, MAX_PAYLOAD_SIZE};
 
 #[derive(Default)]
 pub struct SocketBuilder<'a> {

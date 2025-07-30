@@ -1,11 +1,13 @@
-use crate::dht::routing::NodeId;
 use alloc::borrow::Cow;
+
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use bendy::encoding::{SingleItemEncoder, ToBencode};
 use bendy::value::Value;
 use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use doro_util::bytes_util::Bytes2Int;
 use tracing::warn;
+
+use crate::dht::routing::NodeId;
 
 impl Bytes2Object<Host> for [u8] {
     fn to_object(&self) -> Result<Host, Error> {

@@ -1,23 +1,25 @@
 pub mod http_tracker;
 pub mod udp_tracker;
 
-use crate::task::{HostSource, ReceiveHost};
-use crate::task_manager::PeerId;
-use crate::torrent::TorrentArc;
-use crate::tracker::http_tracker::HttpTracker;
-use crate::tracker::udp_tracker::UdpTracker;
-use ahash::AHashSet;
-use anyhow::Result;
 use core::fmt::Display;
-use doro_util::bytes_util::Bytes2Int;
-use doro_util::{anyhow_eq, datetime};
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
+
+use ahash::AHashSet;
+use anyhow::Result;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::{anyhow_eq, datetime};
 use tokio::sync::Mutex;
 use tracing::{error, trace};
+
+use crate::task::{HostSource, ReceiveHost};
+use crate::task_manager::PeerId;
+use crate::torrent::TorrentArc;
+use crate::tracker::http_tracker::HttpTracker;
+use crate::tracker::udp_tracker::UdpTracker;
 
 // ===========================================================================
 // Peer Host
@@ -87,10 +89,7 @@ pub struct AnnounceInfo {
 
 impl AnnounceInfo {
     pub fn new(
-        download: Arc<AtomicU64>,
-        uploaded: Arc<AtomicU64>,
-        resource_size: u64,
-        port: u16,
+        download: Arc<AtomicU64>, uploaded: Arc<AtomicU64>, resource_size: u64, port: u16,
     ) -> Self {
         Self {
             download,
@@ -103,9 +102,7 @@ impl AnnounceInfo {
 
 /// 解析 tracker 地址
 fn parse_tracker_host(
-    announce: &str,
-    info_hash: Arc<[u8; 20]>,
-    peer_id: PeerId,
+    announce: &str, info_hash: Arc<[u8; 20]>, peer_id: PeerId,
 ) -> Option<TrackerInstance> {
     if announce.starts_with("http") {
         Some(TrackerInstance::HTTP(HttpTracker::new(
@@ -135,8 +132,7 @@ fn parse_tracker_host(
 }
 
 fn instance_tracker(
-    peer_id: PeerId,
-    torrent: TorrentArc,
+    peer_id: PeerId, torrent: TorrentArc,
 ) -> Vec<Arc<Mutex<(Event, TrackerInstance)>>> {
     let mut trackers = vec![];
     let info_hash = Arc::new(torrent.info_hash);
@@ -160,10 +156,7 @@ fn instance_tracker(
 }
 
 async fn scan_udp_tracker<T: ReceiveHost + Send + Sync + 'static>(
-    event: &mut Event,
-    tracker: &mut UdpTracker,
-    scan_time: u64,
-    info: &AnnounceInfo,
+    event: &mut Event, tracker: &mut UdpTracker, scan_time: u64, info: &AnnounceInfo,
     receive_host: T,
 ) -> u64 {
     let mut nrt = u64::MAX;
@@ -194,10 +187,7 @@ async fn scan_udp_tracker<T: ReceiveHost + Send + Sync + 'static>(
 }
 
 async fn scan_http_tracker<T: ReceiveHost + Send + Sync + 'static>(
-    event: &mut Event,
-    tracker: &mut HttpTracker,
-    scan_time: u64,
-    info: &AnnounceInfo,
+    event: &mut Event, tracker: &mut HttpTracker, scan_time: u64, info: &AnnounceInfo,
     receive_host: T,
 ) -> u64 {
     let mut nrt = u64::MAX;
@@ -231,9 +221,7 @@ async fn scan_http_tracker<T: ReceiveHost + Send + Sync + 'static>(
 }
 
 async fn scan_tracker<T: ReceiveHost + Send + Sync + Clone + 'static>(
-    trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>,
-    scan_time: u64,
-    info: AnnounceInfo,
+    trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>, scan_time: u64, info: AnnounceInfo,
     receive_host: T,
 ) -> u64 {
     let mut interval: u64 = u64::MAX;
@@ -258,9 +246,7 @@ async fn scan_tracker<T: ReceiveHost + Send + Sync + Clone + 'static>(
 }
 
 async fn tracker_handle_process<T: ReceiveHost + Send + Sync + 'static>(
-    tracker: Arc<Mutex<(Event, TrackerInstance)>>,
-    scan_time: u64,
-    info: AnnounceInfo,
+    tracker: Arc<Mutex<(Event, TrackerInstance)>>, scan_time: u64, info: AnnounceInfo,
     receive_host: T,
 ) -> u64 {
     match tracker.lock().await.deref_mut() {

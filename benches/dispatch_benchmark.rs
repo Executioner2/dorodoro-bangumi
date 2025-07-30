@@ -80,9 +80,11 @@
 //!
 //! 增加了裸指针的伪动态分发实现。性能和用枚举以及第三方库差不多。实际应用中会是枚举➕裸指针的方案
 
-use crate::dispatch1::Torrent;
-use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
+
+use criterion::{Criterion, criterion_group, criterion_main};
+
+use crate::dispatch1::Torrent;
 
 pub trait Dispatchable {
     fn dispatch(&self) -> f64;

@@ -1,17 +1,19 @@
 //! torrent 数据持久化
 
-use crate::db::ConnWrapper;
-use crate::torrent::TorrentArc;
+use std::mem;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use anyhow::{Error, Result, anyhow};
 use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
 use doro_util::bytes_util;
 use rusqlite::params;
-use std::mem;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tracing::warn;
+
+use crate::db::ConnWrapper;
+use crate::torrent::TorrentArc;
 
 /// 种子状态
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,10 +92,7 @@ pub trait TorrentMapper {
     ///
     /// returns: ()
     fn update_bytefield(
-        &self,
-        bytefield: &[u8],
-        ub: Arc<DashMap<u32, PieceStatus>>,
-        info_hash: &[u8],
+        &self, bytefield: &[u8], ub: Arc<DashMap<u32, PieceStatus>>, info_hash: &[u8],
     ) -> Result<usize>;
 
     /// 从数据库中恢复状态
@@ -133,10 +132,7 @@ pub trait TorrentMapper {
 impl TorrentMapper for ConnWrapper {
     /// 保存 bytefield
     fn update_bytefield(
-        &self,
-        bytefield: &[u8],
-        ub: Arc<DashMap<u32, PieceStatus>>,
-        info_hash: &[u8],
+        &self, bytefield: &[u8], ub: Arc<DashMap<u32, PieceStatus>>, info_hash: &[u8],
     ) -> Result<usize> {
         let ub = ub
             .iter()

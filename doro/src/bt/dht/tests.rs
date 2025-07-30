@@ -40,16 +40,18 @@
 //     udp_server_handle.await.unwrap();
 // }
 
-use crate::dht::entity::{DHTBase, FindNodeReq, FindNodeResp, GetPeersReq, GetPeersResp, Ping};
-use crate::dht::routing::NodeId;
+use core::str::FromStr;
+use std::net::SocketAddr;
+
 use anyhow::{Result, anyhow};
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
-use core::str::FromStr;
 use doro_util::buffer::ByteBuffer;
-use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tracing::info;
+
+use crate::dht::entity::{DHTBase, FindNodeReq, FindNodeResp, GetPeersReq, GetPeersResp, Ping};
+use crate::dht::routing::NodeId;
 
 async fn domain_node_dns_resolve(domain: &str) -> Option<SocketAddr> {
     tokio::net::lookup_host(domain).await.ok()?.next()
@@ -91,10 +93,7 @@ async fn send_ping(socket: &mut UdpSocket, addr: &SocketAddr, id: &NodeId) -> Re
 }
 
 async fn send_get_peers(
-    socket: &mut UdpSocket,
-    addr: &SocketAddr,
-    id: &NodeId,
-    info_hash: &NodeId,
+    socket: &mut UdpSocket, addr: &SocketAddr, id: &NodeId, info_hash: &NodeId,
 ) -> Result<()> {
     let get_peers = DHTBase::<GetPeersReq>::request(
         GetPeersReq::new(id.cow(), info_hash.cow()),
@@ -125,10 +124,7 @@ async fn send_get_peers(
 }
 
 async fn send_find_node(
-    socket: &mut UdpSocket,
-    addr: &SocketAddr,
-    id: &NodeId,
-    target: &NodeId,
+    socket: &mut UdpSocket, addr: &SocketAddr, id: &NodeId, target: &NodeId,
 ) -> Result<()> {
     let find_node = DHTBase::<FindNodeReq>::request(
         FindNodeReq::new(id.cow(), target.cow()),

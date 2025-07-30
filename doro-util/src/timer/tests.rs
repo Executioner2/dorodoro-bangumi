@@ -1,7 +1,9 @@
-use crate::timer::CountdownTimer;
 use std::thread;
 use std::time::Duration;
+
 use tracing::info;
+
+use crate::timer::CountdownTimer;
 
 /// 测试计时器是否正常工作
 #[test]

@@ -1,11 +1,13 @@
 //! 全局上下文
 
-use crate::config::Config;
-use crate::db::{ConnWrapper, Db};
-use anyhow::Result;
 use core::fmt::Formatter;
 use std::sync::{Arc, OnceLock};
+
+use anyhow::Result;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
+
+use crate::config::Config;
+use crate::db::{ConnWrapper, Db};
 
 #[derive(Clone)]
 pub struct Context {
@@ -39,8 +41,8 @@ impl Context {
     }
 
     /// 返回全局配置信息
-    pub fn get_config(&self) -> &Config {
-        &self.config
+    pub fn get_config() -> &'static Config {
+        &Context::global().config
     }
 
     /// 返回一个数据库链接

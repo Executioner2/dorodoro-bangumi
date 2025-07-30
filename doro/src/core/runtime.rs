@@ -1,14 +1,16 @@
-use crate::config::CHANNEL_BUFFER;
-use crate::emitter::Emitter;
-use crate::emitter::transfer::TransferPtr;
-use anyhow::{Result, anyhow};
 use core::fmt::Debug;
+use std::pin::Pin;
+
+use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use std::pin::Pin;
 use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::WaitForCancellationFuture;
 use tracing::{debug, error, info, warn};
+
+use crate::config::CHANNEL_BUFFER;
+use crate::emitter::Emitter;
+use crate::emitter::transfer::TransferPtr;
 
 /// 处理命令的结果
 pub enum CommandHandleResult {

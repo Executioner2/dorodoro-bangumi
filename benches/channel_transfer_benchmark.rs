@@ -34,9 +34,10 @@
 //! ，也不支持消耗原始数据。handle 接口的定义是需要指令的处理者消耗掉这个指令的。所以 emiiter 采用
 //! 裸指针实现。
 
-use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::sync::Arc;
+
+use criterion::{Criterion, criterion_group, criterion_main};
 use transfer_data::*;
 
 pub mod transfer_data {
@@ -165,9 +166,10 @@ pub mod transfer_data {
 // ===========================================================================
 
 pub mod transfer1 {
-    use crate::transfer_data::{CommandHandler, Scheduler};
     use std::sync::Arc;
     use std::thread;
+
+    use crate::transfer_data::{CommandHandler, Scheduler};
 
     pub fn enum_transfer(objs1: Arc<Vec<Arc<Scheduler>>>) -> u64 {
         let (send1, recv1) = std::sync::mpsc::channel::<Arc<Scheduler>>();
@@ -187,10 +189,11 @@ pub mod transfer1 {
 }
 
 pub mod transfer2 {
-    use crate::transfer_data::{CommandHandler, Scheduler, TransferPtr};
     use std::sync::Arc;
     use std::sync::mpsc::channel;
     use std::thread;
+
+    use crate::transfer_data::{CommandHandler, Scheduler, TransferPtr};
 
     pub fn unsafe_ptr_transfer(objs: Arc<Vec<Arc<TransferPtr>>>) -> u64 {
         let (send1, recv1) = channel();
@@ -213,10 +216,11 @@ pub mod transfer2 {
 }
 
 pub mod transfer3 {
-    use crate::transfer_data::TransferDynBox;
     use std::sync::Arc;
     use std::sync::mpsc::channel;
     use std::thread;
+
+    use crate::transfer_data::TransferDynBox;
 
     pub fn dynamic_dispatch_transfer(objs: Arc<Vec<Arc<TransferDynBox>>>) -> u64 {
         let (send1, recv1) = channel();

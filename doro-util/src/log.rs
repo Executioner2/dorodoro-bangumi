@@ -5,6 +5,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
 use time::format_description;
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -24,10 +25,7 @@ struct SizeBasedWriter {
 
 impl SizeBasedWriter {
     fn new(
-        directory: &Path,
-        file_prefix: &str,
-        max_size: u64,
-        chunks: usize,
+        directory: &Path, file_prefix: &str, max_size: u64, chunks: usize,
     ) -> std::io::Result<Self> {
         assert!(chunks > 0, "file chunks must be greater than 0");
 
@@ -165,11 +163,7 @@ impl Write for SizeBasedWriter {
 ///
 /// 返回一个 `WorkerGuard`，避免日志线程退出导致日志丢失。
 pub fn register_logger(
-    dir: &str,
-    file_prefix: &str,
-    max_size: u64,
-    chunks: usize,
-    level: Level,
+    dir: &str, file_prefix: &str, max_size: u64, chunks: usize, level: Level,
 ) -> std::io::Result<WorkerGuard> {
     // 创建日志目录
     let log_dir = Path::new(dir);
@@ -226,8 +220,9 @@ pub fn default_logger(level: Level) -> Result<WorkerGuard, std::io::Error> {
 #[macro_export]
 macro_rules! default_logger {
     () => {
-        use ctor::ctor;
         use std::sync::OnceLock;
+
+        use ctor::ctor;
         use tracing_appender::non_blocking::WorkerGuard;
 
         static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
@@ -246,8 +241,9 @@ macro_rules! default_logger {
         }
     };
     ($level:expr) => {
-        use ctor::ctor;
         use std::sync::OnceLock;
+
+        use ctor::ctor;
         use tracing_appender::non_blocking::WorkerGuard;
 
         static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();

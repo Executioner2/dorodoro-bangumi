@@ -1,9 +1,17 @@
+use std::io;
+use std::io::ErrorKind;
+use std::net::SocketAddr;
+use std::pin::{Pin, pin};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::task::{Context, Poll, Waker};
+
 use anyhow::{Result, anyhow};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dashmap::DashMap;
 use doro::control::{
-    CODE_SIZE, ControlStatus, LENGTH_SIZE, STATUS_SIZE, Status, TRAN_ID_SIZE, TranId,
+    CODE_SIZE, ControlStatus, LENGTH_SIZE, STATUS_SIZE, Status, TRAN_ID_SIZE, TranId
 };
 use doro::protocol::remote_control::{PASSWORD_LEN_SIZE, USERNAME_LEN_SIZE};
 use doro::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
@@ -12,13 +20,6 @@ use doro_util::bytes_util::Bytes2Int;
 use doro_util::net::{FutureRet, ReaderHandle};
 use doro_util::{is_disconnect, pin_poll};
 use serde::Serialize;
-use std::io;
-use std::io::ErrorKind;
-use std::net::SocketAddr;
-use std::pin::{Pin, pin};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::task::{Context, Poll, Waker};
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -297,8 +298,7 @@ pub struct ResponseFuture {
 
 impl ResponseFuture {
     fn new(
-        tran_id: u32,
-        inflight: Arc<DashMap<u32, Option<Waker>>>,
+        tran_id: u32, inflight: Arc<DashMap<u32, Option<Waker>>>,
         result_store: Arc<DashMap<u32, (Code, Status, Bytes)>>,
     ) -> Self {
         Self {

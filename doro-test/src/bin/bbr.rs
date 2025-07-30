@@ -24,11 +24,6 @@
 //! [bbr 草案](https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control)\
 //! [linux bbr 实现](https://github.com/torvalds/linux/blob/master/net/ipv4/tcp_bbr.c#L160)
 
-use crate::BBRState::{Drain, ProbeBW, ProbeRtprop, Startup};
-use doro_util::win_minmax::Minmax;
-use doro_util::{datetime, default_logger, if_else};
-use fnv::FnvHashMap;
-use futures::future::BoxFuture;
 use std::cmp::max;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -36,11 +31,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
+
+use doro_util::win_minmax::Minmax;
+use doro_util::{datetime, default_logger, if_else};
+use fnv::FnvHashMap;
+use futures::future::BoxFuture;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tracing::{Level, info};
+
+use crate::BBRState::{Drain, ProbeBW, ProbeRtprop, Startup};
 
 default_logger!(Level::DEBUG);
 
@@ -234,9 +236,7 @@ where
 {
     /// 接收数据
     fn recv<'a>(
-        &'a self,
-        read: &'a mut OwnedReadHalf,
-        addr: &'a SocketAddr,
+        &'a self, read: &'a mut OwnedReadHalf, addr: &'a SocketAddr,
     ) -> BoxFuture<'a, Packet>;
 
     /// 处理数据
@@ -367,10 +367,7 @@ where
     K: Hash + Eq + 'static + Send,
 {
     pub fn new<ReadCallback, ReadPacket>(
-        stream: TcpStream,
-        bbr_callback: T,
-        block_size: u32,
-        read_callback: ReadCallback,
+        stream: TcpStream, bbr_callback: T, block_size: u32, read_callback: ReadCallback,
     ) -> Self
     where
         ReadCallback: BBRReadCallback<ReadPacket, K> + Send + 'static,
@@ -904,7 +901,12 @@ async fn main() {
 }
 
 pub mod rd {
-    use crate::{BBRReadCallback, LoadSendPackage, PacketId};
+    use std::net::SocketAddr;
+    use std::ops::{Deref, DerefMut};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
     use byteorder::{BigEndian, WriteBytesExt};
     use bytes::Bytes;
     use doro::base_peer::MsgType;
@@ -915,13 +917,10 @@ pub mod rd {
     use doro_util::net::FutureRet;
     use doro_util::option_ext::OptionExt;
     use futures::future::BoxFuture;
-    use std::net::SocketAddr;
-    use std::ops::{Deref, DerefMut};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{Duration, Instant};
     use tokio::net::tcp::OwnedReadHalf;
     use tracing::info;
+
+    use crate::{BBRReadCallback, LoadSendPackage, PacketId};
 
     pub struct ReqDataFactory {
         pub tick: Instant,
@@ -1033,9 +1032,7 @@ pub mod rd {
 
     impl BBRReadCallback<(MsgType, BytesWrapper), (u32, u32)> for Reader {
         fn recv<'a>(
-            &self,
-            read: &'a mut OwnedReadHalf,
-            addr: &'a SocketAddr,
+            &self, read: &'a mut OwnedReadHalf, addr: &'a SocketAddr,
         ) -> BoxFuture<'a, (MsgType, BytesWrapper)> {
             Box::pin(async move {
                 if let FutureRet::Ok(Normal(msg_type, data)) = PeerResp::new(read, addr).await {
@@ -1078,17 +1075,19 @@ pub mod rd {
 
 #[cfg(test)]
 mod tests {
-    use super::rd::*;
-    use crate::BBRCongestion;
-    use byteorder::{BigEndian, WriteBytesExt};
-    use doro_util::buffer::ByteBuffer;
-    use doro_util::datetime;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
+
+    use byteorder::{BigEndian, WriteBytesExt};
+    use doro_util::buffer::ByteBuffer;
+    use doro_util::datetime;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
     use tracing::info;
+
+    use super::rd::*;
+    use crate::BBRCongestion;
 
     #[ignore]
     #[tokio::test]

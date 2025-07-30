@@ -1,6 +1,7 @@
-use crate::db::ConnWrapper;
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
+
+use crate::db::ConnWrapper;
 
 #[derive(Default)]
 pub struct RSSEntity {

@@ -1,5 +1,6 @@
 use std::fs::{File as StdFile, OpenOptions as StdOpenOptions};
 use std::path::Path;
+
 use tokio::fs;
 use tokio::fs::{File, OpenOptions};
 
@@ -13,8 +14,7 @@ pub trait OpenOptionsExt {
 pub trait AsyncOpenOptionsExt {
     /// 打开文件，父目录不存在则创建
     fn open_with_parent_dirs<P: AsRef<Path>>(
-        &self,
-        path: P,
+        &self, path: P,
     ) -> impl Future<Output = std::io::Result<File>>;
 }
 

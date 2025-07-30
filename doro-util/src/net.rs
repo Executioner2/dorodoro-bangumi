@@ -1,10 +1,11 @@
-use bytes::{BufMut, Bytes, BytesMut};
 use core::fmt::Debug;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+
+use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tracing::debug;
 
@@ -89,16 +90,12 @@ pub trait AsyncReadExtExt: AsyncRead {
 
     /// 超时读取
     async fn read_buf_with_timeout<B: BufMut + ?Sized>(
-        &mut self,
-        buf: &mut B,
-        timeout: Duration,
+        &mut self, buf: &mut B, timeout: Duration,
     ) -> io::Result<usize>;
 
     /// 超时读取指定的长度
     async fn read_exact_with_timeout(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
+        &mut self, buf: &mut [u8], timeout: Duration,
     ) -> io::Result<usize>;
 
     /// 判断是否有数据可读
@@ -115,9 +112,7 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
     }
 
     async fn read_buf_with_timeout<B: BufMut + ?Sized>(
-        &mut self,
-        buf: &mut B,
-        timeout: Duration,
+        &mut self, buf: &mut B, timeout: Duration,
     ) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read_buf(buf)).await {
             Ok(Ok(size)) => Ok(size),
@@ -127,9 +122,7 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
     }
 
     async fn read_exact_with_timeout(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
+        &mut self, buf: &mut [u8], timeout: Duration,
     ) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read_exact(buf)).await {
             Ok(Ok(size)) => Ok(size),
@@ -149,17 +142,13 @@ impl<T: AsyncRead + Unpin> AsyncReadExtExt for T {
 pub trait TcpStreamExt {
     /// 超时读取指定的长度，并清空缓冲区
     async fn read_extra_with_timeout(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
+        &mut self, buf: &mut [u8], timeout: Duration,
     ) -> io::Result<usize>;
 }
 
 impl TcpStreamExt for tokio::net::TcpStream {
     async fn read_extra_with_timeout(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
+        &mut self, buf: &mut [u8], timeout: Duration,
     ) -> io::Result<usize> {
         match tokio::time::timeout(timeout, self.read_exact(buf)).await {
             Ok(Ok(_)) => {

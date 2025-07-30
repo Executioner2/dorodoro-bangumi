@@ -1,9 +1,10 @@
-use crate::register_route;
-use crate::router::ret::Ret;
 use anyhow::Result;
 use doro_macro::route;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
+
+use crate::register_route;
+use crate::router::ret::Ret;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct Info {
@@ -38,9 +39,7 @@ async fn fun1() -> Result<Ret<R>> {
 
 #[route(code = 2)]
 async fn fun2(
-    #[param] magent: String,
-    #[param] name: String,
-    #[body] info: Info,
+    #[param] magent: String, #[param] name: String, #[body] info: Info,
 ) -> Result<Ret<R>> {
     info!("magent: {}, name: {}\tinfo: {:#?}", magent, name, info);
     Ok(Ret::ok(R { code: 2 }))

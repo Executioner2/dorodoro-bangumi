@@ -1,15 +1,17 @@
-use crate::protocol;
-use crate::protocol::{Identifier, PROTOCOL_SIZE, Protocol};
-use bytes::Bytes;
-use doro_util::net::{FutureRet, ReaderHandle};
-use doro_util::pin_poll;
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
+
+use bytes::Bytes;
+use doro_util::net::{FutureRet, ReaderHandle};
+use doro_util::pin_poll;
 use tokio::net::TcpStream;
 use tracing::warn;
+
+use crate::protocol;
+use crate::protocol::{Identifier, PROTOCOL_SIZE, Protocol};
 
 pub struct Accept<'a> {
     reader_handle: ReaderHandle<'a, TcpStream>,

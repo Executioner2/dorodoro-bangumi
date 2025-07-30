@@ -36,7 +36,8 @@
 #[cfg(test)]
 mod tests;
 
-use crate::bt::socket::{Crypto, TcpStreamWrapper};
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use bytes::BytesMut;
 use doro_util::buffer::ByteBuffer;
@@ -50,10 +51,11 @@ use rc4::cipher::StreamCipherCoreWrapper;
 use rc4::consts::*;
 use rc4::{KeyInit, Rc4, Rc4Core, StreamCipher};
 use sha1::{Digest, Sha1};
-use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::debug;
+
+use crate::bt::socket::{Crypto, TcpStreamWrapper};
 
 lazy_static! {
     static ref PRIME: BigUint = BigUint::from_str_radix("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63A36210000000000090563", 16).unwrap();
@@ -191,12 +193,7 @@ fn hash(data: &[&[u8]]) -> Vec<u8> {
 
 /// 构造第三步，A->B 的握手包
 fn encrypt_a2b_handshake_packet(
-    rc4: &mut Rc4Cipher,
-    s: &BigUint,
-    skey: &[u8],
-    vc: &[u8],
-    crypto_provide: u32,
-    pad_c: &[u8],
+    rc4: &mut Rc4Cipher, s: &BigUint, skey: &[u8], vc: &[u8], crypto_provide: u32, pad_c: &[u8],
     ia: &mut [u8],
 ) -> Vec<u8> {
     let s_bytes = s.to_bytes_be();
@@ -236,9 +233,7 @@ fn encrypt_a2b_handshake_packet(
 
 /// 解密第四步，B->A 的握手包
 async fn decrypt_b2a_handshake_packet(
-    socket: &mut TcpStream,
-    remote_cipher: &mut Rc4Cipher,
-    recv: &mut BytesMut,
+    socket: &mut TcpStream, remote_cipher: &mut Rc4Cipher, recv: &mut BytesMut,
 ) -> Result<(CryptoProvide, usize)> {
     // 解析出 VC
     let mut pos = 0usize;
@@ -337,9 +332,7 @@ pub fn decrypt_payload(remote_cipher: &mut Rc4Cipher, payload: &mut [u8]) {
 ///
 /// returns: 正常情况返回 TcpStreamWrapper，包含密钥，实现读取和写入的加解密封装
 pub async fn init_handshake(
-    mut socket: TcpStream,
-    info_hash: &[u8],
-    cp: CryptoProvide,
+    mut socket: TcpStream, info_hash: &[u8], cp: CryptoProvide,
 ) -> Result<TcpStreamWrapper> {
     debug!("进行 pe crypto 握手");
     if cp == CryptoProvide::Plaintext {

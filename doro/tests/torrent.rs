@@ -1,5 +1,8 @@
 //! 种子文件解析下载测试
 
+use std::fs;
+use std::net::UdpSocket;
+
 use bendy::decoding::FromBencode;
 use byteorder::{BigEndian, WriteBytesExt};
 use doro::torrent::{Parse, Torrent};
@@ -8,8 +11,6 @@ use doro_util::bytes_util::Bytes2Int;
 use doro_util::default_logger;
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use rand::Rng;
-use std::fs;
-use std::net::UdpSocket;
 use tracing::{Level, debug};
 
 default_logger!(Level::DEBUG);

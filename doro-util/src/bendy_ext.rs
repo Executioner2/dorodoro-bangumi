@@ -1,7 +1,8 @@
-use bendy::decoding::{Error, FromBencode, Object};
-use bendy::encoding::{SingleItemEncoder, ToBencode};
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
+
+use bendy::decoding::{Error, FromBencode, Object};
+use bendy::encoding::{SingleItemEncoder, ToBencode};
 
 /// bytes 转为具体对象
 pub trait Bytes2Object<T> {

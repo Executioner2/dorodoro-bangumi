@@ -63,9 +63,10 @@
 //! 其中 `#[param]` 直接从 json 数据结构中取得相同 key 名的值。除非指定为 Option 类型，否则 json 数据
 //! 结构中必须存在对应 key 名的值。`#[body]` 则从 json 数据结构中取得整个结构体的值。两者可以混合使用。
 //! 默认为 `#[body]`，因此可以省略。
+use std::mem;
+
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
-use std::mem;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{Expr, ExprLit, FnArg, Meta, Result, Token, parse_macro_input, parse_quote};
@@ -186,8 +187,7 @@ fn replace_fn_args(
 }
 
 fn implant_json_params_map(
-    stmts: Vec<syn::Stmt>,
-    inputs: &Option<Punctuated<FnArg, Token![,]>>,
+    stmts: Vec<syn::Stmt>, inputs: &Option<Punctuated<FnArg, Token![,]>>,
 ) -> Result<Vec<syn::Stmt>> {
     if inputs.is_none() {
         return Ok(stmts);
@@ -245,8 +245,7 @@ fn implant_json_params_map(
 }
 
 fn regsiter_route(
-    attrs: &Attributes,
-    item_fn: &mut syn::ItemFn,
+    attrs: &Attributes, item_fn: &mut syn::ItemFn,
 ) -> Result<proc_macro2::TokenStream> {
     // 异步检查，只支持异步函数
     if item_fn.sig.asyncness.is_none() {
@@ -273,9 +272,7 @@ fn regsiter_route(
 }
 
 fn generate_registration(
-    code: u32,
-    fn_ident: &syn::Ident,
-    has_args: bool,
+    code: u32, fn_ident: &syn::Ident, has_args: bool,
 ) -> proc_macro2::TokenStream {
     // 这个 span 不知道选哪个位置好，先选 macro 自身的位置
     let register_fn = syn::Ident::new(

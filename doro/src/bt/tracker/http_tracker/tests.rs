@@ -1,10 +1,12 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
+use tracing::info;
+
 use crate::task_manager::PeerId;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::{AnnounceInfo, Event};
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use tracing::info;
 
 /// HTTP tracker 握手测试
 #[tokio::test]

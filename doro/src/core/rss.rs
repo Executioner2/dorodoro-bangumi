@@ -6,19 +6,21 @@
 //! 5. 自动对更新资源进行下载
 //! 6. 自定义过滤规则，过滤掉不必要的资源（item）
 
-use crate::api::task_api::{Task, TorrentSource};
-use crate::context::Context;
-use crate::mapper::rss::{RSSEntity, RSSMapper};
-use crate::task_service;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use doro_util::datetime;
 use rss::Channel;
 use sha1::{Digest, Sha1};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::error;
+
+use crate::api::task_api::{Task, TorrentSource};
+use crate::context::Context;
+use crate::mapper::rss::{RSSEntity, RSSMapper};
+use crate::task_service;
 
 /// HTTP 请求超时时间
 pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -113,7 +115,7 @@ pub async fn flush_all_feeds() -> Result<()> {
     let last_update = datetime::now_secs() - REFRESH_INTERVAL.as_secs();
     let rss_entities = conn.list_subscribe_not_update(last_update)?;
     let hash_semaphore = Arc::new(Semaphore::new(
-        Context::global().get_config().rss_refresh_concurrency(),
+        Context::get_config().rss_refresh_concurrency(),
     ));
     let mut handles = Vec::with_capacity(rss_entities.len());
 

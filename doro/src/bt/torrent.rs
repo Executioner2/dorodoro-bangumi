@@ -3,6 +3,11 @@
 #[cfg(test)]
 mod tests;
 
+use std::fs;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow};
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use bendy::encoding::AsString;
@@ -10,10 +15,6 @@ use bincode::{Decode, Encode};
 use bytes::Bytes;
 use doro_util::if_else;
 use sha1::{Digest, Sha1};
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tracing::warn;
 
 /// 种子，多线程共享
@@ -184,13 +185,8 @@ pub struct Info {
 
 impl Info {
     fn new(
-        name: String,
-        length: u64,
-        piece_length: u64,
-        pieces: Vec<u8>,
-        mut files: Vec<File>,
-        md5sum: Option<String>,
-        private: Option<u8>,
+        name: String, length: u64, piece_length: u64, pieces: Vec<u8>, mut files: Vec<File>,
+        md5sum: Option<String>, private: Option<u8>,
     ) -> Self {
         let file_piece = Self::calculate_file_piece(&mut files, piece_length);
         Self {
@@ -221,11 +217,7 @@ impl Info {
     }
 
     fn find_file_of_piece_index(
-        &self,
-        path_buf: &Path,
-        piece_index: u32,
-        offset: u32,
-        len: usize,
+        &self, path_buf: &Path, piece_index: u32, offset: u32, len: usize,
     ) -> Vec<BlockInfo> {
         if self.file_piece.is_empty() {
             return vec![BlockInfo {

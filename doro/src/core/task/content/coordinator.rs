@@ -1,16 +1,17 @@
-use crate::base_peer::error::PeerExitReason;
-use crate::base_peer::rate_control::RateControl;
-use crate::task::content::PeerInfo;
-use async_trait::async_trait;
-use doro_util::collection::FixedQueue;
-use doro_util::global::Id;
-use doro_util::sync::MutexExt;
+use std::net::SocketAddr;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use async_trait::async_trait;
+use doro_util::collection::FixedQueue;
+use doro_util::global::Id;
+use doro_util::sync::MutexExt;
 use tokio::time::Instant;
 use tracing::{debug, info, trace};
+
+use crate::base_peer::error::PeerExitReason;
 
 pub const SCALE: u8 = 8;
 pub const UNIT: u32 = 1 << SCALE;
@@ -21,13 +22,25 @@ pub const ALLOC_CNT_THRESH: u32 = 10;
 /// 宽带增益门限，如果临时 peer 的带宽超过这个增益，才将其升级为 lt peer
 pub const BW_GAIN_THRESH: u32 = UNIT * 5 / 4;
 
+pub struct PeerSpeed {
+    id: Id,
+    addr: SocketAddr,
+    bw: u64,
+}
+
+impl PeerSpeed {
+    pub fn new(id: Id, addr: SocketAddr, bw: u64) -> Self {
+        Self { id, addr, bw }
+    }
+}
+
 #[async_trait]
 pub trait PeerSwitch {
     /// 升级为 lt peer
-    fn upgrage_lt_peer(&self, id: Id);
+    fn upgrage_lt_peer(&self, id: Id) -> Option<()>;
 
     /// 替换 peer
-    async fn replace_peer(&self, old_id: Id, new_id: Id);
+    async fn replace_peer(&self, old_id: Id, new_id: Id) -> Option<()>;
 
     /// 通知 peer 停止
     async fn notify_peer_stop(&self, id: Id, reason: PeerExitReason);
@@ -36,10 +49,10 @@ pub trait PeerSwitch {
     async fn start_temp_peer(&self);
 
     /// 找到最慢的 lt peer
-    fn find_slowest_lt_peer(&self) -> Option<&PeerInfo>;
+    fn find_slowest_lt_peer(&self) -> Option<PeerSpeed>;
 
     /// 找到最快的 temp peer
-    fn find_fastest_temp_peer(&self) -> Option<&PeerInfo>;
+    fn find_fastest_temp_peer(&self) -> Option<PeerSpeed>;
 
     /// 拿走累计的 peer 传输速度
     fn take_peer_transfer_speed(&self) -> u64;
@@ -99,11 +112,6 @@ impl<T: PeerSwitch> Coordinator<T> {
     }
 
     fn speed_rate_statistics(&mut self) {
-        // let mut speed: u64 = 0;
-        // self.switch.peer_transfer_speed.retain(|_, read_size| {
-        //     speed += *read_size;
-        //     false
-        // });
         let speed = self.switch.take_peer_transfer_speed();
         self.speed_window
             .lock_pe()
@@ -111,9 +119,7 @@ impl<T: PeerSwitch> Coordinator<T> {
             .map(|head| self.speed_sum.fetch_sub(head, Ordering::Relaxed));
         let speed = self.speed_sum.fetch_add(speed, Ordering::Relaxed) + speed;
         let download = self.switch.download_length();
-        // let download = self.ctx.download.load(Ordering::Relaxed);
         let len = self.speed_window.lock_pe().len();
-        // let file_size = self.ctx.torrent.info.length;
         let file_length = self.switch.file_length();
         trace!(
             "下载速度: {:.2} MiB/s\t当前进度: {:.2}%",
@@ -129,17 +135,17 @@ impl<T: PeerSwitch> Coordinator<T> {
 
         if ftp.is_none() {
             // 没有 lt peer 了，那么直接把当前这个临时 peer 升级为 lt peer
-            self.switch.upgrage_lt_peer(stp?.id);
-            debug!("将临时 peer 升级为 lt peer，addr: {}", stp?.addr);
-        } else if faster(stp?.dashbord.bw(), ftp?.dashbord.bw()) {
+            self.switch.upgrage_lt_peer(stp.as_ref()?.id)?;
+            debug!("将临时 peer 升级为 lt peer，addr: {}", stp.as_ref()?.addr);
+        } else if faster(stp.as_ref()?.bw, ftp.as_ref()?.bw) {
             // 替换 peer
-            self.switch.replace_peer(ftp?.id, stp?.id).await;
-            debug!("将 {} 替换为 lt peer，停止 {}", ftp?.addr, stp?.addr);
+            self.switch.replace_peer(ftp.as_ref()?.id, stp.as_ref()?.id).await?;
+            debug!("将 {} 替换为 lt peer，停止 {}", ftp.as_ref()?.addr, stp.as_ref()?.addr);
         } else {
             // 关闭临时 peer
             let cmd = PeerExitReason::PeriodicPeerReplace;
-            self.switch.notify_peer_stop(stp?.id, cmd).await;
-            debug!("关闭临时 peer，addr: {}", stp?.addr);
+            self.switch.notify_peer_stop(stp.as_ref()?.id, cmd).await;
+            debug!("关闭临时 peer，addr: {}", stp.as_ref()?.addr);
         }
 
         Some(())
@@ -156,11 +162,6 @@ impl<T: PeerSwitch> Coordinator<T> {
         } else if self.switch.is_peer_limit() {
             return;
         }
-        // } else if self.ctx.peers.len() > Context::global().get_config().torrent_peer_conn_limit()
-        //     || self.ctx.wait_queue.lock_pe().is_empty()
-        // {
-        //     return;
-        // }
 
         self.alloc_cnt.store(0, Ordering::Relaxed);
 

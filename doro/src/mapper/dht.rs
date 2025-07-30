@@ -1,9 +1,10 @@
-use crate::db::ConnWrapper;
-use crate::dht::routing::{NodeId, RoutingTable};
 use anyhow::Result;
 use doro_util::bytes_util;
 use lazy_static::lazy_static;
 use rusqlite::OptionalExtension;
+
+use crate::db::ConnWrapper;
+use crate::dht::routing::{NodeId, RoutingTable};
 
 lazy_static! {
     pub static ref DEFAULT_BOOTSTRAP_NODES: Vec<String> = vec![

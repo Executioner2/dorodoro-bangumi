@@ -1,3 +1,12 @@
+use std::net::SocketAddr;
+
+use anyhow::anyhow;
+use doro_util::global::Id;
+use doro_util::is_disconnect;
+use doro_util::net::FutureRet;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tracing::{debug, trace};
+
 use super::command::{Exit, PeerTransfer};
 use super::peer_resp::PeerResp;
 use super::peer_resp::RespType::*;
@@ -6,13 +15,6 @@ use super::{MsgType, command};
 use crate::base_peer::error::{PeerExitReason, exception};
 use crate::bt::socket::{OwnedReadHalfExt, OwnedWriteHalfExt};
 use crate::emitter::transfer::TransferPtr;
-use anyhow::anyhow;
-use doro_util::global::Id;
-use doro_util::is_disconnect;
-use doro_util::net::FutureRet;
-use std::net::SocketAddr;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{debug, trace};
 
 pub struct WriteFuture {
     pub(super) id: Id,

@@ -1,6 +1,10 @@
-use crate::base_peer::peer_resp::PeerResp;
-use crate::base_peer::peer_resp::RespType::*;
-use crate::bt::base_peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
+use std::io::{IoSlice, IoSliceMut};
+use std::os::fd::{AsRawFd, RawFd};
+use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -13,20 +17,17 @@ use doro_util::timer::CountdownTimer;
 use libc::socklen_t;
 use nix::sys::socket;
 use nix::sys::socket::{
-    AddressFamily, CmsgIterator, ControlMessageOwned, MsgFlags, SockFlag, SockType, SockaddrIn,
-    SockaddrStorage, socket, sockopt,
+    AddressFamily, CmsgIterator, ControlMessageOwned, MsgFlags, SockFlag, SockType, SockaddrIn, SockaddrStorage, socket, sockopt
 };
 use nix::sys::time::TimeVal;
-use std::io::{IoSlice, IoSliceMut};
-use std::os::fd::{AsRawFd, RawFd};
-use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Sender, channel};
 use tracing::{Level, error, info};
+
+use crate::base_peer::peer_resp::PeerResp;
+use crate::base_peer::peer_resp::RespType::*;
+use crate::bt::base_peer::rate_control::bbr::{BBRRateControl, TcpConnectionInfo, Throttle};
 
 const BLOCK_SIZE: u32 = 1 << 14;
 const MSS: u32 = 17;
@@ -65,11 +66,8 @@ async fn test_net_rate() {
 
 /// 匀速发送数据
 async fn uniform_send_data(
-    write: &mut OwnedWriteHalf,
-    throttle: &Throttle,
-    ct: &mut CountdownTimer,
-    _inflight: &Arc<DashMap<(u32, u32), Instant>>,
-    idx: &mut Idx,
+    write: &mut OwnedWriteHalf, throttle: &Throttle, ct: &mut CountdownTimer,
+    _inflight: &Arc<DashMap<(u32, u32), Instant>>, idx: &mut Idx,
 ) -> CountdownTimer {
     let mut pst = ct.clone();
     while throttle.inflight() < throttle.cwnd() {
@@ -107,18 +105,14 @@ async fn send_data(write: &mut OwnedWriteHalf, piece_idx: u32, block_offset: u32
 
 /// 异步读取
 fn async_read(
-    read: OwnedReadHalf,
-    tx: Sender<u32>,
-    rc: BBRRateControl,
+    read: OwnedReadHalf, tx: Sender<u32>, rc: BBRRateControl,
     inflight: Arc<DashMap<(u32, u32), Instant>>,
 ) {
     tokio::spawn(do_async_read(read, tx, rc, inflight));
 }
 
 async fn do_async_read(
-    mut read: OwnedReadHalf,
-    tx: Sender<u32>,
-    mut rc: BBRRateControl,
+    mut read: OwnedReadHalf, tx: Sender<u32>, mut rc: BBRRateControl,
     _inflight: Arc<DashMap<(u32, u32), Instant>>,
 ) {
     let fd = read.as_ref().as_raw_fd();
@@ -197,9 +191,7 @@ async fn test_normal_net_rate() {
 }
 
 async fn request_block(
-    write: &mut OwnedWriteHalf,
-    current_n: &Arc<AtomicU64>,
-    inflight: &Arc<AtomicU64>,
+    write: &mut OwnedWriteHalf, current_n: &Arc<AtomicU64>, inflight: &Arc<AtomicU64>,
 ) {
     while current_n.load(Ordering::Relaxed) > inflight.load(Ordering::Relaxed) {
         inflight.fetch_add(1, Ordering::Relaxed);
@@ -209,17 +201,13 @@ async fn request_block(
 
 /// 定时更新窗口大小
 fn tick_update_cwnd(
-    inflight: Arc<AtomicU64>,
-    read_size: Arc<AtomicU64>,
-    current_n: Arc<AtomicU64>,
+    inflight: Arc<AtomicU64>, read_size: Arc<AtomicU64>, current_n: Arc<AtomicU64>,
 ) {
     tokio::spawn(do_tick_update_cwnd(inflight, read_size, current_n));
 }
 
 async fn do_tick_update_cwnd(
-    _inflight: Arc<AtomicU64>,
-    read_size: Arc<AtomicU64>,
-    current_n: Arc<AtomicU64>,
+    _inflight: Arc<AtomicU64>, read_size: Arc<AtomicU64>, current_n: Arc<AtomicU64>,
 ) {
     let start = tokio::time::Instant::now() + Duration::from_secs(1);
     let mut tick = tokio::time::interval_at(start, Duration::from_secs(1));
@@ -269,19 +257,13 @@ fn update(measured_rate: u64, previous_rate: u64, current_n: &Arc<AtomicU64>) ->
 
 /// 异步读取数据
 fn normal_async_read(
-    read: OwnedReadHalf,
-    inflight: Arc<AtomicU64>,
-    read_size: Arc<AtomicU64>,
-    tx: Sender<u64>,
+    read: OwnedReadHalf, inflight: Arc<AtomicU64>, read_size: Arc<AtomicU64>, tx: Sender<u64>,
 ) {
     tokio::spawn(do_normal_async_read(read, inflight, read_size, tx));
 }
 
 async fn do_normal_async_read(
-    mut read: OwnedReadHalf,
-    inflight: Arc<AtomicU64>,
-    read_size: Arc<AtomicU64>,
-    tx: Sender<u64>,
+    mut read: OwnedReadHalf, inflight: Arc<AtomicU64>, read_size: Arc<AtomicU64>, tx: Sender<u64>,
 ) {
     let addr = read.peer_addr().unwrap();
     let mut bt_resp = PeerResp::new(&mut read, &addr);

@@ -1,10 +1,12 @@
-use crate::core::db::Db;
-use crate::torrent::{Parse, Torrent};
-use anyhow::Result;
-use bincode::config;
 use std::sync::Arc;
 use std::time::Duration;
+
+use anyhow::Result;
+use bincode::config;
 use tracing::{error, info};
+
+use crate::core::db::Db;
+use crate::torrent::{Parse, Torrent};
 
 static INIT_SQL: &str = r#"
 CREATE TABLE "torrent" (

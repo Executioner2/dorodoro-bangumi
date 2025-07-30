@@ -1,3 +1,5 @@
+use tracing::{info, trace};
+
 use crate::config::DATABASE_CONN_LIMIT;
 use crate::core::config::Config;
 use crate::core::context::Context;
@@ -9,7 +11,6 @@ use crate::db::Db;
 use crate::dht::DHT;
 use crate::dht::routing::{NodeId, RoutingTable};
 use crate::mapper;
-use tracing::{info, trace};
 
 #[rustfmt::skip]
 pub async fn start() {

@@ -1,15 +1,15 @@
-use dashmap::DashMap;
-use doro_util::buffer::ByteBuffer;
-use doro_util::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
-use memmap2::MmapMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
+
+use dashmap::DashMap;
+use doro_util::buffer::ByteBuffer;
+use doro_util::fs::{AsyncOpenOptionsExt, OpenOptionsExt};
+use memmap2::MmapMut;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{
-    AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
-    SeekFrom,
+    AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, SeekFrom
 };
 use tokio::time::Duration;
 use tracing::info;
@@ -35,9 +35,7 @@ impl InstrumentedFile {
 
 impl AsyncWrite for InstrumentedFile {
     fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
+        mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
         let pinned_inner = Pin::new(&mut self.inner);
         let result = pinned_inner.poll_write(cx, buf);
@@ -48,15 +46,13 @@ impl AsyncWrite for InstrumentedFile {
     }
 
     fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        mut self: Pin<&mut Self>, cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        mut self: Pin<&mut Self>, cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }

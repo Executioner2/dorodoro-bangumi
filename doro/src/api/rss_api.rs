@@ -1,8 +1,9 @@
-use crate::router::ret::Ret;
-use crate::{register_route, rss_service};
 use anyhow::Result;
 use doro_macro::route;
 use serde::{Deserialize, Serialize};
+
+use crate::router::ret::Ret;
+use crate::{register_route, rss_service};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RSSFeed {

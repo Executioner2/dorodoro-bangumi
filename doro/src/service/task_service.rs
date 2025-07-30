@@ -1,3 +1,10 @@
+use std::path::PathBuf;
+
+use anyhow::{Result, anyhow};
+use doro_util::global::GlobalId;
+use doro_util::hash::SHA1_ENCODEN_LEN;
+use doro_util::if_else;
+
 use crate::api::task_api::{File, Task, TorrentRet, TorrentSource};
 use crate::context::Context;
 use crate::mapper::rss::RSSMapper;
@@ -6,11 +13,6 @@ use crate::rss::HTTP_REQUEST_TIMEOUT;
 use crate::task::content::DownloadContent;
 use crate::task_manager::TaskManager;
 use crate::torrent::{Parse, Torrent, TorrentArc};
-use anyhow::{Result, anyhow};
-use doro_util::global::GlobalId;
-use doro_util::hash::SHA1_ENCODEN_LEN;
-use doro_util::if_else;
-use std::path::PathBuf;
 
 /// 解析种子链接
 pub fn parse_torrent_link(link: &str) -> Result<TorrentRet> {
@@ -102,8 +104,7 @@ pub async fn add_task(task: Task) -> Result<bool> {
     let ret = {
         let mut conn = Context::global().get_conn().await?;
         let save_path = task.download_path.map(PathBuf::from).unwrap_or(
-            Context::global()
-                .get_config()
+            Context::get_config()
                 .default_download_dir()
                 .clone(),
         );

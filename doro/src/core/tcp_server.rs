@@ -1,3 +1,19 @@
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow};
+use dashmap::DashMap;
+use doro_util::global::{GlobalId, Id};
+use doro_util::net::FutureRet;
+use doro_util::sync::wait_join_handle_close;
+use futures::stream::FuturesUnordered;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::select;
+use tokio::task::JoinHandle;
+use tokio_util::sync::WaitForCancellationFuture;
+use tracing::{error, info, trace, warn};
+
 use crate::control::ControlStatus;
 use crate::core::context::Context;
 use crate::core::control::Dispatcher;
@@ -9,20 +25,6 @@ use crate::emitter::transfer::TransferPtr;
 use crate::protocol::remote_control;
 use crate::protocol::remote_control::HandshakeParse;
 use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, RunContext};
-use anyhow::{Result, anyhow};
-use dashmap::DashMap;
-use doro_util::global::{GlobalId, Id};
-use doro_util::net::FutureRet;
-use doro_util::sync::wait_join_handle_close;
-use futures::stream::FuturesUnordered;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::select;
-use tokio::task::JoinHandle;
-use tokio_util::sync::WaitForCancellationFuture;
-use tracing::{error, info, trace, warn};
 
 mod future;
 
@@ -55,7 +57,7 @@ pub struct TcpServer {
 
 impl TcpServer {
     pub fn new() -> Self {
-        let addr = Context::global().get_config().tcp_server_addr();
+        let addr = Context::get_config().tcp_server_addr();
         TcpServer {
             addr,
             listener: None,
@@ -110,7 +112,7 @@ impl TcpServer {
                 match HandshakeParse::new(&mut socket, &addr).await {
                     #[rustfmt::skip]
                     FutureRet::Ok(auth_info) => {
-                        let client_auth = Context::global().get_config().client_auth();
+                        let client_auth = Context::get_config().client_auth();
                         if let Err(e) = remote_control::auth_verify(client_auth, &auth_info) {
                             remote_control::send_handshake_failed(
                                 &mut socket,

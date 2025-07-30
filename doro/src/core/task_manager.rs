@@ -1,16 +1,19 @@
+use std::sync::{Arc, Mutex, OnceLock};
+
+use anyhow::Result;
+use async_trait::async_trait;
+use dashmap::DashMap;
+use doro_util::global::{GlobalId, Id};
+use doro_util::sync::MutexExt;
+use tokio::task::JoinSet;
+use tracing::{error, info};
+
 use crate::context::Context;
 use crate::mapper::torrent::{TorrentMapper, TorrentStatus};
 use crate::rss;
 use crate::store::Store;
-use crate::task::Task;
+use crate::task::{Async, Task, TaskCallback};
 use crate::task::content::DownloadContent;
-use anyhow::Result;
-use dashmap::DashMap;
-use doro_util::global::{GlobalId, Id};
-use doro_util::sync::MutexExt;
-use std::sync::{Arc, Mutex, OnceLock};
-use tokio::task::JoinSet;
-use tracing::{error, info};
 
 static TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
 
@@ -33,7 +36,10 @@ impl PeerId {
 
 pub struct TaskManager {
     /// 执行的任务
-    tasks: Arc<DashMap<Id, Box<dyn Task + Send + Sync + 'static>>>,
+    tasks: Arc<DashMap<Id, Box<dyn Task>>>,
+
+    /// 任务回调
+    callback: TaskManagerCallback,
 
     /// 异步任务（这个被销毁时，会自动中断里面的任务，因此不必特意执行 shutdown）
     /// 如果要手动执行 shutdown，需要将 Mutex 换成 tokio::sync::Mutex。
@@ -42,9 +48,14 @@ pub struct TaskManager {
 
 impl TaskManager {
     pub async fn init() {
-        let task_manager = TASK_MANAGER.get_or_init(|| TaskManager {
-            tasks: Arc::new(DashMap::new()),
-            handles: Arc::new(Mutex::new(JoinSet::new())),
+        let task_manager = TASK_MANAGER.get_or_init(|| {
+            let tasks = Arc::new(DashMap::new());
+            let callback = TaskManagerCallback { tasks: tasks.clone() };
+            TaskManager {
+                tasks,
+                callback,
+                handles: Arc::new(Mutex::new(JoinSet::new())),
+            }
         });
         task_manager.init_handle().await;
     }
@@ -94,6 +105,7 @@ impl TaskManager {
 
     /// 处理任务
     pub async fn handle_task(&self, task: Box<dyn Task>) -> Result<()> {
+        task.set_callback(Box::new(self.callback.clone()));
         task.start().await?;
         self.tasks.insert(task.get_id(), task);
         Ok(())
@@ -102,9 +114,7 @@ impl TaskManager {
     /// 关闭 dorodoro-bangumi
     pub async fn shutdown(&self) {
         for task in self.tasks.iter_mut() {
-            if let Err(e) = task.shutdown().await {
-                error!("关闭任务失败：{:#?}", e);
-            }
+            task.shutdown().await;
         }
 
         match Store::global().flush_all() {
@@ -116,5 +126,35 @@ impl TaskManager {
         if !Context::global().is_cancelled() {
             Context::global().cancel();
         }
+    }
+}
+
+#[derive(Clone)]
+struct TaskManagerCallback {
+    /// 执行的任务
+    tasks: Arc<DashMap<Id, Box<dyn Task>>>,
+}
+
+#[async_trait]
+impl TaskCallback for TaskManagerCallback {
+    /// 任务完成
+    fn finish(&self, id: Id) -> Async<()> {
+        let task = self.tasks.remove(&id);
+        Box::pin(async move {
+            if let Some((_, task)) = task {
+                task.shutdown().await;
+            }
+        })
+    }
+
+    /// 任务错误
+    fn error(&self, id: Id, error: anyhow::Error) -> Async<()> {
+        let task = self.tasks.remove(&id);
+        error!("任务 {id} 出错：{error:#?}", id = id, error = error);
+        Box::pin(async move {
+            if let Some((_, task)) = task {
+                task.shutdown().await;
+            }
+        })
     }
 }

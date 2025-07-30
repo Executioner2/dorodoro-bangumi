@@ -1,8 +1,9 @@
-use crate::config::Config;
-use crate::db::ConnWrapper;
 use anyhow::Result;
 use doro_util::bytes_util;
 use rusqlite::OptionalExtension;
+
+use crate::config::Config;
+use crate::db::ConnWrapper;
 
 #[derive(Default)]
 pub struct ContextEntity {

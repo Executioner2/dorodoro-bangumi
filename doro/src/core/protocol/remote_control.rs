@@ -9,21 +9,23 @@
 //!     <protocol_len:u8><protocol_name:bytes><status:u32>[length:u32][error_msg:bytes]
 //!
 
-use crate::config::ClientAuth;
-use crate::control::{ControlStatus, LENGTH_SIZE, STATUS_SIZE};
-use crate::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
+use std::io;
+use std::io::ErrorKind;
+use std::net::SocketAddr;
+use std::pin::{Pin, pin};
+use std::task::{Context, Poll};
+
 use anyhow::{Result, anyhow};
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;
 use doro_util::bytes_util::Bytes2Int;
 use doro_util::net::{FutureRet, ReaderHandle};
 use doro_util::pin_poll;
-use std::io;
-use std::io::ErrorKind;
-use std::net::SocketAddr;
-use std::pin::{Pin, pin};
-use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+
+use crate::config::ClientAuth;
+use crate::control::{ControlStatus, LENGTH_SIZE, STATUS_SIZE};
+use crate::protocol::{PROTOCOL_SIZE, REMOTE_CONTROL_PROTOCOL};
 
 #[derive(Debug)]
 pub struct AuthInfo {
@@ -127,9 +129,7 @@ pub async fn send_handshake_success<T: AsyncWrite + Unpin>(send: &mut T) -> Resu
 }
 
 pub async fn send_handshake_failed<T: AsyncWrite + Unpin>(
-    send: &mut T,
-    status: ControlStatus,
-    error_msg: String,
+    send: &mut T, status: ControlStatus, error_msg: String,
 ) -> Result<()> {
     let mut buf = Vec::with_capacity(
         PROTOCOL_SIZE + REMOTE_CONTROL_PROTOCOL.len() + STATUS_SIZE + LENGTH_SIZE + error_msg.len(),

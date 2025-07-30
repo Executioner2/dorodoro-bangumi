@@ -7,6 +7,23 @@
 //!
 //! 长度的需要加上消息类型的 1 字节。
 
+use std::mem;
+use std::net::SocketAddr;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use anyhow::{Error, Result, anyhow};
+use bytes::BytesMut;
+use doro_util::anyhow_eq;
+use doro_util::bytes_util::WriteBytesBigEndian;
+use doro_util::global::Id;
+use doro_util::sync::MutexExt;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::task::JoinSet;
+use tracing::trace;
+
 use crate::base_peer::listener::{ReadFuture, WriteFuture};
 use crate::base_peer::rate_control::probe::{Dashbord, Probe};
 use crate::bt::pe_crypto::{self, CryptoProvide};
@@ -18,19 +35,6 @@ use crate::emitter::transfer::TransferPtr;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use crate::servant::Servant;
 use crate::task_manager::PeerId;
-use anyhow::{Error, Result, anyhow};
-use doro_util::anyhow_eq;
-use doro_util::bytes_util::WriteBytesBigEndian;
-use doro_util::global::Id;
-use doro_util::sync::MutexExt;
-use std::mem;
-use std::net::SocketAddr;
-use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex, OnceLock};
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::task::JoinSet;
-use tracing::trace;
 
 pub mod command;
 pub mod error;
@@ -220,7 +224,7 @@ pub struct BasePeerInner {
     servant: Arc<dyn Servant>,
 
     /// 异步任务句柄
-    handles: Mutex<JoinSet<()>>,
+    handles: Mutex<Option<JoinSet<()>>>,
 
     /// 下载速率仪表盘
     dashbord: Dashbord,
@@ -249,13 +253,13 @@ pub struct BasePeer(Arc<BasePeerInner>);
 
 impl BasePeer {
     pub fn new(id: Id, addr: SocketAddr, servant: Arc<impl Servant>, dashbord: Dashbord) -> Self {
-        let buf_limit = Context::global().get_config().buf_limit();
+        let buf_limit = Context::get_config().buf_limit();
         let (tx, rx) = channel(buf_limit);
         Self(Arc::new(BasePeerInner {
             id,
             addr,
             servant,
-            handles: Mutex::new(JoinSet::new()),
+            handles: Mutex::new(Some(JoinSet::new())),
             dashbord,
             writer: Writer::new(),
             opposite_peer_id: Mutex::new(None),
@@ -265,7 +269,7 @@ impl BasePeer {
 
     /// 连接对端 peer
     async fn connection(&self) -> Result<TcpStream> {
-        let timeout = Context::global().get_config().peer_connection_timeout();
+        let timeout = Context::get_config().peer_connection_timeout();
         match tokio::time::timeout(timeout, TcpStream::connect(self.addr)).await {
             Ok(Ok(socket)) => Ok(socket),
             Ok(Err(e)) => Err(anyhow!("连接对端 peer 失败\n{}", e)),
@@ -278,8 +282,8 @@ impl BasePeer {
     async fn crypto_handshake(&self, socket: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.id);
         pe_crypto::init_handshake(
-            socket, 
-            self.servant.info_hash(), 
+            socket,
+            self.servant.info_hash(),
             CryptoProvide::Rc4
         ).await
     }
@@ -317,33 +321,36 @@ impl BasePeer {
     }
 
     /// 启动套接字监听
+    #[rustfmt::skip]
     fn start_listener(&self, socket: TcpStreamWrapper) {
         let (reader, writer) = socket.into_split();
         let (send, recv) = channel(CHANNEL_BUFFER);
         let probe = Probe::new(self.dashbord.clone());
 
         // 异步写入
-        self.handles.lock_pe().spawn(Box::pin(
-            WriteFuture {
-                id: self.id,
-                writer,
-                peer_sender: self.channel.0.clone(),
-                recv,
-            }
-            .run(),
-        ));
+        self.handles.lock_pe().as_mut()
+            .unwrap().spawn(Box::pin(
+                WriteFuture {
+                    id: self.id,
+                    writer,
+                    peer_sender: self.channel.0.clone(),
+                    recv,
+                }
+                .run(),
+            ));
 
         // 异步读取
-        self.handles.lock_pe().spawn(Box::pin(
-            ReadFuture {
-                id: self.id,
-                reader,
-                addr: self.addr,
-                peer_sender: self.channel.0.clone(),
-                rc: probe,
-            }
-            .run(),
-        ));
+        self.handles.lock_pe().as_mut()
+            .unwrap().spawn(Box::pin(
+                ReadFuture {
+                    id: self.id,
+                    reader,
+                    addr: self.addr,
+                    peer_sender: self.channel.0.clone(),
+                    rc: probe,
+                }
+                .run(),
+            ));
 
         self.writer.set_sender(send);
     }
@@ -360,45 +367,131 @@ impl BasePeer {
         }
     }
 
+    #[rustfmt::skip]
     pub async fn async_run(self) -> Result<()> {
         let socket = self.connection().await?;
         let mut socket = self.crypto_handshake(socket).await?;
         self.protocol_handshake(&mut socket).await?;
-        self.servant
-            .servant_callback()
-            .on_handshake_success(self.id)
-            .await;
         self.start_listener(socket);
-
-        // self.bitfield().await?;
-        // self.interested().await?;
-
-        self.handles
-            .lock_pe()
-            .spawn(Box::pin(self.clone().persist_listen()));
-
-        let peer = Peer {
-            id: self.id,
-            writer: self.writer.clone(),
-        };
-        self.servant.add_peer(self.id, peer);
+        
+        let mut handles = self.handles.lock_pe().take().unwrap();
+        handles.spawn(Box::pin(self.clone().persist_listen()));
+        
+        let peer = Peer::new(
+            self.id, self.addr,
+            self.writer.clone(),
+            handles
+        );
+        self.servant.add_peer(self.id, peer).await;
 
         Ok(())
     }
 }
 
-/// 暴露给外部的 Peer 通信 socket 封装
-#[allow(dead_code)]
-pub struct Peer {
+pub struct PeerInner {
+    /// 编号
     id: Id,
+
+    /// 是否正在运行
+    runnable: AtomicBool,
+
+    /// 通信地址
+    addr: SocketAddr,
+
+    /// 写入通道
     writer: Writer,
+
+    /// 异步任务句柄
+    handles: Mutex<Option<JoinSet<()>>>,
 }
 
+impl Deref for Peer {
+    type Target = Arc<PeerInner>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// 暴露给外部的 Peer 通信 socket 封装
+#[derive(Clone)]
+pub struct Peer(Arc<PeerInner>);
+
 impl Peer {
+    fn new(id: Id, addr: SocketAddr, writer: Writer, handles: JoinSet<()>) -> Self {
+        Peer(Arc::new(PeerInner {
+            id,
+            runnable: AtomicBool::new(true),
+            addr,
+            writer,
+            handles: Mutex::new(Some(handles))
+        }))
+    }
+
     pub async fn send(&self, data: Vec<u8>) -> Result<()> {
         self.writer
             .send(data)
             .await
             .map_err(|error| anyhow!("发送数据失败\t{error}"))
+    }
+
+    pub fn get_id(&self) -> Id {
+        self.id
+    }
+
+    pub fn get_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn is_runnable(&self) -> bool {
+        self.runnable.load(Ordering::Relaxed)
+    }
+
+    fn check_runnable(&self) -> Result<()> {
+        anyhow_eq!(self.is_runnable(), true, "peer 已关闭");
+        Ok(())
+    }
+
+    /// 发送自己拥有的分片
+    pub async fn request_bitfield(&self, bitfield: Arc<Mutex<BytesMut>>) -> Result<()> {
+        self.check_runnable()?;
+        let bytes = {
+            let bitfield = &*bitfield.lock_pe();
+            let mut bytes = Vec::with_capacity(5 + bitfield.len());
+            bytes.write_u32(1 + bitfield.len() as u32)?;
+            bytes.write_u8(MsgType::Bitfield as u8)?;
+            bytes.write_bytes(bitfield)?;
+            bytes
+        };
+
+        self.send(bytes).await
+    }
+
+    /// 发送感兴趣的消息
+    pub async fn request_interested(&self) -> Result<()> {
+        self.check_runnable()?;
+        let mut bytes = Vec::with_capacity(5);
+        bytes.write_u32(1)?;
+        bytes.write_u8(MsgType::Interested as u8)?;
+        self.send(bytes).await
+    }
+
+    /// 关闭此 peer
+    pub async fn shutdown(&self) {
+        if self.runnable.swap(false, Ordering::Relaxed) {
+            let mut handles = {
+                match self.handles.lock_pe().take() {
+                    Some(handles) => handles,
+                    None => return,
+                }
+            };
+            handles.shutdown().await;
+        }
+    }
+
+    /// 请求分片
+    pub async fn request_piece(&self) -> Result<()> {
+        self.check_runnable()?;
+        Ok(())
     }
 }

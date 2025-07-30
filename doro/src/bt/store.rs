@@ -3,9 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use crate::config::Config;
-use crate::context::Context;
-use crate::torrent::BlockInfo;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, OnceLock};
+
 use anyhow::Result;
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -14,12 +17,11 @@ use doro_util::buffer::ByteBuffer;
 use doro_util::fs::OpenOptionsExt;
 use memmap2::MmapMut;
 use sha1::{Digest, Sha1};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
+
+use crate::config::Config;
+use crate::context::Context;
+use crate::torrent::BlockInfo;
 
 struct FileWriter {
     /// 文件路径
@@ -122,7 +124,7 @@ impl Store {
     pub fn global() -> &'static Self {
         static STORE: OnceLock<Store> = OnceLock::new();
         STORE.get_or_init(|| {
-            let config = Context::global().get_config().clone();
+            let config = Context::get_config().clone();
             let permits = config.hash_concurrency();
             Self {
                 config,

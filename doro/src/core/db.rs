@@ -3,15 +3,16 @@
 #[cfg(test)]
 mod tests;
 
-use anyhow::Result;
-use doro_util::sync::MutexExt;
-use rusqlite::Connection;
 use std::collections::VecDeque;
 use std::fs;
 use std::fs::DirBuilder;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use doro_util::sync::MutexExt;
+use rusqlite::Connection;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 type Pool = Arc<Mutex<VecDeque<Connection>>>;

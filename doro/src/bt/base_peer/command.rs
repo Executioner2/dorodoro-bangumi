@@ -1,10 +1,12 @@
-use crate::base_peer::error::PeerExitReason;
-use crate::base_peer::{MsgType, Servant};
+use std::sync::Arc;
+
 use anyhow::Result;
 use bytes::Bytes;
 use doro_util::command_system_ref;
 use doro_util::global::Id;
-use std::sync::Arc;
+
+use crate::base_peer::error::PeerExitReason;
+use crate::base_peer::{MsgType, Servant};
 
 type ServantRef = Arc<dyn Servant>;
 
@@ -27,7 +29,8 @@ impl<'a> CommandHandler<'a, Result<()>> for Exit {
 
     /// 什么都不需要做，在 peer 中会处理的
     async fn handle(self, servant: Self::Target) -> Result<()> {
-        servant.peer_exit(self.id, self.reason).await
+        servant.peer_exit(self.id, self.reason).await;
+        Ok(())
     }
 }
 

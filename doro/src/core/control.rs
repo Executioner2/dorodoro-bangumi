@@ -3,6 +3,20 @@
 mod command;
 mod request_parse;
 
+use std::pin::Pin;
+
+use anyhow::Result;
+use bytes::Bytes;
+use doro_util::global::Id;
+use doro_util::is_disconnect;
+use doro_util::net::FutureRet;
+use futures::stream::FuturesUnordered;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio_util::sync::WaitForCancellationFuture;
+use tracing::info;
+
 use crate::command::CommandHandler;
 use crate::core::context::Context;
 use crate::core::control::command::{Command, Response};
@@ -13,18 +27,6 @@ use crate::emitter::transfer::TransferPtr;
 use crate::router;
 use crate::router::Code;
 use crate::runtime::{CommandHandleResult, CustomTaskResult, ExitReason, Runnable};
-use anyhow::Result;
-use bytes::Bytes;
-use doro_util::global::Id;
-use doro_util::is_disconnect;
-use doro_util::net::FutureRet;
-use futures::stream::FuturesUnordered;
-use std::pin::Pin;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio_util::sync::WaitForCancellationFuture;
-use tracing::info;
 
 /// code 字段占用字节数
 pub const CODE_SIZE: usize = 4;

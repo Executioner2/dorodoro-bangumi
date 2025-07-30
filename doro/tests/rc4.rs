@@ -132,12 +132,7 @@ fn generate_decryptor(s: &BigUint, skey: &[u8], key_type: KeyType) -> Rc4Encrypt
 /// 构造第三步的握手包
 /// 3.  **A -> B：** `HASH('req1', S)`, `HASH('req2', SKEY) xor HASH('req3', S)`, `ENCRYPT(VC, crypto_provide, len(PadC), PadC, len(IA))`, `ENCRYPT(IA)`
 fn build_step3_packet(
-    rc4: &mut Rc4Encrypt,
-    s: &BigUint,
-    skey: &[u8],
-    vc: &[u8],
-    crypto_provide: u32,
-    pad_c: &[u8],
+    rc4: &mut Rc4Encrypt, s: &BigUint, skey: &[u8], vc: &[u8], crypto_provide: u32, pad_c: &[u8],
     ia: &[u8],
 ) -> Vec<u8> {
     // 计算 req1

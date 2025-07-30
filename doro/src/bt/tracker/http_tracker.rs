@@ -3,17 +3,19 @@
 #[cfg(test)]
 mod tests;
 
-use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
-use crate::task_manager::PeerId;
-use crate::tracker::{AnnounceInfo, Event};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
 use anyhow::{Result, anyhow};
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tracing::warn;
+
+use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
+use crate::task_manager::PeerId;
+use crate::tracker::{AnnounceInfo, Event};
 
 #[derive(Debug)]
 pub struct Announce {

@@ -1,8 +1,10 @@
-use crate::log::{SizeBasedWriter, register_logger};
 use std::io::Error;
 use std::path::Path;
 use std::thread::spawn;
+
 use tracing::{Level, debug_span, error, error_span, info_span};
+
+use crate::log::{SizeBasedWriter, register_logger};
 
 const PATH_STR: &str = "logs";
 const LOG_FILE_NAME: &str = "dorodoro-bangumi.log";

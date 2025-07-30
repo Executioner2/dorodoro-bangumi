@@ -4,11 +4,12 @@
 #[cfg(test)]
 mod tests;
 
-use bytes::Bytes;
 use std::alloc::Layout;
 use std::mem;
 use std::ops::{Index, IndexMut, Range, RangeFrom};
 use std::ptr::NonNull;
+
+use bytes::Bytes;
 
 #[derive(Debug)]
 struct BufInner {

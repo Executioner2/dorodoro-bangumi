@@ -5,20 +5,22 @@ pub mod socket;
 #[cfg(test)]
 mod tests;
 
-use crate::bt::constant::udp_tracker::*;
-use crate::task_manager::PeerId;
-use crate::tracker;
-use crate::tracker::{AnnounceInfo, Event};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
 use anyhow::Result;
 use bytes::Bytes;
 use doro_util::buffer::ByteBuffer;
 use doro_util::bytes_util::{Bytes2Int, WriteBytesBigEndian};
 use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tokio::net::UdpSocket;
 use tracing::warn;
+
+use crate::bt::constant::udp_tracker::*;
+use crate::task_manager::PeerId;
+use crate::tracker;
+use crate::tracker::{AnnounceInfo, Event};
 
 type Buffer = Vec<u8>;
 

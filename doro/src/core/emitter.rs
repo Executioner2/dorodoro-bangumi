@@ -5,9 +5,10 @@ pub mod constant;
 mod test;
 pub mod transfer;
 
+use std::sync::{Arc, OnceLock};
+
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
-use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::Sender;
 use transfer::TransferPtr;
 

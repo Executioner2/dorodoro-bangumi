@@ -1,12 +1,14 @@
 //! socket 相关扩展
 
-use crate::bt::pe_crypto;
-use crate::bt::pe_crypto::Rc4Cipher;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+
+use crate::bt::pe_crypto;
+use crate::bt::pe_crypto::Rc4Cipher;
 
 pub enum Crypto {
     /// 明文传输
@@ -81,9 +83,7 @@ pub struct OwnedReadHalfExt {
 
 impl AsyncRead for OwnedReadHalfExt {
     fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = unsafe { self.get_unchecked_mut() };
         match Pin::new(&mut this.inner).poll_read(cx, buf) {

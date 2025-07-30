@@ -1,11 +1,12 @@
 //! DHT 测试
 
-use doro_util::default_logger;
-use rand::Rng;
-use rand::prelude::IteratorRandom;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+
+use doro_util::default_logger;
+use rand::Rng;
+use rand::prelude::IteratorRandom;
 use tracing::Level;
 
 default_logger!(Level::DEBUG);

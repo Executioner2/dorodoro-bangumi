@@ -1,13 +1,5 @@
 //! udp_tracker 的单元测试
 
-use crate::bt::base_peer::MsgType;
-use crate::task_manager::PeerId;
-use crate::torrent::{Parse, Torrent};
-use crate::tracker::udp_tracker::UdpTracker;
-use crate::tracker::{AnnounceInfo, Event};
-use byteorder::{BigEndian, WriteBytesExt};
-use doro_util::bytes_util::Bytes2Int;
-use sha1::{Digest, Sha1};
 use std::cmp::min;
 use std::fs;
 use std::fs::OpenOptions;
@@ -15,12 +7,22 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
+
+use byteorder::{BigEndian, WriteBytesExt};
+use doro_util::bytes_util::Bytes2Int;
+use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 use tracing::{error, info};
+
+use crate::bt::base_peer::MsgType;
+use crate::task_manager::PeerId;
+use crate::torrent::{Parse, Torrent};
+use crate::tracker::udp_tracker::UdpTracker;
+use crate::tracker::{AnnounceInfo, Event};
 
 /// 测试是否能发起 connect 请求
 #[tokio::test]

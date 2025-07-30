@@ -10,21 +10,23 @@
 //!
 //! 暂时先用上面的后者作为唯一标识。
 
-use crate::context::Context;
-use crate::dht::entity::DHTBase;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::task::{Poll, Waker};
+
 use anyhow::Result;
 use bendy::decoding::FromBencode;
 use bendy::value::Value;
 use bytes::Bytes;
 use dashmap::DashMap;
 use doro_util::buffer::ByteBuffer;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::task::{Poll, Waker};
 use tokio::net::UdpSocket;
 use tracing::{error, info};
+
+use crate::context::Context;
+use crate::dht::entity::DHTBase;
 
 /// 循环 id
 struct CycleId {
@@ -61,7 +63,7 @@ pub struct UdpServer {
 
 impl UdpServer {
     pub async fn new() -> Result<Self> {
-        let bind = Context::global().get_config().udp_server_addr();
+        let bind = Context::get_config().udp_server_addr();
         let socket = UdpSocket::bind(bind).await?;
         Ok(Self {
             socket: Arc::new(socket),
@@ -72,10 +74,7 @@ impl UdpServer {
     }
 
     pub async fn request(
-        &self,
-        tran_id: u16,
-        data: &[u8],
-        addr: &SocketAddr,
+        &self, tran_id: u16, data: &[u8], addr: &SocketAddr,
     ) -> Result<Response, std::io::Error> {
         if self.inflight.contains_key(&tran_id) {
             return Err(std::io::Error::other("same tran_id"));
@@ -99,7 +98,7 @@ impl UdpServer {
     }
 
     fn packet_size(&self) -> usize {
-        Context::global().get_config().udp_packet_limit()
+        Context::get_config().udp_packet_limit()
     }
 
     /// 解析收到的数据
@@ -159,8 +158,7 @@ pub struct Response {
 
 impl Response {
     pub fn new(
-        tran_id: u16,
-        inflight: Arc<DashMap<u16, Option<Waker>>>,
+        tran_id: u16, inflight: Arc<DashMap<u16, Option<Waker>>>,
         result_sotre: Arc<DashMap<u16, (Bytes, SocketAddr)>>,
     ) -> Self {
         Self {

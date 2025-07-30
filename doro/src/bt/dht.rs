@@ -1,11 +1,11 @@
 //! dht 实现
 
-use crate::context::Context;
-use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
-use crate::dht::routing::{Node, NodeId, REFRESH_INTERVAL, RoutingTable};
-use crate::mapper::dht::DHTMapper;
-use crate::task::{HostSource, ReceiveHost};
-use crate::udp_server::UdpServer;
+use std::collections::VecDeque;
+use std::net::SocketAddr;
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
 use doro_util::bendy_ext::SocketAddrExt;
@@ -13,13 +13,15 @@ use doro_util::global::Id;
 use doro_util::sync::MutexExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use std::collections::VecDeque;
-use std::net::SocketAddr;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, trace};
+
+use crate::context::Context;
+use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
+use crate::dht::routing::{Node, NodeId, REFRESH_INTERVAL, RoutingTable};
+use crate::mapper::dht::DHTMapper;
+use crate::task::{HostSource, ReceiveHost};
+use crate::udp_server::UdpServer;
 
 pub mod entity;
 pub mod routing;
@@ -81,9 +83,7 @@ impl DHTRequest {
 
     /// 发送一个 get_peers 操作
     async fn get_peers(
-        &self,
-        addr: &SocketAddr,
-        info_hash: &NodeId,
+        &self, addr: &SocketAddr, info_hash: &NodeId,
     ) -> (Vec<Host>, Vec<SocketAddrExt>) {
         debug!("开始尝试 get_peers");
         let t = self.udp_server.tran_id();
@@ -156,9 +156,7 @@ impl Deref for DHT {
 
 impl DHT {
     pub fn init(
-        udp_server: UdpServer,
-        routing_table: RoutingTable,
-        bootstrap_nodes: Vec<String>,
+        udp_server: UdpServer, routing_table: RoutingTable, bootstrap_nodes: Vec<String>,
     ) -> &'static Self {
         let own_id = Arc::new(routing_table.get_own_id().clone());
         let dht_request = DHTRequest::new(own_id.clone(), udp_server);
@@ -253,10 +251,7 @@ impl DHT {
 
 /// 检查队列中的 nodes 是否可用，并加入到路由表中
 async fn check_add_node(
-    rt: &RoutingTableAM,
-    dr: &DHTRequestA,
-    node_id: Option<NodeId>,
-    addr: &SocketAddr,
+    rt: &RoutingTableAM, dr: &DHTRequestA, node_id: Option<NodeId>, addr: &SocketAddr,
 ) -> bool {
     let ping_resp = dr.ping(addr).await;
     if ping_resp.is_none() || ping_resp.as_ref().unwrap().r.is_none() {
@@ -277,10 +272,7 @@ async fn check_add_node(
 
 /// 异步寻找 peers
 async fn async_find_peers<T>(
-    node_id: Option<NodeId>,
-    addr: SocketAddr,
-    info_hash: Arc<NodeId>,
-    receive_host: T,
+    node_id: Option<NodeId>, addr: SocketAddr, info_hash: Arc<NodeId>, receive_host: T,
     min_dist: Arc<[u8; 20]>,
 ) -> Option<(VecDeque<(Option<NodeId>, SocketAddr)>, [u8; 20], usize)>
 where

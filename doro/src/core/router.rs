@@ -2,13 +2,15 @@ pub mod ret;
 #[cfg(test)]
 mod tests;
 
-use crate::router::ret::Ret;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use json_value::JsonValue;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+
+use crate::router::ret::Ret;
 
 pub type Code = u32;
 
@@ -113,7 +115,7 @@ impl Router {
 
 #[macro_export]
 macro_rules! register_route {
-    ($register_fn:ident, $code:expr, $handler:ident, true) => {
+    ($register_fn:ident, $code:expr, $handler:ident,true) => {
         #[ctor::ctor]
         fn $register_fn() {
             use $crate::core::router::{HandlerWrapper, HasInputHandler, Router};
@@ -126,7 +128,7 @@ macro_rules! register_route {
             Router::global().register_handler($code, std::sync::Arc::new(wrapper))
         }
     };
-    ($register_fn:ident, $code:expr, $handler:ident, false) => {
+    ($register_fn:ident, $code:expr, $handler:ident,false) => {
         #[ctor::ctor]
         fn $register_fn() {
             use $crate::core::router::{HandlerWrapper, NoneInputHandler, Router};

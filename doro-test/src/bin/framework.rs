@@ -1,7 +1,5 @@
 //! 这个 bin 是 bt 模块的主要架构模型。架构设计见 docs 中的系统架构图
 
-use crate::peer::PeerManager;
-use crate::torrent::Torrent;
 use doro_util::buffer::ByteBuffer;
 use doro_util::default_logger;
 use tokio::io::AsyncReadExt;
@@ -9,6 +7,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, error, info, warn};
+
+use crate::peer::PeerManager;
+use crate::torrent::Torrent;
 
 pub mod torrent {
     /// Torrent
@@ -21,16 +22,17 @@ pub mod tracker {
 }
 
 pub mod peer {
-    use crate::{Command, PeerCommand};
-    use doro_util::buffer::ByteBuffer;
     use std::collections::HashMap;
 
+    use doro_util::buffer::ByteBuffer;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
     use tokio::sync::mpsc::{Receiver, Sender, channel};
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
     use tracing::{error, info};
+
+    use crate::{Command, PeerCommand};
 
     /// Peer
     struct Peer {
@@ -319,9 +321,7 @@ struct Scheduler {
 
 impl Scheduler {
     fn new(
-        recv: Receiver<Command>,
-        context: Context,
-        cancel_token: CancellationToken,
+        recv: Receiver<Command>, context: Context, cancel_token: CancellationToken,
         peer_manager_send: Sender<PeerCommand>,
     ) -> Self {
         Self {
