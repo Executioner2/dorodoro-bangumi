@@ -9,7 +9,7 @@ use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
 use doro_util::bytes_util;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use tracing::warn;
 
 use crate::db::ConnWrapper;
@@ -102,7 +102,7 @@ pub trait TorrentMapper {
     /// * `info_hash`: torrent 的 info hash
     ///
     /// returns: TorrentEntity
-    fn recover_from_db(&self, info_hash: &[u8]) -> Result<TorrentEntity>;
+    fn recover_from_db(&self, info_hash: &[u8]) -> Result<Option<TorrentEntity>>;
 
     /// 保存任务进度
     ///
@@ -146,9 +146,9 @@ impl TorrentMapper for ConnWrapper {
     }
 
     /// 从数据库中恢复状态
-    fn recover_from_db(&self, info_hash: &[u8]) -> Result<TorrentEntity> {
+    fn recover_from_db(&self, info_hash: &[u8]) -> Result<Option<TorrentEntity>> {
         let mut stmt = self.prepare_cached("select download, uploaded, save_path, bytefield, underway_bytefield, status from torrent where info_hash = ?1")?;
-        stmt.query_row([&info_hash], |row| {
+        stmt.query_one([&info_hash], |row| {
             let ub: Vec<(u32, PieceStatus)> = {
                 let serial: Vec<u8> = row.get(4)?;
                 bytes_util::decode(&serial)
@@ -162,7 +162,7 @@ impl TorrentMapper for ConnWrapper {
                 status: Some(TorrentStatus::try_from(row.get::<_, u8>(5)?).unwrap()),
                 ..Default::default()
             })
-        })
+        }).optional()
         .map_err(Into::into)
     }
 
@@ -213,16 +213,18 @@ impl TorrentMapper for ConnWrapper {
     }
 
     fn list_torrent(&self) -> Result<Vec<TorrentEntity>> {
-        let mut stmt = self.prepare_cached("select serial, status from torrent")?;
+        let mut stmt = self.prepare_cached("select serial, status, save_path from torrent")?;
         let mut rows = stmt.query([])?;
         let mut list = vec![];
         while let Some(row) = rows.next()? {
             let serial: Vec<u8> = row.get(0)?;
             let status = TorrentStatus::try_from(row.get::<_, u8>(1)?)?;
+            let save_path = PathBuf::from(row.get::<_, String>(2)?);
             let torrent = bytes_util::decode(serial.as_slice());
             list.push(TorrentEntity {
                 serail: Some(TorrentArc::new(torrent)),
                 status: Some(status),
+                save_path: Some(save_path),
                 ..Default::default()
             });
         }

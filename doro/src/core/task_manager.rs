@@ -69,15 +69,16 @@ impl TaskManager {
     async fn load_task_from_db(&self) {
         let conn = Context::global().get_conn().await.unwrap();
         let torrents = conn.list_torrent().unwrap();
-        for torrent in torrents {
-            if torrent.status == Some(TorrentStatus::Download) && torrent.serail.is_some() {
-                if let Some(torrent) = torrent.serail {
+        for entity in torrents {
+            if entity.status == Some(TorrentStatus::Download) && entity.serail.is_some() {
+                if let Some(torrent) = entity.serail {
                     let id = GlobalId::next_id();
                     let peer_id = self.get_peer_id();
-                    let task = DownloadContent::new(id, peer_id, torrent);
+                    let save_path = entity.save_path.unwrap();
+                    let task = DownloadContent::new(id, peer_id, torrent, save_path).await.unwrap();
                     self.handle_task(Box::new(task)).await.unwrap();
                 } else {
-                    panic!("严重的数据错误！{torrent:#?}");
+                    panic!("严重的数据错误！{entity:#?}");
                 }
             }
         }
@@ -139,6 +140,8 @@ struct TaskManagerCallback {
 impl TaskCallback for TaskManagerCallback {
     /// 任务完成
     fn finish(&self, id: Id) -> Async<()> {
+        // 这里 remove task，会保证 task 实例被销毁，task 中的资源在 task 被销毁
+        // 时自动释放掉，因此不需要在 task 中特意执行 shutdown
         let task = self.tasks.remove(&id);
         Box::pin(async move {
             if let Some((_, task)) = task {

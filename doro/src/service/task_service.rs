@@ -101,13 +101,13 @@ pub async fn add_task(task: Task) -> Result<bool> {
         }
     };
 
+    let save_path = task
+        .download_path
+        .map(PathBuf::from)
+        .unwrap_or(Context::get_config().default_download_dir().clone());
+
     let ret = {
         let mut conn = Context::global().get_conn().await?;
-        let save_path = task.download_path.map(PathBuf::from).unwrap_or(
-            Context::get_config()
-                .default_download_dir()
-                .clone(),
-        );
         conn.add_torrent(&torrent, &save_path)?
     };
 
@@ -115,7 +115,7 @@ pub async fn add_task(task: Task) -> Result<bool> {
         // 保存数据库成功，添加到下载队列
         let id = GlobalId::next_id();
         let peer_id = TaskManager::global().get_peer_id();
-        let task = DownloadContent::new(id, peer_id, torrent);
+        let task = DownloadContent::new(id, peer_id, torrent, save_path).await?;
         TaskManager::global().handle_task(Box::new(task)).await?;
     }
 

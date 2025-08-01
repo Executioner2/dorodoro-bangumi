@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
@@ -10,7 +10,6 @@ use anyhow::{Error, Ok, Result, anyhow};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
-use doro_util::bytes_util;
 use doro_util::global::{GlobalId, Id};
 use doro_util::option_ext::OptionExt;
 use doro_util::sync::MutexExt;
@@ -70,7 +69,7 @@ pub struct PeerInfo {
     download_piece: FnvHashSet<u32>,
 
     /// 对端拥有的分片
-    bitfield: BytesMut,
+    bitfield: Arc<RwLock<BytesMut>>,
 
     /// 错误的分块数量
     error_piece_cnt: u32,
@@ -85,7 +84,7 @@ impl PeerInfo {
             dashbord,
             lt_running: true,
             download_piece: FnvHashSet::default(),
-            bitfield: BytesMut::new(),
+            bitfield: Arc::new(RwLock::new(BytesMut::new())),
             wait_piece: false,
             error_piece_cnt: 0,
         }
@@ -99,7 +98,7 @@ impl PeerInfo {
         self.lt_running = true;
         self.wait_piece = false;
         self.download_piece.clear();
-        self.bitfield.clear();
+        self.bitfield.lock_pe().clear();
     }
 
     fn set_lt_running(&mut self, running: bool) {
@@ -124,21 +123,6 @@ pub struct DownloadContentInner {
     /// tracker
     tracker: Tracker<Dispatch>,
 
-    /// 保存路径
-    save_path: Arc<RwLock<PathBuf>>,
-
-    /// 已下载的量
-    download: Arc<AtomicU64>,
-
-    /// 已上传的量
-    uploaded: Arc<AtomicU64>,
-
-    /// 这个是正儿八经下下来了的分块
-    bytefield: Arc<Mutex<BytesMut>>,
-
-    /// 正在下载中的分块
-    underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
-
     /// 可连接，但是没有任务可分配的 peer
     wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>,
 
@@ -162,17 +146,33 @@ impl Deref for DownloadContent {
 }
 
 impl DownloadContent {
-    pub fn new(id: Id, peer_id: PeerId, torrent: TorrentArc) -> Self {
+    #[rustfmt::skip]
+    pub async fn new(
+        id: Id, peer_id: PeerId, torrent: TorrentArc, save_path: PathBuf,
+    ) -> Result<Self> {
+        let entity = Self::load_torrent_from_db(&torrent, &save_path).await?.unwrap_or_default();
+        let save_path = Context::get_config().default_download_dir().clone();
+        let save_path = Arc::new(entity.save_path.unwrap_or(save_path));
+        let download = Arc::new(AtomicU64::new(entity.download.unwrap_or_default()));
+        let uploaded = Arc::new(AtomicU64::new(entity.uploaded.unwrap_or_default()));
+        let bytefield = Arc::new(Mutex::new(entity.bytefield.unwrap_or_default()));
+        let status = Arc::new(Mutex::new(entity.status.unwrap_or(TorrentStatus::Download)));
+        let underway_bytefield = Arc::new(DashMap::new());
+
+        entity.underway_bytefield.into_iter().for_each(|ub| {
+            for (k, v) in ub {
+                underway_bytefield.insert(k, v);
+            }
+        });
+
         let wait_queue = Arc::new(Mutex::new(VecDeque::new()));
         let peers = Arc::new(DashMap::new());
-        let bytefield = Arc::new(Mutex::new(Default::default()));
         let unstart_host = Arc::new(DashSet::new());
-        let status = Arc::new(Mutex::new(TorrentStatus::Download));
         let peer_transfer_speed = Arc::new(DashMap::new());
-        let underway_bytefield = Arc::new(DashMap::new());
-        let download = Arc::new(AtomicU64::new(0));
-        let uploaded = Arc::new(AtomicU64::new(0));
-        let servant = Arc::new(DefaultServant::new(peer_id.clone(), torrent.info_hash));
+        let servant = Arc::new(DefaultServant::new(
+            peer_id.clone(), torrent.info_hash, save_path.clone(),
+            bytefield.clone(), underway_bytefield.clone()
+        ));
 
         let task_control = TaskControl(Arc::new(TaskControlInner {
             id,
@@ -180,8 +180,6 @@ impl DownloadContent {
             torrent: torrent.clone(),
             download: download.clone(),
             uploaded: uploaded.clone(),
-            bytefield: bytefield.clone(),
-            underway_bytefield: underway_bytefield.clone(),
             servant: servant.clone(),
             callback: OnceLock::new(),
         }));
@@ -197,12 +195,10 @@ impl DownloadContent {
                 peer_transfer_speed: peer_transfer_speed.clone(),
                 torrent: torrent.clone(),
                 download: download.clone(),
-                bytefield: bytefield.clone(),
-                underway_bytefield: underway_bytefield.clone(),
             }),
         };
 
-        servant.init(dispatch.clone());
+        servant.init(dispatch.clone(), Some(torrent.clone()));
 
         let info = AnnounceInfo::new(
             download.clone(),
@@ -212,47 +208,29 @@ impl DownloadContent {
         );
         let tracker = Tracker::new(dispatch.clone(), peer_id.clone(), torrent.clone(), info);
 
-        Self(Arc::new(DownloadContentInner {
+        Ok(Self(Arc::new(DownloadContentInner {
             id,
             torrent,
             dispatch,
             task_control,
             tracker,
-            save_path: Arc::new(Default::default()),
-            download,
-            uploaded,
-            bytefield,
-            underway_bytefield,
             wait_queue,
             status,
             handles: Mutex::new(None),
-        }))
+        })))
     }
 
     /// 初始化资源，从数据库中恢复进度
     #[rustfmt::skip]
-    async fn init(&self) -> Result<()> {
-        let conn = Context::global().get_conn().await?;
-        let entity = conn.recover_from_db(&self.torrent.info_hash)?;
-
-        *self.save_path.lock_pe() = entity.save_path.unwrap_or(
-            Context::get_config()
-                .default_download_dir()
-                .clone(),
-        );
-
-        let order = Ordering::Relaxed;
-        self.download.store(entity.download.unwrap_or_default(), order);
-        self.uploaded.store(entity.uploaded.unwrap_or_default(), order);
-        entity.bytefield.map_ext(|b| *self.bytefield.lock_pe() = b);
-        entity.status.map_ext(|s| *self.status.lock_pe() = s);
-        entity.underway_bytefield.into_iter().for_each(|ub| {
-            for (k, v) in ub {
-                self.underway_bytefield.insert(k, v);
+    async fn load_torrent_from_db(torrent: &TorrentArc, save_path: &Path) -> Result<Option<TorrentEntity>> {
+        let mut conn = Context::global().get_conn().await?;
+        match conn.recover_from_db(&torrent.info_hash)? {
+            Some(entity) => Ok(Some(entity)),
+            None => {
+                conn.add_torrent(torrent, save_path)?;
+                Ok(None)
             }
-        });
-
-        Ok(())
+        }
     }
 
     // ===========================================================================
@@ -309,7 +287,6 @@ impl Task for DownloadContent {
     fn start(&self) -> Async<Result<()>> {
         let this = self.clone();
         Box::pin(async move {
-            this.init().await?;
             this.start_handle().await
         })
     }
@@ -323,15 +300,13 @@ impl Task for DownloadContent {
     /// 关闭任务
     fn shutdown(&self) -> Async<()> {
         let this = self.clone();
-        Box::pin(async move { 
+        Box::pin(async move {
             this.task_control.save_progress().await;
         })
     }
 
     /// todo - 订阅任务的状态变化
-    fn subscribe_inside_info(
-        &self, _subscriber: Box<dyn Subscriber>,
-    ) -> Async<()> {
+    fn subscribe_inside_info(&self, _subscriber: Box<dyn Subscriber>) -> Async<()> {
         // let this = self.clone();
         Box::pin(async move {})
     }
@@ -353,14 +328,7 @@ struct TaskControlInner {
     /// 已上传的量
     uploaded: Arc<AtomicU64>,
 
-    /// 这个是正儿八经下下来了的分块
-    bytefield: Arc<Mutex<BytesMut>>,
-
-    /// 正在下载中的分块
-    underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
-
     /// peer 事件处理
-    #[allow(dead_code)]
     servant: Arc<DefaultServant>,
 
     /// 任务回调句柄
@@ -382,7 +350,8 @@ struct TaskControl(Arc<TaskControlInner>);
 impl TaskControl {
     /// 设置任务的回调句柄
     fn set_callback(&self, callback: Box<dyn TaskCallback>) {
-        self.callback.set(callback)
+        self.callback
+            .set(callback)
             .map_err(|_| anyhow!("task callback has been set"))
             .unwrap();
     }
@@ -398,8 +367,9 @@ impl TaskControl {
         let conn = Context::global().get_conn().await.unwrap();
 
         // 将 ub 转换为 Vec，将 Ing 改为 Pause
-        let mut ub = Vec::with_capacity(self.underway_bytefield.len());
-        for item in self.underway_bytefield.iter() {
+        let underway_bytefield = self.servant.underway_bytefield();
+        let mut ub = Vec::with_capacity(underway_bytefield.len());
+        for item in underway_bytefield.iter() {
             let key = *item.key();
             let mut value = item.value().clone();
             if let PieceStatus::Ing(v) = value {
@@ -411,7 +381,7 @@ impl TaskControl {
         let entity = TorrentEntity {
             underway_bytefield: Some(ub),
             info_hash: Some(self.torrent.info_hash.to_vec()),
-            bytefield: Some(self.bytefield.lock_pe().clone()),
+            bytefield: Some(self.servant.bytefield().lock_pe().clone()),
             download: Some(self.download.load(Ordering::Relaxed)),
             uploaded: Some(self.uploaded.load(Ordering::Relaxed)),
             status: Some(*self.status.lock_pe()),
@@ -454,12 +424,6 @@ struct DispatchInner {
 
     /// 已下载的量
     download: Arc<AtomicU64>,
-
-    /// 这个是正儿八经下下来了的分块
-    bytefield: Arc<Mutex<BytesMut>>,
-
-    /// 正在下载中的分块
-    underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
 }
 
 /// 执行派遣，派遣任务给 peer
@@ -547,7 +511,7 @@ impl Dispatch {
     /// todo - 这个可能要改版
     pub async fn assign_peer_handle(&self, id: Id) {
         if let Some(peer) = self.servant.get_peer(id) {
-            let _ = peer.request_piece().await;
+            let _ = self.servant.request_piece(peer.get_id()).await;
         }
     }
 
@@ -558,19 +522,13 @@ impl Dispatch {
             return true;
         }
 
-        let mut pn = self.torrent.piece_num() - 1; // 分片下标是从 0 开始的
-        let mut last_v = !0u8 << (7 - (pn & 7));
-        let bytefield = self.bytefield.lock_pe();
-        for v in bytefield.iter().rev() {
-            // 从后往前匹配
-            if *v != last_v { return false; }
-            pn -= 1;
-            last_v = u8::MAX;
+        if self.servant.check_piece_download_finished() {
+            info!("torrent [{}] 下载完成", hex::encode(self.torrent.info_hash));
+            *self.status.lock_pe() = TorrentStatus::Finished;
+            return true;
         }
-
-        info!("torrent [{}] 下载完成", hex::encode(self.torrent.info_hash));
-        *self.status.lock_pe() = TorrentStatus::Finished;
-        true
+        
+        false
     }
 
     /// 下载完成后的后置处理
@@ -608,13 +566,45 @@ impl ReceiveHost for Dispatch {
 
 #[async_trait]
 impl ServantCallback for Dispatch {
+    /// 接收到了分块数据
+    async fn received_block(
+        &self, _sc: Box<dyn ServantContext>, _piece_idx: u32, _block_offset: u32, block_size: u32,
+    ) -> Result<()> {
+        self.download.fetch_add(block_size as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// 有新的分片可用了
+    async fn have_piece_available(
+        &self, sc: Box<dyn ServantContext>, _piece_idx: u32, _block_offset: u32,
+    ) -> Result<()> {
+        self.servant.request_piece(sc.get_peer().get_id()).await
+    }
+
+    /// 可以进行请求
+    async fn request_available(&self, sc: Box<dyn ServantContext>) -> Result<()> {
+        self.servant.request_piece(sc.get_peer().get_id()).await
+    }
+
+    /// 网络读取量
+    fn reported_read_size(&self, sc: Box<dyn ServantContext>, read_size: u64) {
+        let id = sc.get_peer().get_id();
+        *self.peer_transfer_speed.entry(id).or_insert(0) += read_size
+    }
+
+    /// 没有分片可以下载了
+    fn on_no_pieces_available(&self, _sc: Box<dyn ServantContext>) -> Result<()> {
+        todo!("没有分片可以下载了")
+    }
+
     /// 分块存储成功
     #[rustfmt::skip]
     async fn on_store_block_success(
-        &self, _: &dyn ServantContext, piece_idx: u32, block_offset: u32, block_size: u32,
+        &self, _: Box<dyn ServantContext>, piece_idx: u32, block_offset: u32, block_size: u32,
     ) {
         self.download.fetch_add(block_size as u64, Ordering::Relaxed);
-        if let Some(mut item) = self.underway_bytefield.get_mut(&piece_idx) {
+        let underway_bytefield = self.servant.underway_bytefield();
+        if let Some(mut item) = underway_bytefield.get_mut(&piece_idx) {
             if let PieceStatus::Ing(value) = item.value_mut() {
                 *value = block_offset;
             }
@@ -623,40 +613,25 @@ impl ServantCallback for Dispatch {
 
     /// 分块存储失败
     async fn on_store_block_failed(
-        &self, sc: &dyn ServantContext, piece_idx: u32, block_offset: u32, block_size: u32,
+        &self, sc: Box<dyn ServantContext>, piece_idx: u32, block_offset: u32, block_size: u32,
         error: Error,
     ) {
         error!(
             "[{}] 分块存储失败: piece_idx: {piece_idx}, block_offset: {block_offset}, block_size: {block_size}, error: {error}",
             sc.get_peer().get_addr()
         );
-        todo!("重置这个 peer 的下载进度")
     }
 
     /// 分片校验成功
-    async fn on_verify_piece_success(&self, sc: &dyn ServantContext, piece_idx: u32) {
-        let (index, offset) = bytes_util::bitmap_offset(piece_idx as usize);
-        self.bytefield
-            .lock_pe()
-            .get_mut(index)
-            .map_ext(|byte| *byte |= offset);
-
-        self.underway_bytefield.remove(&piece_idx);
-        self.peers
-            .get_mut(&sc.get_peer().get_id())
-            .map_ext(|mut item| {
-                item.download_piece.remove(&piece_idx);
-            });
-
+    async fn on_verify_piece_success(&self, _sc: Box<dyn ServantContext>, _piece_idx: u32) {
         self.check_finished();
         self.task_control.save_progress().await;
-
         self.download_finished_after_handle().await;
     }
 
     /// 分片校验失败
     #[rustfmt::skip]
-    async fn on_verify_piece_failed(&self, sc: &dyn ServantContext, piece_idx: u32, error: Error) {
+    async fn on_verify_piece_failed(&self, sc: Box<dyn ServantContext>, piece_idx: u32, error: Error) {
         error!("[{}] 分片校验失败: piece_idx: {piece_idx}, error: {error}", sc.get_peer().get_addr());
         // 获取真实的分片大小
         let read_length = self.torrent.piece_length(piece_idx);
@@ -675,22 +650,23 @@ impl ServantCallback for Dispatch {
     }
 
     /// 对端传来他拥有的分片
-    fn owner_bitfield(&self, sc: &dyn ServantContext, bitfield: BytesMut) {
+    async fn owner_bitfield(&self, sc: Box<dyn ServantContext>, bitfield: Arc<RwLock<BytesMut>>) -> Result<()> {
         let peer = sc.get_peer();
         self.peers
             .get_mut(&peer.get_id())
             .map_ext(|mut item| item.bitfield = bitfield);
+        self.servant.request_piece(peer.get_id()).await
     }
 
     /// 握手成功
-    async fn on_handshake_success(&self, sc: &dyn ServantContext) -> Result<()> {
+    async fn on_handshake_success(&self, sc: Box<dyn ServantContext>) -> Result<()> {
         let peer = sc.get_peer();
-        peer.request_bitfield(self.bytefield.clone()).await?;
+        peer.request_bitfield(self.servant.bytefield()).await?;
         peer.request_interested().await
     }
 
     /// peer 退出
-    async fn on_peer_exit(&self, sc: &dyn ServantContext, reason: PeerExitReason) {
+    async fn on_peer_exit(&self, sc: Box<dyn ServantContext>, reason: PeerExitReason) {
         let peer = sc.get_peer();
         debug!("peer_no [{}] 退出了，退出原因: {}", peer.get_id(), reason);
         if Context::global().is_cancelled() {
@@ -766,7 +742,7 @@ impl PeerSwitch for Dispatch {
                 if self.start_temp_peer(pi).await.is_ok() {
                     break;
                 }
-            }    
+            }
         }
     }
 

@@ -7,15 +7,18 @@
 //!
 //! 长度的需要加上消息类型的 1 字节。
 
+use std::marker::PhantomData;
 use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use bytes::BytesMut;
-use doro_util::anyhow_eq;
+use dashmap::DashMap;
+use doro_util::option_ext::OptionExt;
+use doro_util::{anyhow_eq, bytes_util};
 use doro_util::bytes_util::WriteBytesBigEndian;
 use doro_util::global::Id;
 use doro_util::sync::MutexExt;
@@ -361,7 +364,7 @@ impl BasePeer {
         while let Some(cmd) = rx.recv().await {
             let cmd: command::Command = cmd.instance();
             if let Err(e) = cmd.handle(&self.servant).await {
-                self.servant.happen_exeception(self.id, e);
+                self.servant.happen_exeception(self.id, e).await;
                 break;
             }
         }
@@ -374,17 +377,105 @@ impl BasePeer {
         self.protocol_handshake(&mut socket).await?;
         self.start_listener(socket);
         
+        // 这里很重要，将 handles 拿出来，所有权转移给 Peer 实例，然后 Peer 的所有权
+        // 转移给 Servant，保证 Servant 被销毁时，Servant 管理下的 Peer 资源也能被
+        // 正确回收
         let mut handles = self.handles.lock_pe().take().unwrap();
         handles.spawn(Box::pin(self.clone().persist_listen()));
         
         let peer = Peer::new(
             self.id, self.addr,
             self.writer.clone(),
+            self.dashbord.clone(),
             handles
         );
         self.servant.add_peer(self.id, peer).await;
 
         Ok(())
+    }
+}
+
+#[derive(Eq, PartialEq, Hash, Clone, Copy)]
+pub enum Status {
+    /// 不可下载
+    Choke,
+
+    /// 可以下载
+    UnChoke,
+
+    /// 等待新的分块下载
+    _Wait,
+}
+
+#[derive(Debug)]
+pub struct Piece {
+    /// 完成的偏移，如果重新开启任务，下一次从这个地方开始请求
+    block_offset: u32,
+
+    /// 分片位图，完成了的 block 置为 1
+    bitmap: Vec<u8>,
+
+    /// 分块大小
+    block_size: u32,
+
+    /// 分片大小
+    piece_length: u32,
+
+    /// 是否完成
+    finish: bool,
+}
+
+impl Piece {
+    fn new(block_offset: u32, piece_length: u32, block_size: u32) -> Self {
+        let share = Self::block_offset_idx(piece_length, block_size);
+        let len = (share + 7) >> 3;
+        let bitmap = vec![0u8; len as usize];
+        Self {
+            block_offset, // 不需要把 block_offset 之前到填充上 1，之后的判断都是从 block_offset 开始
+            bitmap,
+            block_size,
+            piece_length,
+            finish: false,
+        }
+    }
+
+    fn block_offset_idx(block_offset: u32, block_size: u32) -> u32 {
+        block_offset.div_ceil(block_size)
+    }
+
+    /// 新增完成的分块
+    fn add_finish(&mut self, block_offset: u32) {
+        if self.finish {
+            return;
+        }
+        let bo_idx = Self::block_offset_idx(block_offset, self.block_size);
+        let (idx, offset) = bytes_util::bitmap_offset(bo_idx as usize);
+        self.bitmap.get_mut(idx).map_ext(|val| *val |= offset);
+
+        // 更新连续块偏移
+        let bo_idx = Self::block_offset_idx(self.block_offset, self.block_size);
+        let (idx, mut offset) = bytes_util::bitmap_offset(bo_idx as usize);
+        'first_loop: for i in idx..self.bitmap.len() {
+            let mut k = offset;
+            while k != 0 {
+                if self.bitmap[i] & k == 0 {
+                    break 'first_loop;
+                }
+                self.block_offset += self.block_size;
+                k >>= 1;
+            }
+            offset = 1 << 7
+        }
+
+        self.finish = self.block_offset >= self.piece_length;
+    }
+
+    pub fn is_finish(&self) -> bool {
+        self.finish
+    }
+
+    pub fn block_offset(&self) -> u32 {
+        self.block_offset
     }
 }
 
@@ -400,6 +491,24 @@ pub struct PeerInner {
 
     /// 写入通道
     writer: Writer,
+
+    /// 请求的 piece 分片
+    request_pieces: DashMap<u32, u32>,
+
+    /// 响应的 piece 分片
+    response_pieces: DashMap<u32, Piece>,
+
+    /// 状态
+    status: RwLock<Status>,
+
+    /// 对面 peer 的状态
+    op_status: RwLock<Status>,
+
+    /// 对面 peer 的 bitfield
+    op_bitfield: Arc<RwLock<BytesMut>>,
+
+    /// 速度仪表盘
+    dashbord: Dashbord,
 
     /// 异步任务句柄
     handles: Mutex<Option<JoinSet<()>>>,
@@ -418,14 +527,31 @@ impl Deref for Peer {
 pub struct Peer(Arc<PeerInner>);
 
 impl Peer {
-    fn new(id: Id, addr: SocketAddr, writer: Writer, handles: JoinSet<()>) -> Self {
+    fn new(id: Id, addr: SocketAddr, writer: Writer, dashbord: Dashbord, handles: JoinSet<()>) -> Self {
         Peer(Arc::new(PeerInner {
             id,
             runnable: AtomicBool::new(true),
             addr,
             writer,
+            request_pieces: DashMap::new(),
+            response_pieces: DashMap::new(),
+            status: RwLock::new(Status::Choke),
+            op_status: RwLock::new(Status::Choke),
+            op_bitfield: Arc::new(RwLock::new(BytesMut::new())),
+            dashbord,
             handles: Mutex::new(Some(handles))
         }))
+    }
+
+    pub fn name(&self) -> String {
+        format!("{} - {}", self.addr, self.id)
+    }
+
+    pub fn wrapper(&self) -> PeerWrapper {
+        PeerWrapper {
+            inner: self.clone(),
+            _not_sync: PhantomData
+        }
     }
 
     pub async fn send(&self, data: Vec<u8>) -> Result<()> {
@@ -443,6 +569,14 @@ impl Peer {
         self.addr
     }
 
+    pub fn get_request_pieces(&self) -> &DashMap<u32, u32> {
+        &self.request_pieces
+    }
+
+    pub fn get_response_pieces(&self) -> &DashMap<u32, Piece> {
+        &self.response_pieces
+    }
+
     pub fn is_runnable(&self) -> bool {
         self.runnable.load(Ordering::Relaxed)
     }
@@ -450,6 +584,86 @@ impl Peer {
     fn check_runnable(&self) -> Result<()> {
         anyhow_eq!(self.is_runnable(), true, "peer 已关闭");
         Ok(())
+    }
+
+    pub fn is_can_be_download(&self) -> bool {
+        *self.status.lock_pe() == Status::UnChoke
+    }
+
+    pub fn dashbord(&self) -> &Dashbord {
+        &self.dashbord
+    }
+
+    pub fn status(&self) -> Status {
+        *self.status.lock_pe()
+    }
+
+    pub fn op_status(&self) -> Status {
+        *self.op_status.lock_pe()
+    }
+
+    pub fn op_bitfield(&self) -> Arc<RwLock<BytesMut>> {
+        self.op_bitfield.clone()
+    }
+
+    /// 设置状态
+    pub fn set_status(&self, status: Status) {
+        *self.status.lock_pe() = status;
+    }
+
+    /// 设置对端 peer 的状态    
+    pub fn set_op_status(&self, status: Status) {
+        *self.op_status.lock_pe() = status;
+    }
+
+    /// 重置分片请求的起始位置
+    pub fn reset_request_piece_origin(&self, piece_idx: u32, block_offset: u32, piece_length: u32) {
+        if let Some(origin_offset) = self.request_pieces.get(&piece_idx) {
+            // 避免先写入错误时，高偏移值替换掉还没请求的低偏移值。
+            // 例如：先请求了 0 号偏移数据，再请求 1 号偏移数据，接着
+            // 收到的 0 号 和 1 号 都发生了写入错误，先把请求记录重置为
+            // 了 0 号偏移，但是还没重新发起 0 号请求，就接着重置为了 1 号，
+            // 导致一直缺失 0 号数据。
+            if *origin_offset < block_offset {
+                return;
+            }
+        }
+        self.insert_response_pieces(piece_idx, block_offset, piece_length);
+        self.request_pieces.insert(piece_idx, block_offset);
+    }
+
+    fn insert_response_pieces(&self, piece_idx: u32, block_offset: u32, piece_length: u32) {
+        let bs = Context::get_config().block_size();
+        self.response_pieces.insert(
+            piece_idx, 
+            Piece::new(block_offset, piece_length, bs)
+        );
+    }
+
+    /// 检查是否是有效的 piece 响应    
+    /// 为什么需要检查？因为有可能当前 peer 请求了某个 piece，但是还没来得及处理这个 piece 的响应，
+    /// 调度者就把这个 piece 的请求分配给了另一个 peer 来处理。为了保证 piece 的完整性，会尽量让
+    /// 同一个 peer 来处理一个 piece。因此，这里将检验，这个 piece 是不是还是当前 peer 负责处理
+    /// 的有效 piece。
+    pub fn is_valid_piece_response(&self, piece_idx: u32) -> bool {
+        self.response_pieces.contains_key(&piece_idx)
+    }
+
+    /// 分片是否接受完了
+    pub fn piece_recv_finish(&self, piece_idx: u32) -> bool {
+        self.response_pieces.get(&piece_idx)
+           .is_some_and(|piece| piece.is_finish())
+    }
+
+    /// 收到新的响应分片后，更新响应分片记录
+    pub fn update_resoponse_piece(&self, piece_idx: u32, block_offset: u32) {
+        self.response_pieces.get_mut(&piece_idx)
+            .map_ext(|mut piece| piece.add_finish(block_offset))
+    }
+
+    /// 检查分片是否下载完了
+    pub fn remove_finish_piece(&self, piece_idx: u32) {
+        self.response_pieces.remove(&piece_idx);
     }
 
     /// 发送自己拥有的分片
@@ -476,6 +690,36 @@ impl Peer {
         self.send(bytes).await
     }
 
+    /// 发送允许请求数据的消息
+    pub async fn request_un_choke(&self) -> Result<()> {
+        self.check_runnable()?;
+        let mut bytes = Vec::with_capacity(5);
+        bytes.write_u32(1)?;
+        bytes.write_u8(MsgType::UnChoke as u8)?;
+        self.send(bytes).await
+    }
+
+    /// 发送不允许请求数据的消息
+    pub async fn request_choke(&self) -> Result<()> {
+        self.check_runnable()?;
+        let mut bytes = Vec::with_capacity(5);
+        bytes.write_u32(1)?;
+        bytes.write_u8(MsgType::Choke as u8)?;
+        self.send(bytes).await
+    }
+
+    /// 请求分片
+    pub async fn request_piece(&self, piece_idx: u32, block_offset: u32, block_size: u32) -> Result<()> {
+        self.check_runnable()?;
+        let mut bytes = Vec::with_capacity(17);
+        bytes.write_u32(13)?;
+        bytes.write_u8(MsgType::Request as u8)?;
+        bytes.write_u32(piece_idx)?;
+        bytes.write_u32(block_offset)?;
+        bytes.write_u32(block_size)?;
+        self.send(bytes).await
+    }
+
     /// 关闭此 peer
     pub async fn shutdown(&self) {
         if self.runnable.swap(false, Ordering::Relaxed) {
@@ -488,10 +732,24 @@ impl Peer {
             handles.shutdown().await;
         }
     }
+}
 
-    /// 请求分片
-    pub async fn request_piece(&self) -> Result<()> {
-        self.check_runnable()?;
-        Ok(())
+/// Peer 的包装，用于将 Peer 的可共享信息对外放开。例如 Peer 中的 handles 是绝对不能 Sync 的。
+/// 所以，我们对外共享 Peer，只能共享 PeerWrapper，PeerWrapper 包装了可以 Sync 的 Peer，但是
+/// 我们指定 PeerWrapper 不可 Sync，保证使用者无法再次让 PeerWrapper 在多线程中被共享。以避免
+/// 内存泄漏
+pub struct PeerWrapper {
+    /// 内部还是指向 Peer
+    inner: Peer,
+
+    /// 保证 PeerWrapper 不会被 Sync，但可以被 Send
+    _not_sync: PhantomData<Mutex<()>> 
+}
+
+impl Deref for PeerWrapper {
+    type Target = Peer;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
