@@ -55,7 +55,7 @@ impl NodeId {
     }
 
     pub fn bit(&self, index: usize) -> u8 {
-        let (index, offset) = doro_util::bytes_util::bitmap_offset(index);
+        let (index, offset) = doro_util::bytes_util::bitmap_offset(index as u32);
         self[index] & offset
     }
 }
@@ -292,7 +292,7 @@ impl Bucket {
 
     pub fn random_node(&self) -> NodeId {
         let mut info_hash = self.prefix.clone();
-        let (index, offset) = doro_util::bytes_util::bitmap_offset(self.prefix_len);
+        let (index, offset) = doro_util::bytes_util::bitmap_offset(self.prefix_len as u32);
         let mut rng = rand::rng();
         if index + 1 < 20 {
             rng.fill_bytes(&mut info_hash[index + 1..]);
@@ -307,7 +307,7 @@ impl Bucket {
         let mut prefix1 = self.prefix.clone();
 
         let new_prefix_len = self.prefix_len + 1;
-        let (index, offset) = doro_util::bytes_util::bitmap_offset(self.prefix_len);
+        let (index, offset) = doro_util::bytes_util::bitmap_offset(self.prefix_len as u32);
         prefix0[index] &= !offset; // 设置为0
         prefix1[index] |= offset; // 设置为1
 

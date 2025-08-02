@@ -68,7 +68,7 @@ pub trait ServantCallback: Send + Sync + 'static {
     /// 接收到了分块数据
     async fn received_block(
         &self, sc: Box<dyn ServantContext>, piece_idx: u32, block_offset: u32, block_size: u32,
-    ) -> Result<()>;
+    ) -> Result<()> { Ok(()) }
 
     /// 有新的分片可用了
     async fn have_piece_available(
@@ -80,9 +80,6 @@ pub trait ServantCallback: Send + Sync + 'static {
 
     /// 上报网络读取量
     fn reported_read_size(&self, sc: Box<dyn ServantContext>, read_size: u64);
-
-    /// 没有分片可以下载了
-    fn on_no_pieces_available(&self, sc: Box<dyn ServantContext>) -> Result<()>;
 
     /// 分块存储成功
     async fn on_store_block_success(
@@ -96,7 +93,7 @@ pub trait ServantCallback: Send + Sync + 'static {
     );
 
     /// 分片校验成功
-    async fn on_verify_piece_success(&self, sc: Box<dyn ServantContext>, piece_idx: u32) {}
+    async fn on_verify_piece_success(&self, sc: Box<dyn ServantContext>, piece_idx: u32);
 
     /// 分片校验失败
     async fn on_verify_piece_failed(
@@ -111,4 +108,7 @@ pub trait ServantCallback: Send + Sync + 'static {
 
     /// peer 退出
     async fn on_peer_exit(&self, sc: Box<dyn ServantContext>, reason: PeerExitReason);
+
+    /// piece 下载完成
+    async fn on_piece_download_finished(&self, sc: Box<dyn ServantContext>);
 }

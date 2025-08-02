@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Error, Result};
@@ -21,6 +22,29 @@ use crate::servant::{Servant, ServantCallback, ServantContext};
 use crate::store::Store;
 use crate::task_manager::PeerId;
 use crate::torrent::TorrentArc;
+
+pub mod coordinator;
+
+/// 尝试获取 torrent 信息，如果没有，则打印警告信息并返回 None
+macro_rules! try_get_torrent {
+    ($self: expr, $warn_msg: literal) => {
+        match $self.torrent() {
+            Some(torrent) => torrent,
+            None => {
+                warn!($warn_msg);
+                return Ok(());
+            }
+        }
+    };
+    ($self: expr) => {
+        match $self.torrent() {
+            Some(torrent) => torrent,
+            None => {
+                return false;
+            }
+        }
+    };
+}
 
 pub struct DefaultServantContext {
     peer: PeerWrapper,
@@ -58,12 +82,16 @@ pub struct DefaultServant {
 
     /// 资源保存路径
     save_path: Arc<PathBuf>,
+
+    /// piece 下载是否完成
+    piece_finished: Arc<AtomicBool>,
 }
 
 impl DefaultServant {
     pub fn new(
         peer_id: PeerId, info_hash: [u8; 20], save_path: Arc<PathBuf>, 
-        bytefield: Arc<Mutex<BytesMut>>, underway_bytefield: Arc<DashMap<u32, PieceStatus>>
+        bytefield: Arc<Mutex<BytesMut>>, underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
+        piece_finished: bool,
     ) -> Self {
         Self {
             peer_id,
@@ -71,6 +99,7 @@ impl DefaultServant {
             save_path,
             bytefield,
             underway_bytefield,
+            piece_finished: Arc::new(AtomicBool::new(piece_finished)),
             ..Default::default()
         }
     }
@@ -121,7 +150,7 @@ impl DefaultServant {
     #[rustfmt::skip]
     fn apply_download_piece(&self, piece_idx: u32) -> Option<(u32, u32)> {
         let mut ret = None;
-        let (idx, offset) = bytes_util::bitmap_offset(piece_idx as usize);
+        let (idx, offset) = bytes_util::bitmap_offset(piece_idx);
         let mut bytefield = self.bytefield.lock_pe();
 
         if *bytefield.get_mut(idx)? & offset == 0 {
@@ -155,7 +184,7 @@ impl DefaultServant {
         
         let op_bitfield = peer.op_bitfield();
         for piece_idx in 0..torrent.piece_num() {
-            let (idx, offset) = bytes_util::bitmap_offset(piece_idx);
+            let (idx, offset) = bytes_util::bitmap_offset(piece_idx as u32);
 
             let have = op_bitfield.lock_pe()
                 .get(idx)
@@ -227,13 +256,17 @@ impl DefaultServant {
             }
         }
 
-        self.update_write_piece_offset(piece_idx, block_offset);
         peer.update_resoponse_piece(piece_idx, block_offset);
+        let real_offset = peer.get_seq_last_piece_block_offset(piece_idx).unwrap(); // 获取连续 offset 最后一位的位置
+        self.update_write_piece_offset(piece_idx, real_offset);
+        self.callback().on_store_block_success(
+            self.servant_context(peer.clone()), piece_idx, block_offset, block_data.len() as u32
+        ).await;
         if peer.piece_recv_finish(piece_idx) {
             // 在这里就把 peer 里的此分片状态设为完成（即从集合中删掉这个分片的状态）
             // 这样即便 hash 校验不通过，只需要在 servant 层将该分片重置为 Pause(0)
             // 后续有 peer 申请下载分片时，就会把这个分片给它。
-            peer.remove_finish_piece(piece_idx); 
+            peer.remove_finish_piece(piece_idx);
             self.checkout_piece_hash(peer, piece_idx).await;
         }
     }
@@ -259,9 +292,94 @@ impl DefaultServant {
 
     /// 标记分片为已完成
     fn mark_piece_finish(&self, piece_idx: u32) {
-        let (idx, offset) = bytes_util::bitmap_offset(piece_idx as usize);
+        let (idx, offset) = bytes_util::bitmap_offset(piece_idx);
         self.bytefield.lock_pe().get_mut(idx).map_ext(|bit| *bit |= offset);
         self.remove_finish_piece(piece_idx);
+    }
+
+    /// 获取正在进行中的分片的 idx
+    fn get_piece_status_idx(&self, piece_idx: u32) -> Option<u32> {
+        if let Some(status) = self.underway_bytefield.get(&piece_idx) {
+            return match status.value() {
+                PieceStatus::Ing(offset) => Some(*offset),
+                PieceStatus::Pause(offset) => Some(*offset),
+            }
+        }
+        None
+    }
+
+    /// 设置正在进行中的分片的状态为 Pause
+    fn set_piece_status_pause(&self, piece_idx: u32) {
+        if let Some(mut status) = self.underway_bytefield.get_mut(&piece_idx) {
+            let i = match status.value() {
+                PieceStatus::Ing(offset) => offset,
+                PieceStatus::Pause(offset) => offset,
+            };
+            *status.value_mut() = PieceStatus::Pause(*i);
+        }
+    }
+
+    /// 尝试抢夺慢速的 peer 的 piece 下载任务
+    async fn try_loot_slow_peer(&self, peer: Peer, torrent: TorrentArc) -> Result<()> {
+        if self.check_piece_download_finished() {
+            let dsc = self.servant_context(peer);
+            self.callback().on_piece_download_finished(dsc).await;
+            return Ok(());
+        }
+
+        if self.try_free_slow_piece(&peer, &torrent) {
+            // todo - 观察这个会不会进入递归爆栈
+            // 这里能够释放掉慢速 piece，那么说明是成功将其分配给了当前 peer 的
+            // 那么接下来再次请求 piece，应该不会再走到这里，所以最多递归两层才
+            // 是符合预期的。
+            self.request_piece(peer.get_id()).await
+        } else {
+            // todo - 观察下这个会不会阻塞 base_peer，导致 base_peer 无法关闭
+            if !peer.has_transfer_data() { 
+                // 已经没有传输中的数据了，那么就关闭这个 peer 连接
+                self.peer_exit(peer.get_id(), PeerExitReason::NotHasJob).await;
+            }
+            Ok(())
+        }
+    }
+
+    /// 尝试释放掉下载的慢，并且当前 peer 可以下载的 piece  
+    /// 如果释放成功，则返回 true，否则返回 false
+    fn try_free_slow_piece(&self, peer: &Peer, torrent: &TorrentArc) -> bool {
+        let mut peers = self.peers
+            .iter().filter(|item| *item.key() != peer.get_id())
+            .map(|item| item.value().clone())
+            .collect::<Vec<_>>();
+        peers.sort_unstable_by_key(|peer| peer.dashbord().bw());
+        let mut free_piece = vec![];
+
+        for p in peers.iter() {
+            if !coordinator::faster(peer.dashbord().bw(), p.dashbord().bw()) {
+                break;
+            }
+            
+            // 从受害者（笑）的响应暂存集合中，抢走加害者可以下载的 piece
+            p.get_response_pieces().retain(|piece_idx, _| {
+                let (idx, ost) = bytes_util::bitmap_offset(*piece_idx);
+                let ret = peer.op_bitfield().lock_pe().get(idx)
+                    .map(|bit| bit & ost != 0).unwrap_or(false);
+                if ret {
+                    self.set_piece_status_pause(*piece_idx);
+                    free_piece.push(*piece_idx);
+                }
+                !ret
+            });
+
+            if !free_piece.is_empty() {
+                for piece_idx in free_piece {
+                    let offset = self.get_piece_status_idx(piece_idx).unwrap();
+                    peer.reset_request_piece_origin(piece_idx, offset, torrent.piece_length(piece_idx));
+                }
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -311,12 +429,10 @@ impl Servant for DefaultServant {
 
     /// 检查 piece 是否接收完成
     fn check_piece_download_finished(&self) -> bool {
-        let torrent = {
-            match self.torrent() {
-                Some(torrent) => torrent,
-                None => return false
-            }
-        };
+        let torrent = try_get_torrent!(self);
+        if self.piece_finished.load(Ordering::SeqCst) {
+            return true;
+        }
 
         let mut pn = torrent.piece_num() - 1; // 分片下标是从 0 开始的
         let mut last_v = !0u8 << (7 - (pn & 7));
@@ -327,16 +443,19 @@ impl Servant for DefaultServant {
             pn -= 1;
             last_v = u8::MAX;
         }
+        self.piece_finished.store(true, Ordering::SeqCst);
         true
     }
 
     async fn request_piece(&self, id: Id) -> Result<()> {
+        let torrent = try_get_torrent!(self, "由于没有种子信息，无法进行 piece 请求");
         let peer = self.peers.get(&id)
            .map(|peer| peer.value().clone())
            .ok_or(anyhow!("peer id [{id}] not found"))?;
 
-        let torrent = self.torrent()
-            .ok_or(anyhow!("torrent not init"))?;
+        if !peer.is_can_be_download() {
+            return Ok(());
+        }
 
         while peer.dashbord().inflight() <= peer.dashbord().cwnd() {
             if let Some((piece_idx, block_offset)) = self.try_find_downloadable_peice(&torrent, &peer) {
@@ -352,8 +471,7 @@ impl Servant for DefaultServant {
                     peer.get_request_pieces().remove(&piece_idx);
                 }
             } else {
-                let sc = self.servant_context(peer.clone());
-                self.callback().on_no_pieces_available(sc)?;
+                self.try_loot_slow_peer(peer, torrent).await?;
                 break;
             }
         }
@@ -392,6 +510,7 @@ impl Servant for DefaultServant {
 
     async fn peer_exit(&self, id: Id, reason: PeerExitReason) {
         if let Some(dsc) = self.take_servant_context(id) {
+            // todo - 需要归还进行中的分片
             dsc.get_peer().shutdown().await;
             self.callback().on_peer_exit(dsc, reason).await;
         }
@@ -433,7 +552,7 @@ impl DefaultServant {
         trace!("[{}] 对端告诉我们他有新的分块可以下载", peer.name());
         anyhow_eq!(payload.len(), 4, "[{}] 对端的 Have 消息长度不正确", peer.name());
         let bit = u32::from_be_slice(&payload[..4]);
-        let (piece_idx, block_offset) = bytes_util::bitmap_offset(bit as usize);
+        let (piece_idx, block_offset) = bytes_util::bitmap_offset(bit);
         {
             let bitfield = peer.op_bitfield();
             bitfield.lock_pe().get_mut(piece_idx).map_ext(|bit| *bit |= block_offset);
@@ -446,15 +565,7 @@ impl DefaultServant {
     #[rustfmt::skip]
     async fn handle_bitfield(&self, peer: Peer, payload: Bytes) -> Result<()> {
         trace!("[{}] 对端告诉我们他有哪些分块可以下载: {:?}", peer.name(), &payload[..]);
-        let torrent = {
-            match self.torrent() {
-                Some(torrent) => torrent,
-                None => {
-                    warn!("由于没有种子信息，无法处理对端的 Bitfield 消息");
-                    return Ok(());        
-                }
-            }
-        };
+        let torrent = try_get_torrent!(self, "由于没有种子信息，无法处理对端的 Bitfield 消息");
         let bit_len = torrent.bitfield_len();
 
         anyhow_eq!(payload.len(), bit_len,
@@ -481,11 +592,7 @@ impl DefaultServant {
     /// 对端给我们发来了数据
     async fn handle_piece(&self, peer: Peer, mut payload: Bytes) -> Result<()> {
         trace!("[{}] 收到了对端发来的数据", peer.name());
-        if self.torrent().is_none() {
-            warn!("由于没有种子信息，无法处理对端的 Piece 消息");
-            return Ok(());
-        }
-
+        try_get_torrent!(self, "由于没有种子信息，无法处理对端的 Piece 消息");
         anyhow_ge!(payload.len(), 8, "[{}] 对端的 Piece 消息长度不正确", peer.name());
 
         let piece_idx = u32::from_be_slice(&payload[0..4]);

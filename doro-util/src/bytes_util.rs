@@ -72,9 +72,9 @@ pub trait Bytes2Int<T> {
 impl_bytes2int!(u8, u16, u32, u64, u128);
 
 /// 1 字节位图数组偏移计算
-pub fn bitmap_offset<T: Into<usize> + Copy>(size: T) -> (usize, u8) {
+pub fn bitmap_offset<T: Into<u32> + Copy>(size: T) -> (usize, u8) {
     let index = size.into();
-    (index >> 3, 1 << (7 - (index & 7) as u8))
+    ((index >> 3) as usize, 1 << (7 - (index & 7) as u8))
 }
 
 /// 解码二进制数据

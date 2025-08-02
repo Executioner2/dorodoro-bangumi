@@ -8,6 +8,7 @@ pub mod global;
 pub mod hash;
 pub mod log;
 pub mod net;
+pub mod number;
 pub mod option_ext;
 pub mod rand;
 pub mod shortcut;

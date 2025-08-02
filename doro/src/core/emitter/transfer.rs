@@ -11,7 +11,7 @@ impl TransferPtr {
 
     pub fn instance<'a, T: CommandHandler<'a, U>, U>(self) -> T {
         // 补药使用 read，因为我们用 Box 在堆上创建的数据
-        // 这里只是复制指针数据，并没有建立所有权关系，也就不会自动释放内存
+        // read 只是复制指针数据，并没有建立所有权关系，也就不会自动释放内存
         // unsafe { (self.inner as *const T).read() } ❌
         unsafe { *Box::from_raw(self.inner as *mut T) }
     }

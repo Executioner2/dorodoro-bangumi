@@ -312,15 +312,15 @@ where
     async fn local_env_test(&self) -> u64 {
         use std::str::FromStr;
         let peers = vec![
-            // SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6881").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6882").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6883").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6884").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6885").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6886").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6887").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6888").unwrap(),
+            SocketAddr::from_str("192.168.2.242:3115").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6881").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6882").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6883").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6884").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6885").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6886").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6887").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6888").unwrap(),
             // SocketAddr::from_str("209.141.46.35:15982").unwrap(),
             // SocketAddr::from_str("123.156.68.196:20252").unwrap(),
             // SocketAddr::from_str("1.163.51.40:42583").unwrap(),
@@ -328,8 +328,7 @@ where
             // SocketAddr::from_str("106.73.62.197:40370").unwrap(),
         ];
         self.receive_host
-            .receive_hosts(peers, HostSource::Tracker)
-            .await;
+            .receive_hosts(peers, HostSource::Tracker).await;
         9999999
     }
 
@@ -339,6 +338,8 @@ where
         let scan_time = self.scan_time;
         let info = self.info.clone();
         let receive_host = self.receive_host.clone();
+
+        // self.local_env_test().await;
 
         loop {
             let task = scan_tracker(

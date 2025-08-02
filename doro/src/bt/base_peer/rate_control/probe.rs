@@ -135,10 +135,10 @@ const LOW_GAIN_CYCLE: u32 = 3;
 const NORMAL_GAIN_CYCLE: u32 = 3;
 
 /// 最小拥塞窗口大小
-const MIN_CWND: u32 = 4;
+const MIN_CWND: u32 = 15;
 
 /// 最大拥塞窗口大小
-const MAX_CWND: u32 = 10;
+const MAX_CWND: u32 = 25;
 
 /// 带宽样本队列长度
 const BW_RATE_THRESH: usize = 10;

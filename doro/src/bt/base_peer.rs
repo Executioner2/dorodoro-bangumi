@@ -449,12 +449,12 @@ impl Piece {
             return;
         }
         let bo_idx = Self::block_offset_idx(block_offset, self.block_size);
-        let (idx, offset) = bytes_util::bitmap_offset(bo_idx as usize);
+        let (idx, offset) = bytes_util::bitmap_offset(bo_idx);
         self.bitmap.get_mut(idx).map_ext(|val| *val |= offset);
 
         // 更新连续块偏移
         let bo_idx = Self::block_offset_idx(self.block_offset, self.block_size);
-        let (idx, mut offset) = bytes_util::bitmap_offset(bo_idx as usize);
+        let (idx, mut offset) = bytes_util::bitmap_offset(bo_idx);
         'first_loop: for i in idx..self.bitmap.len() {
             let mut k = offset;
             while k != 0 {
@@ -616,6 +616,12 @@ impl Peer {
         *self.op_status.lock_pe() = status;
     }
 
+    /// 是否还有传输数据（指等待响应的数据）    
+    /// ture 表示还有数据，false 表示没有数据
+    pub fn has_transfer_data(&self) -> bool {
+        !self.response_pieces.is_empty()
+    }
+
     /// 重置分片请求的起始位置
     pub fn reset_request_piece_origin(&self, piece_idx: u32, block_offset: u32, piece_length: u32) {
         if let Some(origin_offset) = self.request_pieces.get(&piece_idx) {
@@ -659,6 +665,11 @@ impl Peer {
     pub fn update_resoponse_piece(&self, piece_idx: u32, block_offset: u32) {
         self.response_pieces.get_mut(&piece_idx)
             .map_ext(|mut piece| piece.add_finish(block_offset))
+    }
+
+    /// 获取分片中，连续 block 的最后一个
+    pub fn get_seq_last_piece_block_offset(&self, piece_idx: u32) -> Option<u32> {
+        self.response_pieces.get(&piece_idx).map(|p| p.block_offset())
     }
 
     /// 检查分片是否下载完了
