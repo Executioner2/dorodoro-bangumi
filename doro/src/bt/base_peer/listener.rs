@@ -19,6 +19,7 @@ use crate::emitter::transfer::TransferPtr;
 pub struct WriteFuture {
     pub(super) id: Id,
     pub(super) writer: OwnedWriteHalfExt,
+    pub(super) addr: SocketAddr,
     pub(super) peer_sender: Sender<TransferPtr>,
     pub(super) recv: Receiver<Vec<u8>>,
 }
@@ -30,10 +31,14 @@ impl WriteFuture {
                 data = self.recv.recv() => {
                     if let Some(mut data) = data {
                         if self.writer.write_all(&mut data).await.is_err() {
-                            let reason = exception(anyhow!("[{}] 消息发送失败!", self.id));
+                            let reason = exception(anyhow!("[{}] 消息发送失败!", self.addr));
+
+                            // 忽略掉发送失败，这里的失败只用考虑 peer 已经退出了，
+                            // peer 退出会释放掉 WriteFuture，这里就不用处理 break 了。
                             let _ = self.peer_sender.send(Exit{ id: self.id, reason }.into()).await;
                         }
                     } else {
+                        trace!("{} 的消息发送通道已关闭！", self.addr);
                         break;
                     }
                 }
@@ -42,7 +47,7 @@ impl WriteFuture {
     }
 }
 
-pub struct ReadFuture<T: PacketAck + Send> {
+pub struct ReadFuture<T> {
     pub(super) id: Id,
     pub(super) reader: OwnedReadHalfExt,
     pub(super) addr: SocketAddr,
@@ -62,12 +67,15 @@ impl<T: PacketAck + Send> ReadFuture<T> {
                             if msg_type == MsgType::Piece {
                                 self.rc.ack((5 + buf_len) as u32);
                             }
-                            self.peer_sender.send(PeerTransfer {
+
+                            // 忽略掉发送失败，这里的失败只用考虑 peer 已经退出了，
+                            // peer 退出会释放掉 ReadFuture，这里就不用处理 break 了。
+                            let _ = self.peer_sender.send(PeerTransfer {
                                 id: self.id,
                                 msg_type,
                                 buf,
                                 read_size: 5 + buf_len
-                            }.into()).await.unwrap();
+                            }.into()).await;
                         },
                         FutureRet::Ok(Heartbeat) => {
                             let _ = self.peer_sender.send(command::Heartbeat{id: self.id}.into()).await;

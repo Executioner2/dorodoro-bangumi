@@ -36,9 +36,6 @@ pub trait Servant: Send + Sync + 'static {
     /// 返回正在进行中的 piece
     fn underway_bytefield(&self) -> Arc<DashMap<u32, PieceStatus>>;
 
-    /// 获取 servant 回调接口
-    fn servant_callback(&self) -> &dyn ServantCallback;
-
     /// 接收到的数据量
     fn reported_read_size(&self, id: Id, read_size: u64);
 

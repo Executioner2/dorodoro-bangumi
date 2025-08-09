@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use tokio::task::JoinHandle;
 use tracing::{error, warn};
@@ -10,6 +10,24 @@ pub trait MutexExt<T> {
         Self: 'a;
 
     fn lock_pe(&self) -> Self::Target<'_>;
+}
+
+pub trait WriteLockExt<T> {
+    type Target<'a>
+    where
+        T: 'a,
+        Self: 'a;
+
+    fn write_pe(&self) -> Self::Target<'_>;
+}
+
+pub trait ReadLockExt<T> {
+    type Target<'a>
+    where
+        T: 'a,
+        Self: 'a;
+
+    fn read_pe(&self) -> Self::Target<'_>;
 }
 
 impl<T> MutexExt<T> for Mutex<T> {
@@ -29,17 +47,34 @@ impl<T> MutexExt<T> for Mutex<T> {
     }
 }
 
-impl<T> MutexExt<T> for RwLock<T> {
+impl<T> WriteLockExt<T> for RwLock<T> {
     type Target<'a>
         = RwLockWriteGuard<'a, T>
     where
         T: 'a;
 
-    fn lock_pe(&self) -> Self::Target<'_> {
+    fn write_pe(&self) -> Self::Target<'_> {
         match self.write() {
             Ok(mg) => mg,
             Err(pe) => {
-                warn!("RwLock poisoned: {}", pe);
+                warn!("RwLock write poisoned: {}", pe);
+                pe.into_inner()
+            }
+        }
+    }
+}
+
+impl<T> ReadLockExt<T> for RwLock<T> {
+    type Target<'a>
+        = RwLockReadGuard<'a, T>
+    where
+        T: 'a;
+
+    fn read_pe(&self) -> Self::Target<'_> {
+        match self.read() {
+            Ok(mg) => mg,
+            Err(pe) => {
+                warn!("RwLock read poisoned: {}", pe);
                 pe.into_inner()
             }
         }

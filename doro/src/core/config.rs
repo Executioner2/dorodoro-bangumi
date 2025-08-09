@@ -86,6 +86,12 @@ struct ConfigInner {
 
     /// 错误分片上限
     error_piece_limit: u32,
+
+    /// 单个 peer 异步任务数量限制
+    async_task_limit: usize,
+
+    /// 总的异步任务池大小
+    async_task_pool_size: usize,
 }
 
 impl Default for ConfigInner {
@@ -101,14 +107,15 @@ impl Default for ConfigInner {
             hash_chunk_size: 512,
             hash_concurrency: 1, // 默认就一个
             peer_conn_limit: 500,
-            // torrent_lt_peer_conn_limit: 100,
-            torrent_lt_peer_conn_limit: 20,
+            torrent_lt_peer_conn_limit: 10,
             torrent_temp_peer_conn_limit: 2,
             peer_connection_timeout: Duration::from_secs(5),
             default_download_dir: PathBuf::from("./download/"),
             client_auth: ClientAuth::init(),
             rss_refresh_concurrency: 10,
             error_piece_limit: 3,
+            async_task_limit: 25,
+            async_task_pool_size: 2500,
         }
     }
 }
@@ -237,6 +244,20 @@ impl Config {
         self
     }
 
+    pub fn set_async_task_limit(mut self, limit: usize) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.async_task_limit = limit;
+        }
+        self
+    }
+
+    pub fn set_async_task_pool_size(mut self, size: usize) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.async_task_pool_size = size;
+        }
+        self
+    }
+
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
     }
@@ -307,5 +328,13 @@ impl Config {
 
     pub fn error_piece_limit(&self) -> u32 {
         self.inner.error_piece_limit
+    }
+
+    pub fn async_task_limit(&self) -> usize {
+        self.inner.async_task_limit
+    }
+
+    pub fn async_task_pool_size(&self) -> usize {
+        self.inner.async_task_pool_size
     }
 }

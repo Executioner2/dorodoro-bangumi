@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use doro_util::collection::FixedQueue;
 use doro_util::win_minmax::Minmax;
 use doro_util::{datetime, if_else};
-use tracing::{Level, level_enabled, trace};
+use tracing::{debug, level_enabled, trace, Level};
 
 use super::{PacketAck, PacketSend, RateControl};
 
@@ -135,7 +135,7 @@ const LOW_GAIN_CYCLE: u32 = 3;
 const NORMAL_GAIN_CYCLE: u32 = 3;
 
 /// 最小拥塞窗口大小
-const MIN_CWND: u32 = 15;
+const MIN_CWND: u32 = 4;
 
 /// 最大拥塞窗口大小
 const MAX_CWND: u32 = 25;
@@ -452,10 +452,10 @@ impl PacketAck for Probe {
         self.update_gain(rs.bw, origin_bw as u64);
         self.update_cwnd(self.cwnd_gain);
 
-        if level_enabled!(Level::TRACE) {
+        if level_enabled!(Level::DEBUG) {
             let (rate1, unit1) = doro_util::net::rate_formatting(origin_bw);
             let (rate2, unit2) = doro_util::net::rate_formatting(rs.bw);
-            trace!(
+            debug!(
                 "\ncwnd: {}\tmax bw: {:.2}{}\tnew bw: {:.2}{}\tcwnd_gain: {}\t\
                 down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}\tfbr: {}",
                 self.dashbord.cwnd(),

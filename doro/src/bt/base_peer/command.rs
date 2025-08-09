@@ -2,15 +2,16 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
-use doro_util::command_system_ref;
+use doro_util::command_system_owner;
 use doro_util::global::Id;
 
 use crate::base_peer::error::PeerExitReason;
 use crate::base_peer::{MsgType, Servant};
+use crate::context::AsyncTaskSemaphore;
 
-type ServantRef = Arc<dyn Servant>;
+type ServantRef = (Arc<dyn Servant>, Option<AsyncTaskSemaphore>);
 
-command_system_ref! {
+command_system_owner! {
     ctx: ServantRef,
     Command {
         Exit,
@@ -25,10 +26,10 @@ pub struct Exit {
     pub(crate) reason: PeerExitReason,
 }
 impl<'a> CommandHandler<'a, Result<()>> for Exit {
-    type Target = &'a ServantRef;
+    type Target = ServantRef;
 
     /// 什么都不需要做，在 peer 中会处理的
-    async fn handle(self, servant: Self::Target) -> Result<()> {
+    async fn handle(self, (servant, _ats): Self::Target) -> Result<()> {
         servant.peer_exit(self.id, self.reason).await;
         Ok(())
     }
@@ -43,9 +44,9 @@ pub struct PeerTransfer {
     pub(crate) read_size: u64,
 }
 impl<'a> CommandHandler<'a, Result<()>> for PeerTransfer {
-    type Target = &'a ServantRef;
+    type Target = ServantRef;
 
-    async fn handle(self, servant: Self::Target) -> Result<()> {
+    async fn handle(self, (servant, _ats): Self::Target) -> Result<()> {
         servant.reported_read_size(self.id, self.read_size); // 上报给 gasket
         servant.handle(self.id, self.msg_type, self.buf).await
     }
@@ -57,9 +58,9 @@ pub struct Heartbeat {
     pub(crate) id: Id,
 }
 impl<'a> CommandHandler<'a, Result<()>> for Heartbeat {
-    type Target = &'a ServantRef;
+    type Target = ServantRef;
 
-    async fn handle(self, servant: Self::Target) -> Result<()> {
+    async fn handle(self, (servant, _ats): Self::Target) -> Result<()> {
         servant.handle_heartbeat(self.id).await
     }
 }

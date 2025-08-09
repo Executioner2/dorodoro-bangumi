@@ -106,7 +106,7 @@ macro_rules! command_system {
 /// 命令宏 todo - 临时，后面改成过程宏
 #[macro_export]
 #[allow(clippy::crate_in_macro_def)]
-macro_rules! command_system_ref {
+macro_rules! command_system_owner {
     (ctx: $ctx:ty) => {
         use crate::core::command::CommandHandler;
         use crate::emitter::transfer::{CommandEnum, TransferPtr};
@@ -117,7 +117,7 @@ macro_rules! command_system_ref {
         impl CommandEnum for Command {}
 
         impl<'a> CommandHandler<'a, Result<()>> for Command {
-            type Target = &'a $ctx;
+            type Target = $ctx;
 
             async fn handle(self, _ctx: Self::Target) -> Result<()> {
                 Ok(())
@@ -154,7 +154,7 @@ macro_rules! command_system_ref {
         )+
 
         impl<'a> CommandHandler<'a, Result<()>> for Command {
-            type Target = &'a $ctx;
+            type Target = $ctx;
 
             async fn handle(self, ctx: Self::Target) -> Result<()> {
                 match self {

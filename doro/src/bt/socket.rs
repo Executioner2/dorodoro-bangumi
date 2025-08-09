@@ -1,4 +1,11 @@
 //! socket 相关扩展
+//! 
+//! 1. 基于 rc4 算法的 bt 加密传输实现
+//! 2. 基于 TcpStream 的扩展，支持明文传输和 rc4 加密传输
+//! 3. 基于 OwnedReadHalf 和 OwnedWriteHalf 的扩展，支持异步读写
+//! 
+//! todo - 已知问题：
+//! 1. 直接使用 rc4 加密传输，性能损失非常严重。后续需要优化。
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

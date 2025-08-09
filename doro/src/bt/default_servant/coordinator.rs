@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,6 +35,9 @@ impl PeerSpeed {
 
 #[async_trait]
 pub trait PeerSwitch {
+    /// 获取 task id
+    fn get_task_id(&self) -> Id;
+
     /// 升级为 lt peer
     fn upgrage_lt_peer(&self, id: Id) -> Option<()>;
 
@@ -71,9 +73,9 @@ pub trait PeerSwitch {
 }
 
 /// 协调器，用于定时统计上传/下载速率，进行分块下载分配
-pub struct CoordinatorInner<T> {
+pub struct Coordinator<T> {
     /// peer 交换机
-    switch: T,
+    switch: Arc<T>,
 
     /// 速率窗口
     speed_window: Mutex<FixedQueue<u64>>,
@@ -90,25 +92,21 @@ pub fn faster(a: u64, b: u64) -> bool {
     a * UNIT as u64 >= b * BW_GAIN_THRESH as u64
 }
 
-impl<T> Deref for Coordinator<T> {
-    type Target = Arc<CoordinatorInner<T>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl<T> Drop for Coordinator<T> {
+    fn drop(&mut self) {
+        use tracing::info;
+        info!("Coordinator 已 drop");
     }
 }
 
-/// 协调器包装
-pub struct Coordinator<T>(Arc<CoordinatorInner<T>>);
-
 impl<T: PeerSwitch> Coordinator<T> {
-    pub fn new(switch: T) -> Self {
-        Self(Arc::new(CoordinatorInner {
+    pub fn new(switch: Arc<T>) -> Self {
+        Coordinator {
             switch,
             speed_window: Mutex::new(FixedQueue::new(5)),
             speed_sum: AtomicU64::new(0),
             alloc_cnt: AtomicU32::new(0),
-        }))
+        }
     }
 
     fn speed_rate_statistics(&mut self) {
@@ -122,6 +120,7 @@ impl<T: PeerSwitch> Coordinator<T> {
         let len = self.speed_window.lock_pe().len();
         let file_length = self.switch.file_length();
         trace!(
+        // info!(
             "下载速度: {:.2} MiB/s\t当前进度: {:.2}%",
             speed as f64 / len as f64 / 1024.0 / 1024.0,
             download as f64 / file_length as f64 * 100.0
@@ -204,21 +203,12 @@ impl<T: PeerSwitch> Coordinator<T> {
         let mut interval = tokio::time::interval_at(start, Duration::from_secs(1));
 
         loop {
-            tokio::select! {
-                // _ = self.switch.is_finished() => {
-                //     // 是否完成拧出来到 select 里。不要在下面的
-                //     // interval.tick 中，会造成唤醒丢失问题。
-                //     // tokio console 中的警告：This task has lost its waker, and will never be woken again.
-                //     break;
-                // }
-                _ = interval.tick() => {
-                    if self.switch.is_finished() {
-                        break;
-                    }
-                    self.speed_rate_statistics();
-                    self.peer_alloc().await;
-                }
+            interval.tick().await;
+            if self.switch.is_finished() {
+                break;
             }
+            self.speed_rate_statistics();
+            self.peer_alloc().await;
         }
 
         info!("协调器已退出");

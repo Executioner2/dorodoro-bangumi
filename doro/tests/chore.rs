@@ -1,7 +1,8 @@
 //! 这个是一些杂项的验证测试
 
+use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tokio::select;
 use tokio::sync::mpsc::channel;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, info};
 use tracing_subscriber::fmt;
@@ -213,6 +215,32 @@ async fn do_test_dashmap_deadlock2(map: Arc<DashMap<u32, &str>>, key: &u32) {
     info!("value: {:?}", value);
 }
 
+#[ignore]
+#[cfg_attr(miri, ignore)]
+#[test]
+fn test_dashmap_deadlock3() {
+    let map = DashMap::new();
+    map.insert(2, 2);
+    map.insert(1, 1);
+    map.insert(3, 3);
+
+    info!("map: {map:?}");
+
+
+    if let Some(mut item) = map.iter_mut().take(1).next() {
+        let ret =  Some((*item.key(), *item.value()));
+        if *item.value() + 1 < 2 {
+            *item.value_mut() += 1;
+        } else {
+            // 死锁
+            map.remove(item.key());
+        }
+        info!("ret: {ret:?}")
+    }
+
+    info!("map: {map:?}");
+}  
+
 struct B {
     val: Option<i32>,
 }
@@ -254,4 +282,188 @@ async fn test_futures_unordered() {
     while let Some(res) = futures.next().await {
         info!("result: {}", res);
     }
+}
+
+/// 测试循环依赖的 drop 情况    
+/// B 和 C 相互依赖，A 依赖 B
+#[test]
+#[ignore]
+#[allow(dead_code)]
+#[cfg_attr(miri, ignore)]
+fn test_loop_depend() {
+    struct A {
+        b: Arc<B>,
+    }
+
+    impl Drop for A {
+        fn drop(&mut self) {
+            info!("drop A");
+        }
+    }
+
+    struct B {
+        c: Arc<C>,
+    }
+
+    impl Drop for B {
+        fn drop(&mut self) {
+            info!("drop B");
+        }
+    }
+
+    struct C {
+        // 这个会有循环依赖
+        // b: OnceLock<Arc<B>>,
+
+        // 尝试嵌套一层 weak
+        b: OnceLock<Weak<B>>,
+    }
+
+    impl Drop for C {
+        fn drop(&mut self) {
+            info!("drop C");
+        }
+    }
+
+    // 开始测试
+    {
+        let c = Arc::new(C {
+            b: OnceLock::new(),
+        });
+
+        let b = Arc::new(B {
+            c: c.clone(),
+        });
+
+        // 这里设置了 b 后，导致循环依赖，无法释放 b 和 c
+        // if c.b.set(b.clone()).is_err() {
+        
+        // 换成 weak b
+        if c.b.set(Arc::downgrade(&b)).is_err() {
+            panic!("init value failed")
+        }
+
+        // a 会被正常释放
+        let _a = A {
+            b: b.clone(),
+        };
+    }
+    // 这里应该 drop a
+}
+
+/// 测试 join_set
+#[tokio::test] 
+#[ignore]
+#[cfg_attr(miri, ignore)]
+async fn test_join_set() {
+    struct Tasks(JoinSet<()>);
+
+    impl Drop for Tasks {
+        fn drop(&mut self) {
+            info!("drop Tasks");
+        }
+    }
+
+    struct A;
+
+    impl Drop for A {
+        fn drop(&mut self) {
+            info!("drop A");
+        }
+    }
+
+    impl A {
+        async fn run(self) {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tick.tick().await;
+                info!("tick");
+            }
+        }
+    }
+
+    {
+        let mut tasks = Tasks(JoinSet::new());
+        tasks.0.spawn(Box::pin(A.run()));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    info!("5 秒之后，tasks 应该被 drop 了");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    info!("再过 5 秒之后，程序结束")
+}
+
+/// 复现 dashmap 的无限循环
+#[ignore]
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_dashmap_infinite_loop() {
+    let dashmap = Arc::new(DashMap::new());
+    dashmap.insert(1, 1);
+    dashmap.insert(2, 0);
+
+    let mut join_set = JoinSet::new();
+
+    join_set.spawn(Box::pin(test_task(dashmap.clone())));
+    join_set.spawn(Box::pin(test_task(dashmap.clone())));
+
+    join_set.join_all().await;
+    info!("join_all 结束\ndashmap: {dashmap:#?}")
+}
+
+async fn test_task(dashmap: Arc<DashMap<u32, u32>>) {
+    // 下面这种写法是错误的！每次都会重复获取新的迭代器，导致无限循环
+    // while let Some(mut item) = dashmap.iter_mut().next() {
+
+    // 同时 clippy 也建议我们把下面的 while 换成 for 循环
+    // let mut it = dashmap.iter_mut();
+    // while let Some(mut item) = it.next() {
+
+    for mut item in dashmap.iter_mut() {
+        info!("遍历 dashmap: {} - {}", item.key(), item.value());
+        if *item.value() < 2 {
+            *item.value_mut() += 1;
+            break;
+        }
+    }
+    info!("遍历结束")
+}
+
+#[ignore]
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_hashmap() {
+    let mut map = HashMap::new();
+    map.insert(1, 1);
+    map.insert(2, 2);
+
+    // let mut it = map.iter();
+    // while let Some(item) = it.next() {
+
+    for item in map.iter() {
+        info!("遍历 hashmap: {} - {}", item.0, item.1);
+    }
+}
+
+/// 测试 join_set 中的任务完成后，是否会自动从集合中移除
+#[ignore]
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_join_set_task_finished() {
+    let mut join_set = JoinSet::new();
+
+    join_set.spawn(Box::pin(async move {
+        info!("任务开始");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        info!("任务完成");
+    }));
+
+    info!("join_set 长度: {}", join_set.len());
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    info!("join_set 长度: {}", join_set.len());
+
+    join_set.join_next().await;
+
+    info!("join_all 结束\tjoin_set 长度: {}", join_set.len());
 }

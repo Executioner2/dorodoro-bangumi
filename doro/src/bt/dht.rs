@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use bendy::decoding::FromBencode;
@@ -75,7 +75,7 @@ impl DHTRequest {
                 resp.ok()
             }
             Err(e) => {
-                error!("ping request error: {}", e);
+                debug!("ping request error: {}", e);
                 None
             }
         }
@@ -116,7 +116,7 @@ impl DHTRequest {
                 }
             }
             Err(e) => {
-                error!("get_peers request error: {}", e);
+                debug!("get_peers request error: {}", e);
             }
         }
 
@@ -272,11 +272,11 @@ async fn check_add_node(
 
 /// 异步寻找 peers
 async fn async_find_peers<T>(
-    node_id: Option<NodeId>, addr: SocketAddr, info_hash: Arc<NodeId>, receive_host: T,
+    node_id: Option<NodeId>, addr: SocketAddr, info_hash: Arc<NodeId>, receive_host: Weak<T>,
     min_dist: Arc<[u8; 20]>,
 ) -> Option<(VecDeque<(Option<NodeId>, SocketAddr)>, [u8; 20], usize)>
 where
-    T: ReceiveHost + Send + Sync + Clone + 'static,
+    T: ReceiveHost + Send + Sync + 'static,
 {
     let rt: RoutingTableAM = DHT::global().routing_table.clone();
     let dr: DHTRequestA = DHT::global().dht_request.clone();
@@ -302,7 +302,9 @@ where
     if !values.is_empty() {
         trace!("新增了的peer: {:?}", values);
         let peers = values.iter().map(|p| p.addr).collect();
-        receive_host.receive_hosts(peers, HostSource::DHT).await;
+        if let Some(receive_host) = receive_host.upgrade() {
+            receive_host.receive_hosts(peers, HostSource::DHT).await;
+        }
     }
 
     Some((queue, min, values.len()))
@@ -312,11 +314,11 @@ where
 #[rustfmt::skip]
 pub async fn find_peers<T>(
     info_hash: NodeId,
-    receive_host: T,
+    receive_host: Weak<T>,
     gasket_id: Id,
     expect_peers: usize,
 ) where
-    T: ReceiveHost + Send + Sync + Clone + 'static,
+    T: ReceiveHost + Send + Sync + 'static,
 {
     // 从路由表中查询出 N 个最近的节点
     debug!("gasket [{gasket_id}] 委托我们寻找资源 [{info_hash}] 的 peers");

@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use doro_util::option_ext::OptionExt;
-use doro_util::sync::MutexExt;
+use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
 use doro_util::{anyhow_eq, anyhow_ge, bytes_util};
 use doro_util::global::Id;
 use doro_util::bytes_util::Bytes2Int;
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 use crate::base_peer::error::{exception, PeerExitReason};
 use crate::base_peer::rate_control::{PacketSend, RateControl};
@@ -46,6 +46,18 @@ macro_rules! try_get_torrent {
     };
 }
 
+/// 尝试获取 callback 实例，如果没有，则直接 return Ok(())
+macro_rules! try_get_callback {
+    ($self: expr) => {
+        match $self.callback() {
+            Some(callback) => callback,
+            None => {
+                return Ok(());
+            }
+        }
+    };
+}
+
 pub struct DefaultServantContext {
     peer: PeerWrapper,
 }
@@ -57,7 +69,6 @@ impl ServantContext for DefaultServantContext {
 }
 
 /// 默认的 servant 实现。
-#[derive(Default)]
 pub struct DefaultServant {
     /// 种子信息哈希值
     info_hash: [u8; 20],
@@ -75,7 +86,7 @@ pub struct DefaultServant {
     underway_bytefield: Arc<DashMap<u32, PieceStatus>>,
 
     /// 回调函数
-    callback: OnceLock<Arc<dyn ServantCallback>>,
+    callback: OnceLock<Weak<dyn ServantCallback>>,
 
     /// 保存所有连接的 peer
     peers: Arc<DashMap<Id, Peer>>,
@@ -85,6 +96,12 @@ pub struct DefaultServant {
 
     /// piece 下载是否完成
     piece_finished: Arc<AtomicBool>,
+}
+
+impl Drop for DefaultServant {
+    fn drop(&mut self) {
+        info!("DefaultServant 已 drop");
+    }
 }
 
 impl DefaultServant {
@@ -100,12 +117,14 @@ impl DefaultServant {
             bytefield,
             underway_bytefield,
             piece_finished: Arc::new(AtomicBool::new(piece_finished)),
-            ..Default::default()
+            torrent: OnceLock::new(),
+            callback: OnceLock::new(),
+            peers: Arc::new(DashMap::new()),
         }
     }
 
-    pub fn init(&self, callback: impl ServantCallback, torrent: Option<TorrentArc>) {
-        self.callback.set(Arc::new(callback))
+    pub fn init(&self, callback: Weak<impl ServantCallback>, torrent: Option<TorrentArc>) {
+        self.callback.set(callback)
             .map_err(|_| anyhow!("callback init failed"))
             .unwrap();
         if let Some(torrent) = torrent {
@@ -115,9 +134,9 @@ impl DefaultServant {
         }
     }
 
-    fn callback(&self) -> &dyn ServantCallback {
+    fn callback(&self) -> Option<Arc<dyn ServantCallback>> {
         if let Some(callback) = self.callback.get() {
-            callback.as_ref()
+            callback.upgrade()
         } else {
             panic!("callback not init")
         }
@@ -175,18 +194,33 @@ impl DefaultServant {
         if !peer.is_can_be_download() {
             return None;
         }
+        let default_block_size = Context::get_config().block_size();
 
-        // 先拿为请求完成的
+        // 先拿未请求完成的
         let request_pieces = peer.get_request_pieces();
-        if let Some(item) = request_pieces.iter().take(1).next() {
-            return Some((*item.key(), *item.value()));
+        let mut ret = None;
+        for mut item in request_pieces.iter_mut() {
+            let piece_length = torrent.piece_length(*item.key());
+            let offset = *item.value() + default_block_size;
+            if offset < piece_length {
+                ret = Some((*item.key(), offset));
+                *item.value_mut() = offset;
+                break;
+            }
         }
         
+        if ret.is_some() {
+            let key = ret.unwrap().0;
+            let piece_length = torrent.piece_length(key);
+            request_pieces.remove_if(&key, |_, v| *v + default_block_size >= piece_length);
+            return ret;
+        }
+
         let op_bitfield = peer.op_bitfield();
         for piece_idx in 0..torrent.piece_num() {
             let (idx, offset) = bytes_util::bitmap_offset(piece_idx as u32);
 
-            let have = op_bitfield.lock_pe()
+            let have = op_bitfield.read_pe()
                 .get(idx)
                 .map(|bit| bit & offset != 0);
             if !matches!(have, Some(true)) {
@@ -206,7 +240,7 @@ impl DefaultServant {
     /// 检查分片的 hash 值是否正确      
     /// 这个方法不会向上抛出错误，因为这里抛出去，会被 BasePeer 捕捉到，然后关闭 peer 连接。
     /// 我们告诉 ServantCallback 实例就好，让它来决定是否关闭这个 peer 连接。
-    async fn checkout_piece_hash(&self, peer: Peer, piece_idx: u32) {
+    async fn checkout_piece_hash(&self, peer: Peer, piece_idx: u32, callback: Arc<dyn ServantCallback>) {
         let torrent = self.torrent().unwrap();
         let piece_length = torrent.piece_length(piece_idx);
         let hash = &torrent.info.pieces[piece_idx as usize * 20..(piece_idx as usize + 1) * 20];
@@ -218,16 +252,16 @@ impl DefaultServant {
         match Store::global().checkout(block_infos, hash).await {
             Ok(false) => {
                 self.reset_underway_piece(piece_idx);
-                self.callback().on_verify_piece_failed(sc, piece_idx, anyhow!("hash 不一致")).await;
+                callback.on_verify_piece_failed(sc, piece_idx, anyhow!("hash 不一致")).await;
             }
             Err(e) => {
                 self.reset_underway_piece(piece_idx);
-                self.callback().on_verify_piece_failed(sc, piece_idx, e).await;
+                callback.on_verify_piece_failed(sc, piece_idx, e).await;
             }
             Ok(true) => {
                 trace!("[{}] 校验分片 [{piece_idx}] 成功", peer.name());
                 self.mark_piece_finish(piece_idx);
-                self.callback().on_verify_piece_success(sc, piece_idx).await;
+                callback.on_verify_piece_success(sc, piece_idx).await;
             }
         }
     }
@@ -235,20 +269,29 @@ impl DefaultServant {
     /// 检查分片的 hash 值是否正确      
     /// 这个方法不会向上抛出错误，因为这里抛出去，会被 BasePeer 捕捉到，然后关闭 peer 连接。
     /// 我们告诉 ServantCallback 实例就好，让它来决定是否关闭这个 peer 连接。
-    async fn write_file(&self, peer: Peer, piece_idx: u32, block_offset: u32, mut block_data: Bytes) {
+    async fn write_file(&self, peer: Peer, piece_idx: u32, block_offset: u32, mut block_data: Bytes, callback: Arc<dyn ServantCallback>) {
+        let real_offset = match peer.get_seq_last_piece_block_offset(piece_idx) {
+            Some(real_offset) => real_offset,
+            None => {
+                warn!("[{}] 找不到连续的 offset 位置 [{piece_idx}] - [{block_offset}]", peer.name());
+                return;
+            }
+        };
+
         let torrent = self.torrent().unwrap();
         let piece_length = torrent.piece_length(piece_idx);
         let block_infos = torrent.find_file_of_piece_index(
             self.save_path.as_path(), piece_idx, block_offset, block_data.len()
         );
 
+        let block_size = block_data.len();
         for block_info in block_infos {
             let data = block_data.split_to(block_info.len);
             let file_path = block_info.filepath.clone();
             if Store::global().write(block_info, data).await.is_err() {
-                peer.reset_request_piece_origin(piece_idx, block_offset, piece_length); // 从这个位置重新请求
+                peer.reset_request_piece_origin(piece_idx, block_offset, piece_length); // 写入失败，从这个位置重新请求
                 let sc = self.servant_context(peer.clone());
-                self.callback().on_store_block_failed(
+                callback.on_store_block_failed(
                     sc, piece_idx, block_offset, block_data.len() as u32,
                     anyhow!("write file failed - [{file_path:?}]")
                 ).await;
@@ -256,18 +299,21 @@ impl DefaultServant {
             }
         }
 
-        peer.update_resoponse_piece(piece_idx, block_offset);
-        let real_offset = peer.get_seq_last_piece_block_offset(piece_idx).unwrap(); // 获取连续 offset 最后一位的位置
         self.update_write_piece_offset(piece_idx, real_offset);
-        self.callback().on_store_block_success(
-            self.servant_context(peer.clone()), piece_idx, block_offset, block_data.len() as u32
+        
+        // 注意，一定要在获取 real_offset 之后更新，否则会出现【线程1】走到了下面的 piece_recv.finish，
+        // 原本还差【线程2】的数据，但是【线程2】在【线程1】之前更新了，然后【线程1】刚好又把这个完成的 piece
+        // 给删掉了，就会导致【线程2】无法再拿到 real_offset。
+        peer.update_resoponse_piece(piece_idx, block_offset); 
+        callback.on_store_block_success(
+            self.servant_context(peer.clone()), piece_idx, block_offset, block_size as u32
         ).await;
         if peer.piece_recv_finish(piece_idx) {
             // 在这里就把 peer 里的此分片状态设为完成（即从集合中删掉这个分片的状态）
             // 这样即便 hash 校验不通过，只需要在 servant 层将该分片重置为 Pause(0)
             // 后续有 peer 申请下载分片时，就会把这个分片给它。
             peer.remove_finish_piece(piece_idx);
-            self.checkout_piece_hash(peer, piece_idx).await;
+            self.checkout_piece_hash(peer, piece_idx, callback).await;
         }
     }
 
@@ -323,18 +369,16 @@ impl DefaultServant {
     async fn try_loot_slow_peer(&self, peer: Peer, torrent: TorrentArc) -> Result<()> {
         if self.check_piece_download_finished() {
             let dsc = self.servant_context(peer);
-            self.callback().on_piece_download_finished(dsc).await;
+            try_get_callback!(self).on_piece_download_finished(dsc).await;
             return Ok(());
         }
 
         if self.try_free_slow_piece(&peer, &torrent) {
-            // todo - 观察这个会不会进入递归爆栈
             // 这里能够释放掉慢速 piece，那么说明是成功将其分配给了当前 peer 的
             // 那么接下来再次请求 piece，应该不会再走到这里，所以最多递归两层才
             // 是符合预期的。
             self.request_piece(peer.get_id()).await
         } else {
-            // todo - 观察下这个会不会阻塞 base_peer，导致 base_peer 无法关闭
             if !peer.has_transfer_data() { 
                 // 已经没有传输中的数据了，那么就关闭这个 peer 连接
                 self.peer_exit(peer.get_id(), PeerExitReason::NotHasJob).await;
@@ -361,7 +405,7 @@ impl DefaultServant {
             // 从受害者（笑）的响应暂存集合中，抢走加害者可以下载的 piece
             p.get_response_pieces().retain(|piece_idx, _| {
                 let (idx, ost) = bytes_util::bitmap_offset(*piece_idx);
-                let ret = peer.op_bitfield().lock_pe().get(idx)
+                let ret = peer.op_bitfield().read_pe().get(idx)
                     .map(|bit| bit & ost != 0).unwrap_or(false);
                 if ret {
                     self.set_piece_status_pause(*piece_idx);
@@ -395,9 +439,14 @@ impl Servant for DefaultServant {
 
     async fn add_peer(&self, id: Id, peer: Peer) {
         let dsc = self.servant_context(peer.clone());
-        if let Err(e) = self.callback().on_handshake_success(dsc).await {
+        let callback = match self.callback() {
+            Some(callback) => callback,
+            None => return, // 直接返回也行，相当于刚创建出 peer 就销毁了
+        };
+
+        if let Err(e) = callback.on_handshake_success(dsc).await {
             let dsc = self.servant_context(peer.clone());
-            self.callback().on_peer_exit(dsc, exception(e)).await;
+            callback.on_peer_exit(dsc, exception(e)).await;
             return;
         }
         self.peers.insert(id, peer);
@@ -417,13 +466,11 @@ impl Servant for DefaultServant {
         self.underway_bytefield.clone()
     }
 
-    fn servant_callback(&self) -> &dyn ServantCallback {
-        self.callback()
-    }
-
     fn reported_read_size(&self, id: Id, read_size: u64) {
         if let Some(dsc) = self.get_servant_context(id) {
-            self.callback().reported_read_size(dsc, read_size);
+            if let Some(callback) = self.callback() {
+                callback.reported_read_size(dsc, read_size);
+            }
         }
     }
 
@@ -457,19 +504,13 @@ impl Servant for DefaultServant {
             return Ok(());
         }
 
-        while peer.dashbord().inflight() <= peer.dashbord().cwnd() {
+        while peer.has_send_window_space() {
             if let Some((piece_idx, block_offset)) = self.try_find_downloadable_peice(&torrent, &peer) {
                 let default_block_size = Context::get_config().block_size();
                 let piece_length = torrent.piece_length(piece_idx);
                 let block_size = default_block_size.min(piece_length - block_offset);
                 peer.request_piece(piece_idx, block_offset, block_size).await?;
                 peer.dashbord().send(block_size);
-                let new_offsett = default_block_size + block_offset;
-                if new_offsett < piece_length {
-                    peer.get_request_pieces().insert(piece_idx, new_offsett);
-                } else {
-                    peer.get_request_pieces().remove(&piece_idx);
-                }
             } else {
                 self.try_loot_slow_peer(peer, torrent).await?;
                 break;
@@ -509,10 +550,19 @@ impl Servant for DefaultServant {
     }
 
     async fn peer_exit(&self, id: Id, reason: PeerExitReason) {
+        trace!("peer [{id}] 退出，原因：{reason:?}");
         if let Some(dsc) = self.take_servant_context(id) {
-            // todo - 需要归还进行中的分片
-            dsc.get_peer().shutdown().await;
-            self.callback().on_peer_exit(dsc, reason).await;
+            let peer = dsc.get_peer();
+            peer.shutdown().await;
+
+            // 归还进行中的分片
+            for piece_idx in peer.get_response_pieces().iter() {
+                self.set_piece_status_pause(*piece_idx.key());
+            }
+
+            if let Some(callback) = self.callback() {
+                callback.on_peer_exit(dsc, reason).await;
+            }
         }
     }
 }
@@ -529,7 +579,7 @@ impl DefaultServant {
     async fn handle_un_choke(&self, peer: Peer) -> Result<()> {
         trace!("[{}] 对端告诉我们可以下载数据", peer.name());
         peer.set_status(Status::UnChoke);
-        self.callback().request_available(self.servant_context(peer)).await
+        try_get_callback!(self).request_available(self.servant_context(peer)).await
     }
 
     /// 对我们的数据感兴趣
@@ -555,10 +605,10 @@ impl DefaultServant {
         let (piece_idx, block_offset) = bytes_util::bitmap_offset(bit);
         {
             let bitfield = peer.op_bitfield();
-            bitfield.lock_pe().get_mut(piece_idx).map_ext(|bit| *bit |= block_offset);
+            bitfield.write_pe().get_mut(piece_idx).map_ext(|bit| *bit |= block_offset);
         }
         let sc = self.servant_context(peer);
-        self.callback().have_piece_available(sc, piece_idx as u32, block_offset as u32).await
+        try_get_callback!(self).have_piece_available(sc, piece_idx as u32, block_offset as u32).await
     }
 
     /// 对端告诉我们他有哪些分块可以下载
@@ -574,9 +624,9 @@ impl DefaultServant {
         );
 
         let bitfield = peer.op_bitfield();
-        *bitfield.lock_pe() = BytesMut::from(payload);
+        *bitfield.write_pe() = BytesMut::from(payload);
         let sc = self.servant_context(peer);
-        self.callback().owner_bitfield(sc, bitfield).await
+        try_get_callback!(self).owner_bitfield(sc, bitfield).await
     }
 
     /// 向我们请求数据
@@ -605,11 +655,12 @@ impl DefaultServant {
         let block_data = payload.split_off(8);
         let block_size = block_data.len() as u32;
 
-        let sc = self.servant_context(peer.clone());
-        self.callback().received_block(sc, piece_idx, block_offset, block_size).await?;
+        let sc: Box<dyn ServantContext> = self.servant_context(peer.clone());
+        let callback = try_get_callback!(self);
+        callback.received_block(sc, piece_idx, block_offset, block_size).await?;
 
         // 这里直接持久化，不用开线程，因为处理 handle piece 就是一个线程了，与接收以及发送的线程相互独立
-        self.write_file(peer, piece_idx, block_offset, block_data).await;
+        self.write_file(peer, piece_idx, block_offset, block_data, callback).await;
         Ok(())
     }    
 

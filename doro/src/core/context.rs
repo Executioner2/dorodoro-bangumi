@@ -1,7 +1,8 @@
 //! 全局上下文
 
 use core::fmt::Formatter;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Result;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
@@ -9,10 +10,42 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use crate::config::Config;
 use crate::db::{ConnWrapper, Db};
 
+/// 异步任务信号量
+pub struct AsyncTaskSemaphore {
+    /// 异步任务数量计数
+    async_task_count: Arc<AtomicUsize>,
+
+    /// 禁止 sync，只能 send
+    _not_sync: std::marker::PhantomData<Mutex<()>>,
+}
+
+impl AsyncTaskSemaphore {
+    fn new(async_task_count: Arc<AtomicUsize>) -> Self {
+        Self {
+            async_task_count,
+            _not_sync: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for AsyncTaskSemaphore {
+    fn drop(&mut self) {
+        self.async_task_count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 #[derive(Clone)]
 pub struct Context {
+    /// 数据库连接池
     db: Arc<Db>,
+
+    /// 全局配置信息
     config: Config,
+
+    /// 异步任务数量计数
+    async_task_count: Arc<AtomicUsize>,
+
+    /// 全局停机监听
     cancel_token: CancellationToken,
 }
 
@@ -32,6 +65,7 @@ impl Context {
                 db: Arc::new(db),
                 config,
                 cancel_token: CancellationToken::new(),
+                async_task_count: Arc::new(AtomicUsize::new(0)),
             })
             .unwrap();
     }
@@ -69,5 +103,30 @@ impl Context {
     /// 是否关机
     pub fn is_cancelled(&self) -> bool {
         self.cancel_token.is_cancelled()
+    }
+
+    /// 获取异步任务信号量
+    pub fn take_async_task_semaphore() -> Option<AsyncTaskSemaphore> {
+        let context = Context::global();
+        let current_count = context.async_task_count.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |current| {
+                if current < context.config.async_task_pool_size() {
+                    Some(current + 1)
+                } else {
+                    None
+                }
+            }
+        );
+
+        match current_count {
+            Ok(_) => {
+                let async_task_count = context.async_task_count.clone();
+                let async_task_semaphore = AsyncTaskSemaphore::new(async_task_count);
+                Some(async_task_semaphore)
+            }
+            Err(_) => None,
+        }
     }
 }

@@ -12,7 +12,7 @@ use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use anyhow::{anyhow, Error, Result};
 use bytes::BytesMut;
@@ -21,7 +21,7 @@ use doro_util::option_ext::OptionExt;
 use doro_util::{anyhow_eq, bytes_util};
 use doro_util::bytes_util::WriteBytesBigEndian;
 use doro_util::global::Id;
-use doro_util::sync::MutexExt;
+use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinSet;
@@ -29,11 +29,12 @@ use tracing::trace;
 
 use crate::base_peer::listener::{ReadFuture, WriteFuture};
 use crate::base_peer::rate_control::probe::{Dashbord, Probe};
+use crate::base_peer::rate_control::RateControl;
 use crate::bt::pe_crypto::{self, CryptoProvide};
 use crate::bt::socket::TcpStreamWrapper;
 use crate::command::CommandHandler;
 use crate::config::CHANNEL_BUFFER;
-use crate::context::Context;
+use crate::context::{AsyncTaskSemaphore, Context};
 use crate::emitter::transfer::TransferPtr;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use crate::servant::Servant;
@@ -45,6 +46,18 @@ pub mod listener;
 pub mod peer_resp;
 pub mod rate_control;
 pub mod reserved;
+
+/// 尝试获取 servant 实例，如果没有，则直接 return Ok(())
+macro_rules! try_get_servant {
+    ($self: expr) => {
+        match $self.servant.upgrade() {
+            Some(servant) => servant,
+            None => {
+                return Err(anyhow!("servant weak ref released"));
+            }
+        }
+    };
+}
 
 /// Peer 通信的消息类型
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -216,6 +229,17 @@ impl DerefMut for Writer {
     }
 }
 
+
+/// peer 启动结果
+/// T 为回传值
+pub enum PeerStartResult<T> {
+    /// 启动成功
+    Success(T),
+
+    /// 启动失败
+    Failed(T, Error),
+}
+
 pub struct BasePeerInner {
     /// 编号
     id: Id,
@@ -224,7 +248,7 @@ pub struct BasePeerInner {
     addr: SocketAddr,
 
     /// 具体的业务逻辑处理
-    servant: Arc<dyn Servant>,
+    servant: Weak<dyn Servant>,
 
     /// 异步任务句柄
     handles: Mutex<Option<JoinSet<()>>>,
@@ -242,6 +266,12 @@ pub struct BasePeerInner {
     channel: (Sender<TransferPtr>, Mutex<Option<Receiver<TransferPtr>>>),
 }
 
+impl Drop for BasePeerInner {
+    fn drop(&mut self) {
+        trace!("base peer [{}] 已 drop", self.addr);
+    }
+}
+
 impl Deref for BasePeer {
     type Target = Arc<BasePeerInner>;
 
@@ -255,7 +285,7 @@ impl Deref for BasePeer {
 pub struct BasePeer(Arc<BasePeerInner>);
 
 impl BasePeer {
-    pub fn new(id: Id, addr: SocketAddr, servant: Arc<impl Servant>, dashbord: Dashbord) -> Self {
+    pub fn new(id: Id, addr: SocketAddr, servant: Weak<impl Servant>, dashbord: Dashbord) -> Self {
         let buf_limit = Context::get_config().buf_limit();
         let (tx, rx) = channel(buf_limit);
         Self(Arc::new(BasePeerInner {
@@ -284,9 +314,11 @@ impl BasePeer {
     #[rustfmt::skip]
     async fn crypto_handshake(&self, socket: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.id);
+        let servant = try_get_servant!(self);
+        let info_hash = servant.info_hash();
         pe_crypto::init_handshake(
             socket,
-            self.servant.info_hash(),
+            info_hash,
             CryptoProvide::Rc4
         ).await
     }
@@ -295,14 +327,15 @@ impl BasePeer {
     #[rustfmt::skip]
     async fn protocol_handshake(&self, socket: &mut TcpStreamWrapper) -> Result<()> {
         trace!("发送握手信息 peer_no: {}", self.id);
+        let servant = try_get_servant!(self);
         let msg_size = 1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN;
         let mut bytes = Vec::with_capacity(msg_size);
-        let info_hash = self.servant.info_hash();
+        let info_hash = servant.info_hash();
         bytes.write_u8(BIT_TORRENT_PROTOCOL_LEN)?;
         bytes.write_bytes(BIT_TORRENT_PROTOCOL)?;
         bytes.write_u64(reserved::LTEP | reserved::DHT)?; // 扩展位 
         bytes.write_bytes(info_hash)?;
-        bytes.write_bytes(self.servant.peer_id())?;
+        bytes.write_bytes(servant.peer_id())?;
         socket.write_all(&bytes).await?;
 
         // 等待握手信息
@@ -336,6 +369,7 @@ impl BasePeer {
                 WriteFuture {
                     id: self.id,
                     writer,
+                    addr: self.addr,
                     peer_sender: self.channel.0.clone(),
                     recv,
                 }
@@ -358,20 +392,69 @@ impl BasePeer {
         self.writer.set_sender(send);
     }
 
+    /// 获取一个异步任务信号量，如果异步任务池用完了，那么则返回 none，示意同步执行这个请求    
+    ///  
+    /// 这个不用处理 task_pool.len() < async_task_limit() 和 task_pool.spawn() 非原子性的问题，
+    /// 因为这两个操作只会在监听线程中以同步的方式使用。
+    fn take_async_task_semaphore(&self, task_pool: & JoinSet<Result<()>>) -> Option<AsyncTaskSemaphore> {
+        // 首先不可超出单个 peer 最大异步任务数的限制
+        if task_pool.len() < Context::get_config().async_task_limit() {
+            Context::take_async_task_semaphore()
+        } else {
+            None
+        }
+    } 
+
     /// 持续监听收到的数据，并进行分发
     async fn persist_listen(self) {
         let mut rx = self.channel.1.lock_pe().take().unwrap();
-        while let Some(cmd) = rx.recv().await {
-            let cmd: command::Command = cmd.instance();
-            if let Err(e) = cmd.handle(&self.servant).await {
-                self.servant.happen_exeception(self.id, e).await;
-                break;
+        let mut task_pool = JoinSet::new(); // 任务池
+        loop {
+            let servant = match self.servant.upgrade() {
+                Some(servant) => servant,
+                None => {
+                    trace!("servant weak ref released");
+                    break;
+                }
+            };
+
+            tokio::select! {
+                cmd = rx.recv() => {
+                    if let Some(cmd) = cmd {
+                        let cmd: command::Command = cmd.instance();
+                        let ts = self.take_async_task_semaphore(&task_pool);
+                        if ts.is_none() {
+                            if let Err(e) = cmd.handle((servant.clone(), ts)).await {
+                                servant.happen_exeception(self.id, e).await;
+                                break;
+                            }
+                        } else {
+                            task_pool.spawn(Box::pin(cmd.handle((servant, ts))));
+                        }
+                    } else {
+                        trace!("peer channel closed");
+                        break;
+                    }
+                }
+                ret = task_pool.join_next() => {
+                    if let Some(Err(e)) = ret {
+                        servant.happen_exeception(self.id, e.into()).await;
+                        break;
+                    }
+                }
             }
         }
     }
 
+    pub async fn async_run<T>(self, r: T) -> PeerStartResult<T> {
+        match self.do_async_run().await {
+            Ok(()) => PeerStartResult::Success(r),
+            Err(e) => PeerStartResult::Failed(r, e),
+        }
+    }
+
     #[rustfmt::skip]
-    pub async fn async_run(self) -> Result<()> {
+    async fn do_async_run(self) -> Result<()> {
         let socket = self.connection().await?;
         let mut socket = self.crypto_handshake(socket).await?;
         self.protocol_handshake(&mut socket).await?;
@@ -389,7 +472,8 @@ impl BasePeer {
             self.dashbord.clone(),
             handles
         );
-        self.servant.add_peer(self.id, peer).await;
+        let servant = try_get_servant!(self);
+        servant.add_peer(self.id, peer).await;
 
         Ok(())
     }
@@ -492,10 +576,12 @@ pub struct PeerInner {
     /// 写入通道
     writer: Writer,
 
-    /// 请求的 piece 分片
+    /// 请求的 piece 分片       
+    /// 记录的是上次请求的偏移量
     request_pieces: DashMap<u32, u32>,
 
-    /// 响应的 piece 分片
+    /// 响应的 piece 分片       
+    /// 记录的是已经接收到的偏移数据
     response_pieces: DashMap<u32, Piece>,
 
     /// 状态
@@ -507,11 +593,20 @@ pub struct PeerInner {
     /// 对面 peer 的 bitfield
     op_bitfield: Arc<RwLock<BytesMut>>,
 
+    /// 是否接收到了对方的 bitfield
+    recv_bitfield: AtomicBool,
+
     /// 速度仪表盘
     dashbord: Dashbord,
 
     /// 异步任务句柄
     handles: Mutex<Option<JoinSet<()>>>,
+}
+
+impl Drop for PeerInner {
+    fn drop(&mut self) {
+        trace!("peer {} 已关闭", self.addr);
+    }
 }
 
 impl Deref for Peer {
@@ -538,6 +633,7 @@ impl Peer {
             status: RwLock::new(Status::Choke),
             op_status: RwLock::new(Status::Choke),
             op_bitfield: Arc::new(RwLock::new(BytesMut::new())),
+            recv_bitfield: AtomicBool::new(false),
             dashbord,
             handles: Mutex::new(Some(handles))
         }))
@@ -587,7 +683,7 @@ impl Peer {
     }
 
     pub fn is_can_be_download(&self) -> bool {
-        *self.status.lock_pe() == Status::UnChoke
+        *self.status.read_pe() == Status::UnChoke
     }
 
     pub fn dashbord(&self) -> &Dashbord {
@@ -595,11 +691,11 @@ impl Peer {
     }
 
     pub fn status(&self) -> Status {
-        *self.status.lock_pe()
+        *self.status.read_pe()
     }
 
     pub fn op_status(&self) -> Status {
-        *self.op_status.lock_pe()
+        *self.op_status.read_pe()
     }
 
     pub fn op_bitfield(&self) -> Arc<RwLock<BytesMut>> {
@@ -608,18 +704,24 @@ impl Peer {
 
     /// 设置状态
     pub fn set_status(&self, status: Status) {
-        *self.status.lock_pe() = status;
+        *self.status.write_pe() = status;
     }
 
     /// 设置对端 peer 的状态    
     pub fn set_op_status(&self, status: Status) {
-        *self.op_status.lock_pe() = status;
+        self.recv_bitfield.store(true, Ordering::Relaxed);
+        *self.op_status.write_pe() = status;
     }
 
-    /// 是否还有传输数据（指等待响应的数据）    
+    /// 是否可以发送数据，即 inflight 数据小于 cwnd
+    pub fn has_send_window_space(&self) -> bool {
+        self.dashbord.inflight() <= self.dashbord.cwnd()
+    }
+
+    /// 是否还有传输数据（指等待响应的数据，或者对方已经 UnChoke，但是我们还没有收到对方的 bitfield）    
     /// ture 表示还有数据，false 表示没有数据
     pub fn has_transfer_data(&self) -> bool {
-        !self.response_pieces.is_empty()
+        !self.response_pieces.is_empty() || !self.recv_bitfield.load(Ordering::Relaxed)
     }
 
     /// 重置分片请求的起始位置
@@ -638,7 +740,7 @@ impl Peer {
         self.request_pieces.insert(piece_idx, block_offset);
     }
 
-    fn insert_response_pieces(&self, piece_idx: u32, block_offset: u32, piece_length: u32) {
+    pub fn insert_response_pieces(&self, piece_idx: u32, block_offset: u32, piece_length: u32) {
         let bs = Context::get_config().block_size();
         self.response_pieces.insert(
             piece_idx, 
@@ -658,7 +760,7 @@ impl Peer {
     /// 分片是否接受完了
     pub fn piece_recv_finish(&self, piece_idx: u32) -> bool {
         self.response_pieces.get(&piece_idx)
-           .is_some_and(|piece| piece.is_finish())
+            .is_some_and(|piece| piece.is_finish())
     }
 
     /// 收到新的响应分片后，更新响应分片记录
