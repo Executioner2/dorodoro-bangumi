@@ -22,7 +22,7 @@ use crate::base_peer::error::{deadly_error, ErrorType, PeerExitReason};
 use crate::base_peer::rate_control::RateControl;
 use crate::base_peer::rate_control::probe::Dashbord;
 use crate::config::CHANNEL_BUFFER;
-use crate::context::Context;
+use crate::context::{AsyncSemaphore, Context};
 use crate::default_servant::DefaultServant;
 use crate::dht;
 use crate::dht::routing::NodeId;
@@ -163,7 +163,7 @@ impl DHTTimedTask {
 /// peer 启动器
 struct PeerLaunch {
     /// peer 启动任务池
-    join_set: JoinSet<PeerStartResult<PeerInfo>>,
+    join_set: JoinSet<PeerStartResult<(PeerInfo, Option<AsyncSemaphore>)>>,
 
     /// peer 事件处理
     servant: Weak<DefaultServant>,
@@ -190,17 +190,47 @@ impl PeerLaunch {
         self.channel.0.clone()
     }
 
+    fn get_async_start_limit(&self) -> usize {
+        let config = Context::get_config();
+        config.async_peer_start_limit().max(config.torrent_peer_conn_limit().saturating_sub(self.peers.len()))
+    }
+
+    fn take_async_semaphore(&self) -> Option<AsyncSemaphore> {
+        if self.join_set.len() < self.get_async_start_limit() {
+            Context::take_async_peer_start_semaphore()
+        } else {
+            None
+        }
+    }
+
+    fn handle_peer_start_result(&self, ret: PeerStartResult<(PeerInfo, Option<AsyncSemaphore>)>) {
+        match ret {
+            PeerStartResult::Success((peer_info, _)) => {
+                self.peers.insert(peer_info.id, peer_info);
+            }
+            PeerStartResult::Failed((peer_info, _), e) => {
+                debug!("peer [{}] 启动失败: {}", peer_info.name(), e);
+            }
+        }
+    }
+
     async fn run(mut self) {
         loop {
             tokio::select! {
                 peer_info = self.channel.1.recv() => {
                     match peer_info {
                         Some(peer_info) => {
+                            info!("当前 peers 数量: {}", self.peers.len());
                             let bp = BasePeer::new(
                                 peer_info.id, peer_info.addr, 
                                 self.servant.clone(), peer_info.dashbord.clone()
                             );
-                            self.join_set.spawn(Box::pin(bp.async_run(peer_info)));
+                            let ts = self.take_async_semaphore();
+                            if ts.is_none() {
+                                self.handle_peer_start_result(bp.async_run((peer_info, ts)).await);
+                            } else {
+                                self.join_set.spawn(bp.async_run((peer_info, ts)));
+                            }
                         }
                         None => {
                             break;
@@ -209,11 +239,8 @@ impl PeerLaunch {
                 }                
                 ret = self.join_set.join_next(), if !self.join_set.is_empty() => {
                     match ret {
-                        Some(Ok(PeerStartResult::Success(peer_info))) => {
-                            self.peers.insert(peer_info.id, peer_info);
-                        }
-                        Some(Ok(PeerStartResult::Failed(peer_info, e))) => {
-                            debug!("peer [{}] 启动失败: {}", peer_info.name(), e);
+                        Some(Ok(ret)) => {
+                            self.handle_peer_start_result(ret);
                         }
                         Some(Err(e)) => {
                             debug!("peer 启动失败: {}", e);

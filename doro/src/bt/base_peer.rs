@@ -34,7 +34,7 @@ use crate::bt::pe_crypto::{self, CryptoProvide};
 use crate::bt::socket::TcpStreamWrapper;
 use crate::command::CommandHandler;
 use crate::config::CHANNEL_BUFFER;
-use crate::context::{AsyncTaskSemaphore, Context};
+use crate::context::{AsyncSemaphore, Context};
 use crate::emitter::transfer::TransferPtr;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use crate::servant::Servant;
@@ -396,7 +396,7 @@ impl BasePeer {
     ///  
     /// 这个不用处理 task_pool.len() < async_task_limit() 和 task_pool.spawn() 非原子性的问题，
     /// 因为这两个操作只会在监听线程中以同步的方式使用。
-    fn take_async_task_semaphore(&self, task_pool: & JoinSet<Result<()>>) -> Option<AsyncTaskSemaphore> {
+    fn take_async_semaphore(&self, task_pool: & JoinSet<Result<()>>) -> Option<AsyncSemaphore> {
         // 首先不可超出单个 peer 最大异步任务数的限制
         if task_pool.len() < Context::get_config().async_task_limit() {
             Context::take_async_task_semaphore()
@@ -422,7 +422,7 @@ impl BasePeer {
                 cmd = rx.recv() => {
                     if let Some(cmd) = cmd {
                         let cmd: command::Command = cmd.instance();
-                        let ts = self.take_async_task_semaphore(&task_pool);
+                        let ts = self.take_async_semaphore(&task_pool);
                         if ts.is_none() {
                             if let Err(e) = cmd.handle((servant.clone(), ts)).await {
                                 servant.happen_exeception(self.id, e).await;
@@ -436,7 +436,7 @@ impl BasePeer {
                         break;
                     }
                 }
-                ret = task_pool.join_next() => {
+                ret = task_pool.join_next(), if !task_pool.is_empty() => {
                     if let Some(Err(e)) = ret {
                         servant.happen_exeception(self.id, e.into()).await;
                         break;

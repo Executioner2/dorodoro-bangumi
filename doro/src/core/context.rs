@@ -11,26 +11,26 @@ use crate::config::Config;
 use crate::db::{ConnWrapper, Db};
 
 /// 异步任务信号量
-pub struct AsyncTaskSemaphore {
+pub struct AsyncSemaphore {
     /// 异步任务数量计数
-    async_task_count: Arc<AtomicUsize>,
+    task_count: Arc<AtomicUsize>,
 
     /// 禁止 sync，只能 send
     _not_sync: std::marker::PhantomData<Mutex<()>>,
 }
 
-impl AsyncTaskSemaphore {
-    fn new(async_task_count: Arc<AtomicUsize>) -> Self {
+impl AsyncSemaphore {
+    fn new(task_count: Arc<AtomicUsize>) -> Self {
         Self {
-            async_task_count,
+            task_count,
             _not_sync: std::marker::PhantomData,
         }
     }
 }
 
-impl Drop for AsyncTaskSemaphore {
+impl Drop for AsyncSemaphore {
     fn drop(&mut self) {
-        self.async_task_count.fetch_sub(1, Ordering::SeqCst);
+        self.task_count.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -44,6 +44,9 @@ pub struct Context {
 
     /// 异步任务数量计数
     async_task_count: Arc<AtomicUsize>,
+
+    /// 异步启动 peer 数量计数
+    async_peer_start_count: Arc<AtomicUsize>,
 
     /// 全局停机监听
     cancel_token: CancellationToken,
@@ -66,6 +69,7 @@ impl Context {
                 config,
                 cancel_token: CancellationToken::new(),
                 async_task_count: Arc::new(AtomicUsize::new(0)),
+                async_peer_start_count: Arc::new(AtomicUsize::new(0)),
             })
             .unwrap();
     }
@@ -106,7 +110,7 @@ impl Context {
     }
 
     /// 获取异步任务信号量
-    pub fn take_async_task_semaphore() -> Option<AsyncTaskSemaphore> {
+    pub fn take_async_task_semaphore() -> Option<AsyncSemaphore> {
         let context = Context::global();
         let current_count = context.async_task_count.fetch_update(
             Ordering::SeqCst,
@@ -123,8 +127,33 @@ impl Context {
         match current_count {
             Ok(_) => {
                 let async_task_count = context.async_task_count.clone();
-                let async_task_semaphore = AsyncTaskSemaphore::new(async_task_count);
-                Some(async_task_semaphore)
+                let async_semaphore = AsyncSemaphore::new(async_task_count);
+                Some(async_semaphore)
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// 获取 peer 异步启动信号量
+    pub fn take_async_peer_start_semaphore() -> Option<AsyncSemaphore> {
+        let context = Context::global();
+        let current_count = context.async_task_count.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |current| {
+                if current < context.config.async_peer_start_pool_size() {
+                    Some(current + 1)
+                } else {
+                    None
+                }
+            }
+        );
+
+        match current_count {
+            Ok(_) => {
+                let async_peer_start_count = context.async_peer_start_count.clone();
+                let async_semaphore = AsyncSemaphore::new(async_peer_start_count);
+                Some(async_semaphore)
             }
             Err(_) => None,
         }

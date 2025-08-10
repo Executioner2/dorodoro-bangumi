@@ -92,6 +92,12 @@ struct ConfigInner {
 
     /// 总的异步任务池大小
     async_task_pool_size: usize,
+
+    /// 单个任务的 peer 异步起动数量限制
+    async_peer_start_limit: usize,
+
+    /// 异步 peer 启动池大小
+    async_peer_start_pool_size: usize,
 }
 
 impl Default for ConfigInner {
@@ -116,6 +122,8 @@ impl Default for ConfigInner {
             error_piece_limit: 3,
             async_task_limit: 25,
             async_task_pool_size: 2500,
+            async_peer_start_limit: 3,
+            async_peer_start_pool_size: 300,
         }
     }
 }
@@ -258,6 +266,20 @@ impl Config {
         self
     }
 
+    pub fn set_async_peer_start_limit(mut self, limit: usize) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.async_peer_start_limit = limit;
+        }
+        self
+    }
+
+    pub fn set_async_peer_start_pool_size(mut self, size: usize) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.async_peer_start_pool_size = size;
+        }
+        self
+    }
+
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
     }
@@ -336,5 +358,13 @@ impl Config {
 
     pub fn async_task_pool_size(&self) -> usize {
         self.inner.async_task_pool_size
+    }
+
+    pub fn async_peer_start_limit(&self) -> usize {
+        self.inner.async_peer_start_limit
+    }
+
+    pub fn async_peer_start_pool_size(&self) -> usize {
+        self.inner.async_peer_start_pool_size
     }
 }

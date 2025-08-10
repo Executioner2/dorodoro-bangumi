@@ -7,9 +7,9 @@ use doro_util::global::Id;
 
 use crate::base_peer::error::PeerExitReason;
 use crate::base_peer::{MsgType, Servant};
-use crate::context::AsyncTaskSemaphore;
+use crate::context::AsyncSemaphore;
 
-type ServantRef = (Arc<dyn Servant>, Option<AsyncTaskSemaphore>);
+type ServantRef = (Arc<dyn Servant>, Option<AsyncSemaphore>);
 
 command_system_owner! {
     ctx: ServantRef,
