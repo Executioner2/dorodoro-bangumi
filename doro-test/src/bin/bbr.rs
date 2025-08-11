@@ -1052,13 +1052,14 @@ pub mod rd {
     /// 速率播报
     pub async fn speed_print(read_count: Arc<AtomicU64>) {
         let start = tokio::time::Instant::now() + Duration::from_secs(1);
-        let mut timer = tokio::time::interval_at(start, Duration::from_secs(1));
+        let mut tick = tokio::time::interval_at(start, Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut queue = FixedQueue::new(10);
         let mut sum = 0;
 
         loop {
             tokio::select! {
-                _ = timer.tick() => {
+                _ = tick.tick() => {
                     let read_count = read_count.swap(0, Ordering::Relaxed);
                     sum += read_count;
                     queue.push(read_count).map_ext(|val| sum -= val);

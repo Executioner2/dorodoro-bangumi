@@ -236,6 +236,7 @@ impl DHT {
     /// 开始定时刷新路由表
     pub async fn start_interval_refresh(self) {
         let mut tick = tokio::time::interval(REFRESH_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = Context::global().cancelled() => {

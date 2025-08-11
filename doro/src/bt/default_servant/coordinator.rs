@@ -200,10 +200,11 @@ impl<T: PeerSwitch> Coordinator<T> {
 impl<T: PeerSwitch> Coordinator<T> {
     pub async fn run(mut self) {
         let start = Instant::now() + Duration::from_secs(1);
-        let mut interval = tokio::time::interval_at(start, Duration::from_secs(1));
+        let mut tick = tokio::time::interval_at(start, Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
-            interval.tick().await;
+            tick.tick().await;
             if self.switch.is_finished() {
                 break;
             }

@@ -151,6 +151,8 @@ pub async fn flush_all_feeds() -> Result<()> {
 /// 注册定时刷新订阅任务
 pub async fn interval_refresh() {
     let mut tick = tokio::time::interval(REFRESH_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    
     loop {
         tick.tick().await;
         if let Err(e) = flush_all_feeds().await {

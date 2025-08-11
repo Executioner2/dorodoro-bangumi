@@ -139,6 +139,8 @@ impl DHTTimedTask {
 
     async fn run(mut self) {
         let mut tick = tokio::time::interval(DHT_FIND_PEERS_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -220,7 +222,6 @@ impl PeerLaunch {
                 peer_info = self.channel.1.recv() => {
                     match peer_info {
                         Some(peer_info) => {
-                            info!("当前 peers 数量: {}", self.peers.len());
                             let bp = BasePeer::new(
                                 peer_info.id, peer_info.addr, 
                                 self.servant.clone(), peer_info.dashbord.clone()
