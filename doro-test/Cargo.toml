@@ -1,0 +1,22 @@
+[package]
+name = "doro-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+doro = { path = "../doro" }
+doro-util = { path = "../doro-util" }
+anyhow = "1.0.98"
+byteorder = "1.5.0"
+bytes = "1.10.1"
+dashmap = "6.1.0"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = "1.46.1"
+tokio-util = "0.7.15"
+tracing = "0.1.41"
+serde_json = "1.0.141"
+ctor = "0.4.2"
+tracing-appender = "0.2.3"
+fnv = "1.0.7"
+rand = "0.9.2"
+futures = "0.3.31"

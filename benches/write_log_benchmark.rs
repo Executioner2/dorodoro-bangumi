@@ -1,12 +1,12 @@
 //! 写日志基准性能测试
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use dorodoro_bangumi::log;
-use tracing::{info, Level};
+use criterion::{Criterion, criterion_group, criterion_main};
+use doro_util::default_logger;
+use tracing::{Level, info};
+
+default_logger!(Level::INFO);
 
 fn write_log(c: &mut Criterion) {
-    let _guard = log::register_logger("logs", "dorodoro-bangumi", 10 << 20, 2, Level::INFO).unwrap();
-
     c.bench_function("write_log", |b| {
         b.iter(|| {
             // 日志写入代码

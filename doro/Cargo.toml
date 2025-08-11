@@ -1,0 +1,49 @@
+[package]
+name = "doro"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+dev = ["console-subscriber"] # 开发环境
+
+[dependencies]
+doro-macro = { path = "../doro-macro" }
+doro-util = { path = "../doro-util" }
+
+tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "tokio-macros", "fs"] }
+tokio-util = "0.7.14"
+byteorder = "1.4"
+rand = "0.9.0"
+reqwest = { version = "0.12.15", features = ["blocking"] }
+bytes = "1.10.1"
+sha1 = "0.10.6"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.15", features = ["env-filter", "local-time"] }
+tracing-appender = "0.2.3"
+percent-encoding = "2.3.1"
+lazy_static = "1.5.0"
+hex = "0.4.3"
+ahash = "0.8.11"
+dashmap = "6.1.0"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+bincode = "2.0.1"
+memmap2 = "0.9.5"
+fnv = "1.0.7"
+libc = "0.2.172"
+futures = "0.3.31"
+bendy = "0.3.3"
+num-bigint = "0.4.6"
+num-traits = "0.2.19"
+rc4 = "0.1.0"
+ctor = "0.4.2"
+anyhow = "1.0.98"
+rss = "2.0.12"
+serde = { version = "1.0.219", features = ["derive"] }
+async-trait = "0.1.88"
+serde_json = "1.0.140"
+json-value = "0.3.3"
+thiserror = "2.0.12"
+console-subscriber = { version = "0.4.1", optional = true }
+
+[dev-dependencies]
+nix = { version = "0.30.1", features = ["socket", "net", "uio"] }

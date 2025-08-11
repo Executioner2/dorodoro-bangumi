@@ -1,0 +1,21 @@
+[package]
+name = "doro-util"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "tokio-macros", "fs", "io-util"] }
+hashlink = "0.10.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.15", features = ["env-filter", "local-time"] }
+tracing-appender = "0.2.3"
+time = { version = "0.3.41", features = ["local-offset"] }
+lazy_static = "1.5.0"
+nanoid = "0.4.0"
+bincode = "2.0.1"
+bendy = "0.3.3"
+ctor = "0.4.2"
+anyhow = "1.0.98"
+bytes = "1.10.1"
+rand = "0.9.2"
+byteorder = "1.4"

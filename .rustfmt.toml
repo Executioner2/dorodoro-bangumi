@@ -1,0 +1,32 @@
+edition="2024"
+
+# style_edition = "2024"
+
+unstable_features = true
+
+# 函数参数折叠方式
+fn_params_layout = "Compressed"
+
+# 触发函数参数折叠的长度
+# fn_call_width = 80
+
+# 格式化宏的变量匹配
+format_macro_matchers = true
+
+# 每个 use 独立一行（粒度为 Module）
+imports_granularity = "Module"
+
+# 每个 use 独占一行，不嵌套
+imports_layout = "Horizontal"
+
+# 导入包分组格式
+group_imports = "StdExternalCrate"
+
+# 表达式溢出时自动缩进
+overflow_delimited_expr = true
+
+# 重新排序 trait 实现，type 和 const 放在前面
+reorder_impl_items = true
+
+# 结构体初始化时，相同名字字段省略式赋值
+use_field_init_shorthand = true
