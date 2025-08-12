@@ -12,6 +12,7 @@ use bytes::Bytes;
 use doro_util::global::Id;
 
 pub mod content;
+pub mod magnet;
 
 /// 订阅者，用于接收任务内部执行信息
 pub trait Subscriber: Send + 'static {

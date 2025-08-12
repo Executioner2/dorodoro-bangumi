@@ -14,6 +14,18 @@ pub const CHANNEL_BUFFER: usize = 100;
 /// 数据库连接池大小
 pub const DATABASE_CONN_LIMIT: usize = 10;
 
+/// bencode 编码的最大深度
+pub const MAX_DEPTH: usize = 10;
+
+/// 等待的 peer 上限，如果超过这个数量，就不会进行 dht 扫描
+pub const DHT_WAIT_PEER_LIMIT: usize = 20;
+
+/// 期望每次 dht 扫描能找到 25 个 peer
+pub const DHT_EXPECT_PEERS: usize = 25;
+
+/// 每间隔一分钟扫描一次 peers
+pub const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
+
 #[derive(Clone, Encode, Decode, Default)]
 pub struct Config {
     inner: Arc<ConfigInner>,
@@ -98,6 +110,9 @@ struct ConfigInner {
 
     /// 异步 peer 启动池大小
     async_peer_start_pool_size: usize,
+
+    /// 种子元数据大小限制
+    metadata_size_limit: u32,
 }
 
 impl Default for ConfigInner {
@@ -124,6 +139,7 @@ impl Default for ConfigInner {
             async_task_pool_size: 2500,
             async_peer_start_limit: 3,
             async_peer_start_pool_size: 300,
+            metadata_size_limit: 10 << 20, // 10MB
         }
     }
 }
@@ -280,6 +296,13 @@ impl Config {
         self
     }
 
+    pub fn set_metadata_size_limit(mut self, limit: u32) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.metadata_size_limit = limit;
+        }
+        self
+    }
+
     pub fn tcp_server_addr(&self) -> SocketAddr {
         self.inner.tcp_server_addr
     }
@@ -366,5 +389,9 @@ impl Config {
 
     pub fn async_peer_start_pool_size(&self) -> usize {
         self.inner.async_peer_start_pool_size
+    }
+
+    pub fn metadata_size_limit(&self) -> u32 {
+        self.inner.metadata_size_limit
     }
 }

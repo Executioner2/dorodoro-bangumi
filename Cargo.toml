@@ -8,6 +8,9 @@ members = [
     "benches"
 ]
 
+[patch.crates-io]
+bendy = { path = "lib/bendy" }
+
 # 性能调试用
 [profile.release]
 debug = 1 # 启用调试信息

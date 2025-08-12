@@ -8,6 +8,9 @@ logs
 .DS_Store
 */.DS_Store
 
+**/*.rs.bk
+Cargo.lock
+
 # 用一段时间再决定要不要使用.zed（这个目录里包含启动配置）
 .zed
 

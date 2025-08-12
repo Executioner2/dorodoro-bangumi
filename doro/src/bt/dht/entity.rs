@@ -7,6 +7,7 @@ use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use doro_util::bytes_util::Bytes2Int;
 use tracing::warn;
 
+use crate::config::MAX_DEPTH;
 use crate::dht::routing::NodeId;
 
 impl Bytes2Object<Host> for [u8] {
@@ -52,9 +53,6 @@ impl Bytes2Object<VecHost> for [u8] {
         Ok(VecHost(hosts))
     }
 }
-
-/// bencode 编码的最大深度
-const MAX_DEPTH: usize = 10;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Host {

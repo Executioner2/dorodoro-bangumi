@@ -10,7 +10,7 @@ dev = ["console-subscriber"] # 开发环境
 doro-macro = { path = "../doro-macro" }
 doro-util = { path = "../doro-util" }
 
-tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "tokio-macros", "fs"] }
+tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "tokio-macros", "fs"] }
 tokio-util = "0.7.14"
 byteorder = "1.4"
 rand = "0.9.0"
@@ -31,11 +31,11 @@ memmap2 = "0.9.5"
 fnv = "1.0.7"
 libc = "0.2.172"
 futures = "0.3.31"
-bendy = "0.3.3"
+bendy = "0.3.4"
 num-bigint = "0.4.6"
 num-traits = "0.2.19"
 rc4 = "0.1.0"
-ctor = "0.4.2"
+ctor = "0.5.0"
 anyhow = "1.0.98"
 rss = "2.0.12"
 serde = { version = "1.0.219", features = ["derive"] }

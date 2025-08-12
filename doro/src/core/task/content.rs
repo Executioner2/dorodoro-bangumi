@@ -3,8 +3,7 @@ use std::net::SocketAddr;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
@@ -13,18 +12,18 @@ use dashmap::{DashMap, DashSet};
 use doro_util::global::{GlobalId, Id};
 use doro_util::if_else;
 use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace};
 
-use crate::base_peer::{BasePeer, PeerStartResult};
+use crate::base_peer::{PeerInfoExt, PeerLaunch};
 use crate::base_peer::error::{deadly_error, ErrorType, PeerExitReason};
 use crate::base_peer::rate_control::RateControl;
 use crate::base_peer::rate_control::probe::Dashbord;
 use crate::config::CHANNEL_BUFFER;
-use crate::context::{AsyncSemaphore, Context};
-use crate::default_servant::DefaultServant;
-use crate::dht;
+use crate::context::Context;
+use crate::default_servant::{DefaultServant, DefaultServantBuilder};
+use crate::dht::DHTTimedTask;
 use crate::dht::routing::NodeId;
 use crate::mapper::torrent::{PieceStatus, TorrentEntity, TorrentMapper, TorrentStatus};
 use crate::servant::{Servant, ServantCallback, ServantContext};
@@ -33,15 +32,6 @@ use crate::task::{Async, HostSource, ReceiveHost, Subscriber, Task, TaskCallback
 use crate::task_manager::PeerId;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
-
-/// 每间隔一分钟扫描一次 peers
-const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
-
-/// 等待的 peer 上限，如果超过这个数量，就不会进行 dht 扫描
-const DHT_WAIT_PEER_LIMIT: usize = 20;
-
-/// 期望每次 dht 扫描能找到 25 个 peer
-const DHT_EXPECT_PEERS: usize = 25;
 
 #[derive(Debug)]
 pub struct PeerInfo {
@@ -52,7 +42,6 @@ pub struct PeerInfo {
     addr: SocketAddr,
 
     /// 来源
-    #[allow(dead_code)]
     source: HostSource,
 
     /// 速率仪表盘
@@ -88,178 +77,27 @@ impl PeerInfo {
     fn set_lt_running(&mut self, running: bool) {
         self.lt_running = running;
     }
+}
 
-    fn name(&self) -> String {
+impl PeerInfoExt for PeerInfo {
+    fn get_id(&self) -> Id {
+        self.id
+    }
+
+    fn get_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    fn get_dashbord(&self) -> Dashbord {
+        self.dashbord.clone()
+    }
+
+    fn get_name(&self) -> String {
         format!("{} - {}", self.addr, self.id)
     }
-}
 
-/// dht 定时任务
-struct DHTTimedTask {
-    /// 任务 id
-    id: Id,
-
-    /// 资源 hash 值
-    info_hash: NodeId,
-
-    /// 任务状态
-    status: Arc<RwLock<TorrentStatus>>,
-
-    /// 等待队列
-    wait_queue: Arc<Mutex<VecDeque<PeerInfo>>>, 
-
-    /// 发现 peer 后回调
-    dispatch: Weak<Dispatch>,
-
-    /// 主动扫描信号
-    recv: Receiver<()>,
-}
-
-impl Drop for DHTTimedTask {
-    fn drop(&mut self) {
-        info!("DHTTimedTask [{}] 已 drop", self.id)
-    }
-}
-
-impl DHTTimedTask {
-    async fn find_peers(&self) {
-        if *self.status.read_pe() == TorrentStatus::Finished {
-            return;
-        }
-        if self.wait_queue.lock_pe().len() < DHT_WAIT_PEER_LIMIT {
-            #[rustfmt::skip]
-            dht::find_peers(
-                self.info_hash.clone(),
-                self.dispatch.clone(),
-                self.id,
-                DHT_EXPECT_PEERS,
-            ).await;
-        }
-    }
-
-    async fn run(mut self) {
-        let mut tick = tokio::time::interval(DHT_FIND_PEERS_INTERVAL);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        
-        loop {
-            tokio::select! {
-                _ = tick.tick() => {
-                    self.find_peers().await;
-                }
-                ret = self.recv.recv() => {
-                    match ret {
-                        Some(()) => {
-                            tick.reset();
-                            self.find_peers().await;
-                        }
-                        None => {
-                            break
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// peer 启动器
-struct PeerLaunch {
-    /// peer 启动任务池
-    join_set: JoinSet<PeerStartResult<(PeerInfo, Option<AsyncSemaphore>)>>,
-
-    /// peer 事件处理
-    servant: Weak<DefaultServant>,
-
-    /// peer 管理集合
-    peers: Arc<DashMap<Id, PeerInfo>>,
-
-    /// 消费通道
-    channel: (Sender<PeerInfo>, Receiver<PeerInfo>)
-}
-
-impl PeerLaunch {
-    fn new(servant: Weak<DefaultServant>, peers: Arc<DashMap<Id, PeerInfo>>) -> Self {
-        let channel = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
-        Self {
-            join_set: JoinSet::new(),
-            servant,
-            peers,
-            channel,
-        }
-    }
-
-    fn get_sender(&self) -> Sender<PeerInfo> {
-        self.channel.0.clone()
-    }
-
-    fn get_async_start_limit(&self) -> usize {
-        let config = Context::get_config();
-        config.async_peer_start_limit().max(config.torrent_peer_conn_limit().saturating_sub(self.peers.len()))
-    }
-
-    fn take_async_semaphore(&self) -> Option<AsyncSemaphore> {
-        if self.join_set.len() < self.get_async_start_limit() {
-            Context::take_async_peer_start_semaphore()
-        } else {
-            None
-        }
-    }
-
-    fn handle_peer_start_result(&self, ret: PeerStartResult<(PeerInfo, Option<AsyncSemaphore>)>) {
-        match ret {
-            PeerStartResult::Success((peer_info, _)) => {
-                self.peers.insert(peer_info.id, peer_info);
-            }
-            PeerStartResult::Failed((peer_info, _), e) => {
-                debug!("peer [{}] 启动失败: {}", peer_info.name(), e);
-            }
-        }
-    }
-
-    async fn run(mut self) {
-        loop {
-            tokio::select! {
-                peer_info = self.channel.1.recv() => {
-                    match peer_info {
-                        Some(peer_info) => {
-                            let bp = BasePeer::new(
-                                peer_info.id, peer_info.addr, 
-                                self.servant.clone(), peer_info.dashbord.clone()
-                            );
-                            let ts = self.take_async_semaphore();
-                            if ts.is_none() {
-                                self.handle_peer_start_result(bp.async_run((peer_info, ts)).await);
-                            } else {
-                                self.join_set.spawn(bp.async_run((peer_info, ts)));
-                            }
-                        }
-                        None => {
-                            break;
-                        }
-                    }
-                }                
-                ret = self.join_set.join_next(), if !self.join_set.is_empty() => {
-                    match ret {
-                        Some(Ok(ret)) => {
-                            self.handle_peer_start_result(ret);
-                        }
-                        Some(Err(e)) => {
-                            debug!("peer 启动失败: {}", e);
-                        }
-                        None => {
-                            // 不会走到这个分支来的
-                            info!("peer 启动器的任务集合为空，没有 peer 在启动中");
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Drop for PeerLaunch {
-    fn drop(&mut self) {
-        info!("PeerLaunch 已 drop")
+    fn get_source(&self) -> HostSource {
+        self.source
     }
 }
 
@@ -281,10 +119,10 @@ pub struct DownloadContentInner {
     handles: Mutex<Option<JoinSet<()>>>,
 
     /// peer 启动器
-    peer_launch: Mutex<Option<PeerLaunch>>,
+    peer_launch: Mutex<Option<PeerLaunch<PeerInfo, DefaultServant>>>,
 
     /// dht 定时扫描
-    dht_timed_task: Mutex<Option<DHTTimedTask>>,
+    dht_timed_task: Mutex<Option<DHTTimedTask<PeerInfo, Dispatch>>>,
 }
 
 impl Drop for DownloadContentInner {
@@ -329,10 +167,11 @@ impl DownloadContent {
         let peers = Arc::new(DashMap::new());
         let unstart_host = Arc::new(DashSet::new());
         let peer_transfer_speed = Arc::new(DashMap::new());
-        let servant = Arc::new(DefaultServant::new(
-            peer_id.clone(), torrent.info_hash, save_path.clone(),
-            bytefield.clone(), underway_bytefield.clone(), *status.write_pe() != TorrentStatus::Download,
-        ));
+        let servant = DefaultServantBuilder::new(torrent.info_hash, peer_id.clone())
+            .set_save_path(save_path.clone()).set_bytefield(bytefield.clone())
+            .set_underway_bytefield(underway_bytefield.clone())
+            .set_piece_finished(*status.write_pe() != TorrentStatus::Download)
+            .arc_build();
 
         let peer_launch = PeerLaunch::new(
             Arc::downgrade(&servant),
@@ -367,16 +206,15 @@ impl DownloadContent {
             dht_peer_scan_signal: tx
         });
 
-        let dht_timed_task = DHTTimedTask {
+        let dht_timed_task = DHTTimedTask::new(
             id,
-            info_hash: NodeId::new(torrent.info_hash),
-            status: status.clone(),
-            wait_queue: wait_queue.clone(),
-            dispatch: Arc::downgrade(&dispatch),
-            recv: rx,
-        };
+            NodeId::new(torrent.info_hash),
+            wait_queue.clone(),
+            Arc::downgrade(&dispatch),
+            rx,
+        );
 
-        servant.init(Arc::downgrade(&dispatch), Some(torrent.clone()));
+        servant.set_callback(Arc::downgrade(&dispatch));
 
         let info = AnnounceInfo::new(
             download.clone(),
@@ -815,7 +653,7 @@ impl ServantCallback for Dispatch {
         }
 
         if let Some((_, peer)) = self.peers.remove(&peer.get_id()) {
-            debug!("成功移除 peer [{}]", peer.name());
+            debug!("成功移除 peer [{}]", peer.get_name());
             match reason {
                 PeerExitReason::DownloadFinished => {
                     self.unstart_host.remove(&peer.addr);
@@ -825,11 +663,11 @@ impl ServantCallback for Dispatch {
                     PeerSwitch::start_temp_peer(self).await;
                 }
                 PeerExitReason::Exception(e) if e.error_type() == ErrorType::DeadlyError => {
-                    error!("peer [{}] 引发致命错误，加入黑名单，原因: {}", peer.name(), e);
+                    error!("peer [{}] 引发致命错误，加入黑名单，原因: {}", peer.get_name(), e);
                 }
                 _ => {
                     self.unstart_host.remove(&peer.addr);
-                    trace!("将这个地址从不可用host中移除了");
+                    trace!("将这个地址从不可用 host 中移除了");
                     self.start_wait_peer().await;
                 }
             }
