@@ -7,6 +7,7 @@
 //!
 //! 长度的需要加上消息类型的 1 字节。
 
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::mem;
 use std::net::SocketAddr;
@@ -15,9 +16,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use anyhow::{anyhow, Error, Result};
+use async_trait::async_trait;
+use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
 use bytes::{Bytes, BytesMut};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use doro_util::option_ext::OptionExt;
 use doro_util::{anyhow_eq, bytes_util};
 use doro_util::bytes_util::{WriteBytesBigEndian, Bytes2Int};
@@ -40,8 +43,10 @@ use crate::default_servant::extend_data::{HandshakeData, Metadata};
 use crate::emitter::transfer::TransferPtr;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use crate::servant::Servant;
+use crate::task::magnet::Magnet;
 use crate::task::HostSource;
 use crate::task_manager::PeerId;
+use crate::torrent::{Info, Torrent, TorrentArc};
 
 pub mod command;
 pub mod error;
@@ -504,9 +509,16 @@ impl BasePeer {
                     }
                 }
                 ret = task_pool.join_next(), if !task_pool.is_empty() => {
-                    if let Some(Err(e)) = ret {
-                        servant.happen_exeception(self.id, e.into()).await;
-                        break;
+                    match ret {
+                        Some(Ok(Err(e))) => {
+                            servant.happen_exeception(self.id, e).await;
+                            break;    
+                        },
+                        Some(Err(e)) => {
+                            servant.happen_exeception(self.id, e.into()).await;
+                            break;    
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -684,8 +696,8 @@ pub struct PeerInner {
     /// metadata 位图
     metadata_bitfield: Mutex<Option<Vec<u8>>>,
 
-    /// metadata 索引   
-    metadata_index: AtomicUsize,
+    /// metadata 分片索引
+    metadata_piece_idx: AtomicUsize,
 }
 
 impl Drop for PeerInner {
@@ -729,7 +741,7 @@ impl Peer {
             extend_handshake_data: OnceLock::new(),
             metadata: Mutex::new(None),
             metadata_bitfield: Mutex::new(None),
-            metadata_index: AtomicUsize::new(0),
+            metadata_piece_idx: AtomicUsize::new(0),
         }))
     }
 
@@ -810,6 +822,20 @@ impl Peer {
             .map_err(|_| anyhow!("扩展协议握手数据已存在"))
     }
 
+    /// 获取 metadata   
+    /// 调用此方法应该确保 metadata 已经初始化
+    pub fn parse_torrent_from_metadata(&self, magnet: Arc<Magnet>) -> Result<TorrentArc> {
+        let metadata = self.metadata.lock_pe();
+        if metadata.is_none() {
+            return Err(anyhow!("metadata 未初始化"));
+        }
+
+        let metadata = metadata.as_ref().unwrap();
+        let info = Info::from_bencode(metadata.as_slice())
+            .map_err(|e| anyhow!("解析 torrent 元数据失败\t{e}"))?;
+        Ok(TorrentArc::new(Torrent::new(info, magnet.info_hash, magnet.trackers.clone())))
+    }
+
     /// 从扩展协议握手数据中获取种子元数据大小
     pub fn get_metadata_size(&self) -> Option<u32> {
         self.extend_handshake_data.get()?.metadata_size
@@ -830,7 +856,8 @@ impl Peer {
 
         let mut metadata_bitfield = self.metadata_bitfield.lock_pe();
         if metadata_bitfield.is_none() {
-            let len = size.div_ceil(METADATA_PIECE_SIZE);
+            let bit_len = size.div_ceil(METADATA_PIECE_SIZE);
+            let len = (bit_len + 7) >> 3;
             *metadata_bitfield = Some(vec![0u8; len]);
         }
     }
@@ -850,36 +877,36 @@ impl Peer {
         {
             let mut metadata_bitfield_lock = self.metadata_bitfield.lock_pe();
             let metadata_bitfield = metadata_bitfield_lock.as_mut().unwrap();
-            let idx = piece_idx.div_ceil(METADATA_PIECE_SIZE as u32);
-            let (idx, offset) = bytes_util::bitmap_offset(idx);
+            let (idx, offset) = bytes_util::bitmap_offset(piece_idx);
             metadata_bitfield[idx] |= offset;
 
-            let mut metadata_index = self.metadata_index.load(Ordering::Acquire);
-            let (idx, mut offset) = bytes_util::bitmap_offset(metadata_index as u32);
+            let mut metadata_piece_idx = self.metadata_piece_idx.load(Ordering::Acquire);
+            let (idx, mut offset) = bytes_util::bitmap_offset(metadata_piece_idx as u32);
             'first_loop: for value in metadata_bitfield[idx..].iter() {
                 let mut k = offset;
                 while k != 0 {
                     if *value & k == 0 {
                         break 'first_loop;
                     }
-                    metadata_index += METADATA_PIECE_SIZE;
+                    metadata_piece_idx += 1;
                     k >>= 1;
                 }
                 offset = 1 << 7
             }
 
-            self.metadata_index.store(metadata_index, Ordering::Release);
+            self.metadata_piece_idx.store(metadata_piece_idx, Ordering::Release);
         }
         Ok(())
     }
 
     pub fn is_metadata_complete(&self) -> bool {
         let total_size = { self.metadata.lock_pe().as_ref().unwrap().len() };
-        self.metadata_index.load(Ordering::Relaxed) >= total_size
+        let total_piece_size = total_size.div_ceil(METADATA_PIECE_SIZE);
+        self.metadata_piece_idx.load(Ordering::Relaxed) >= total_piece_size
     }
 
-    pub fn get_metadata_index(&self) -> u32 {
-        self.metadata_index.load(Ordering::Relaxed) as u32
+    pub fn get_metadata_piece_idx(&self) -> u32 {
+        self.metadata_piece_idx.load(Ordering::Relaxed) as u32
     }
 
     pub fn status(&self) -> Status {
@@ -1048,7 +1075,7 @@ impl Peer {
     /// 请求 metadata 分片
     pub async fn request_metadata_piece(&self, piece: u32) -> Result<()> {
         self.check_runnable()?;
-        if self.is_can_be_request_metadata() {
+        if !self.is_can_be_request_metadata() {
             return Err(anyhow!("对端不支持 ut_metadata 扩展协议，无法请求 metadata 分片"));
         }
 
@@ -1102,7 +1129,7 @@ impl Deref for PeerWrapper {
 }
 
 /// peer info 扩展
-pub trait PeerInfoExt {
+pub trait PeerInfoExt: Send {
     /// 获取 peer id
     fn get_id(&self) -> Id;
 
@@ -1117,15 +1144,36 @@ pub trait PeerInfoExt {
 
     /// 获取 peer 来源
     fn get_source(&self) -> HostSource;
+
+    /// 获取 peer 链接限制
+    fn get_peer_conn_limit(&self) -> usize;
+}
+
+#[async_trait]
+pub trait PeerLaunchCallback {
+    /// 当 peer 启动失败时调用
+    async fn on_peer_start_failed(&self, peer_info: Box<dyn PeerInfoExt>);
+
+    /// 当 peer 启动成功时调用
+    async fn on_peer_start_success(&self, peer_id: Id);
 }
 
 /// peer 启动器
-pub struct PeerLaunch<T, S> {
+pub struct PeerLaunch<T, S, C> {
     /// peer 启动任务池
     join_set: JoinSet<PeerStartResult<(T, Option<AsyncSemaphore>)>>,
 
     /// peer 事件处理
     servant: Weak<S>,
+
+    /// 等待队列
+    wait_queue: Arc<Mutex<VecDeque<T>>>,
+
+    /// 不可启动的 host 集合
+    unstart_host: Arc<DashSet<SocketAddr>>,
+
+    /// peer 启动事件回调
+    callback: Weak<C>,
 
     /// peer 管理集合
     peers: Arc<DashMap<Id, T>>,
@@ -1134,17 +1182,30 @@ pub struct PeerLaunch<T, S> {
     channel: (Sender<T>, Receiver<T>)
 }
 
-impl<T, S> PeerLaunch<T, S>
+impl<T, S, C> Drop for PeerLaunch<T, S, C> {
+    fn drop(&mut self) {
+        info!("PeerLaunch 已 drop");
+    }
+}
+
+impl<T, S, C> PeerLaunch<T, S, C>
 where 
     T: PeerInfoExt + Send + 'static,
-    S: Servant {
-    pub fn new(servant: Weak<S>, peers: Arc<DashMap<Id, T>>) -> Self {
-        let channel = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+    S: Servant,
+    C: PeerLaunchCallback,
+{
+    pub fn new(servant: Weak<S>, peers: Arc<DashMap<Id, T>>, 
+        wait_queue: Arc<Mutex<VecDeque<T>>>, unstart_host: Arc<DashSet<SocketAddr>>,
+        callback: Weak<C>, channel: (Sender<T>, Receiver<T>)
+    ) -> Self {
         Self {
             join_set: JoinSet::new(),
             servant,
+            callback,
             peers,
             channel,
+            wait_queue,
+            unstart_host,
         }
     }
 
@@ -1165,13 +1226,21 @@ where
         }
     }
 
-    fn handle_peer_start_result(&self, ret: PeerStartResult<(T, Option<AsyncSemaphore>)>) {
+    async fn handle_peer_start_result(&self, ret: PeerStartResult<(T, Option<AsyncSemaphore>)>) {
         match ret {
             PeerStartResult::Success((peer_info, _)) => {
+                let id = peer_info.get_id();
                 self.peers.insert(peer_info.get_id(), peer_info);
+                if let Some(callback) = self.callback.upgrade() {
+                    callback.on_peer_start_success(id).await;
+                }
             }
             PeerStartResult::Failed((peer_info, _), e) => {
                 debug!("peer [{}] 启动失败: {}", peer_info.get_name(), e);
+                self.unstart_host.remove(&peer_info.get_addr());
+                if let Some(callback) = self.callback.upgrade() {
+                    callback.on_peer_start_failed(Box::new(peer_info)).await;
+                }
             }
         }
     }
@@ -1182,13 +1251,25 @@ where
                 peer_info = self.channel.1.recv() => {
                     match peer_info {
                         Some(peer_info) => {
+                            if self.unstart_host.contains(&peer_info.get_addr()) {
+                                debug!("[{}] 已在启动队列中，或者被禁用", peer_info.get_name());
+                                continue;
+                            }
+
+                            self.unstart_host.insert(peer_info.get_addr());
+                            let limit = peer_info.get_peer_conn_limit();
+                            if limit < self.peers.len() {
+                                self.wait_queue.lock_pe().push_back(peer_info);
+                                continue;
+                            }
+
                             let bp = BasePeer::new(
                                 peer_info.get_id(), peer_info.get_addr(), 
                                 self.servant.clone(), peer_info.get_dashbord()
                             );
                             let ts = self.take_async_semaphore();
                             if ts.is_none() {
-                                self.handle_peer_start_result(bp.async_run((peer_info, ts)).await);
+                                self.handle_peer_start_result(bp.async_run((peer_info, ts)).await).await;
                             } else {
                                 self.join_set.spawn(bp.async_run((peer_info, ts)));
                             }
@@ -1197,14 +1278,15 @@ where
                             break;
                         }
                     }
-                }                
+                } 
                 ret = self.join_set.join_next(), if !self.join_set.is_empty() => {
                     match ret {
                         Some(Ok(ret)) => {
-                            self.handle_peer_start_result(ret);
+                            self.handle_peer_start_result(ret).await;
                         }
                         Some(Err(e)) => {
-                            debug!("peer 启动失败: {}", e);
+                            // 不可逆的错误，无法恢复，需要 panic
+                            panic!("peer 启动器的任务出错: {e}");
                         }
                         None => {
                             // 不会走到这个分支来的

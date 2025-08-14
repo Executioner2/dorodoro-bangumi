@@ -4,8 +4,8 @@ pub mod udp_tracker;
 use core::fmt::Display;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Weak};
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use ahash::AHashSet;
@@ -17,7 +17,6 @@ use tracing::{debug, trace};
 
 use crate::task::{HostSource, ReceiveHost};
 use crate::task_manager::PeerId;
-use crate::torrent::TorrentArc;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
 
@@ -79,7 +78,7 @@ impl Display for Event {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AnnounceInfo {
     download: Arc<AtomicU64>,
     uploaded: Arc<AtomicU64>,
@@ -104,6 +103,7 @@ impl AnnounceInfo {
 fn parse_tracker_host(
     announce: &str, info_hash: Arc<[u8; 20]>, peer_id: PeerId,
 ) -> Option<TrackerInstance> {
+    // let announce = form_urlencoded::parse(announce.as_bytes()).
     if announce.starts_with("http") {
         Some(TrackerInstance::HTTP(HttpTracker::new(
             announce.to_string(),
@@ -132,27 +132,23 @@ fn parse_tracker_host(
 }
 
 fn instance_tracker(
-    peer_id: PeerId, torrent: TorrentArc,
+    peer_id: PeerId, trackers: Vec<Vec<String>>, info_hash: [u8; 20],
 ) -> Vec<Arc<Mutex<(Event, TrackerInstance)>>> {
-    let mut trackers = vec![];
-    let info_hash = Arc::new(torrent.info_hash);
-    let root = &torrent.announce;
+    let mut ret = vec![];
+    let info_hash = Arc::new(info_hash);
     let mut visited = AHashSet::new();
 
-    std::iter::once(root)
-        .chain(torrent.announce_list.iter().flatten())
-        .for_each(|announce| {
-            if !visited.contains(announce) {
-                if let Some(tracker) =
-                    parse_tracker_host(announce, info_hash.clone(), peer_id.clone())
-                {
-                    trackers.push(Arc::new(Mutex::new((Event::Started, tracker))))
-                }
-                visited.insert(announce);
+    trackers.iter().flatten().for_each(|announce| {
+        if !visited.contains(announce) {
+            if let Some(tracker) = parse_tracker_host(announce, info_hash.clone(), peer_id.clone())
+            {
+                ret.push(Arc::new(Mutex::new((Event::Started, tracker))))
             }
-        });
+            visited.insert(announce);
+        }
+    });
 
-    trackers
+    ret
 }
 
 async fn scan_udp_tracker<T: ReceiveHost + Send + Sync + 'static>(
@@ -303,9 +299,10 @@ where
     T: ReceiveHost + Send + Sync + 'static,
 {
     pub fn new(
-        receive_host: Weak<T>, peer_id: PeerId, torrent: TorrentArc, info: AnnounceInfo,
+        receive_host: Weak<T>, peer_id: PeerId, trackers: Vec<Vec<String>>, info: AnnounceInfo,
+        info_hash: [u8; 20],
     ) -> Self {
-        let trackers = instance_tracker(peer_id, torrent);
+        let trackers = instance_tracker(peer_id, trackers, info_hash);
 
         Self(Arc::new(TrackerInner {
             receive_host,
@@ -321,7 +318,6 @@ where
         use std::str::FromStr;
         let peers = vec![
             SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-            
             // SocketAddr::from_str("192.168.2.113:6881").unwrap(),
             // SocketAddr::from_str("192.168.2.113:6882").unwrap(),
             // SocketAddr::from_str("192.168.2.113:6883").unwrap(),

@@ -589,7 +589,7 @@ impl Servant for DefaultServant {
             .map(|peer| peer.value().clone())
             .ok_or(anyhow!("peer id [{id}] not found"))?;
 
-        let piece = peer.get_metadata_index();
+        let piece = peer.get_metadata_piece_idx();
         peer.request_metadata_piece(piece).await
     }
 
@@ -746,9 +746,9 @@ impl DefaultServant {
         Ok(())
     }
 
-    /// 收到了对方的扩展协议握手
+    /// 收到了对方的扩展协议
     async fn handle_extension_protocol(&self, peer: Peer, mut payload: Bytes) -> Result<()> {
-        trace!("[{}] 收到了对方的扩展协议握手", peer.name());
+        trace!("[{}] 收到了对方的扩展协议", peer.name());
         anyhow_ge!(payload.len(), 1, "[{}] 对端的扩展消息长度不正确", peer.name());
 
         let source_id = payload[0];

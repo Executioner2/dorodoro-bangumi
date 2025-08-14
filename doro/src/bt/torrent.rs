@@ -63,6 +63,26 @@ pub struct Torrent {
 }
 
 impl Torrent {
+    pub fn new(info: Info, info_hash: [u8; 20], announces: Vec<String>) -> Self {
+        Self {
+            announce: "".to_string(),
+            announce_list: vec![announces],
+            created_by: None,
+            creation_date: 0,
+            info,
+            info_hash,
+            comment: None,
+            encoding: None,
+        }
+    }
+
+    /// 获取 Tracker 地址
+    pub fn get_trackers(&self) -> Vec<Vec<String>> {
+        let mut trackers = vec![vec![self.announce.to_string()]];
+        trackers.extend_from_slice(&self.announce_list);
+        trackers
+    }
+
     /// 根据分片下标，查询处相关文件
     #[rustfmt::skip]
     pub fn find_file_of_piece_index(
@@ -448,6 +468,16 @@ impl Parse<&str> for Torrent {
     }
 }
 
+/// 传入字节引用
+impl Parse<&[u8]> for Torrent {
+    fn parse_torrent(data: &[u8]) -> Result<Torrent> {
+        match Torrent::from_bencode(data) {
+            Ok(torrent) => Ok(torrent),
+            Err(e) => Err(anyhow!("解析种子文件失败: {}", e)),
+        }
+    }
+}
+
 /// 传入文件路径
 impl Parse<&str> for TorrentArc {
     fn parse_torrent(data: &str) -> Result<TorrentArc> {
@@ -469,7 +499,15 @@ impl Parse<Vec<u8>> for TorrentArc {
 impl Parse<Bytes> for TorrentArc {
     fn parse_torrent(data: Bytes) -> Result<Self> {
         Ok(TorrentArc {
-            inner: Arc::new(Torrent::parse_torrent(data.to_vec())?),
+            inner: Arc::new(Torrent::parse_torrent(&*data)?),
+        })
+    }
+}
+
+impl Parse<&[u8]> for TorrentArc {
+    fn parse_torrent(data: &[u8]) -> Result<Self> {
+        Ok(TorrentArc {
+            inner: Arc::new(Torrent::parse_torrent(data)?),
         })
     }
 }

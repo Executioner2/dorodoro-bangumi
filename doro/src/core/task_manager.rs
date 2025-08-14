@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Result;
-use async_trait::async_trait;
 use dashmap::DashMap;
 use doro_util::global::{GlobalId, Id};
 use doro_util::sync::MutexExt;
@@ -112,6 +111,13 @@ impl TaskManager {
         Ok(())
     }
 
+    /// 关闭指定的任务
+    pub async fn shutdown_task(&self, id: Id) {
+        if let Some((_, task)) = self.tasks.remove(&id) {
+            task.shutdown().await;
+        }
+    }
+
     /// 关闭 dorodoro-bangumi
     pub async fn shutdown(&self) {
         for task in self.tasks.iter_mut() {
@@ -136,7 +142,6 @@ struct TaskManagerCallback {
     tasks: Arc<DashMap<Id, Box<dyn Task>>>,
 }
 
-#[async_trait]
 impl TaskCallback for TaskManagerCallback {
     /// 任务完成
     fn finish(&self, id: Id) -> Async<()> {

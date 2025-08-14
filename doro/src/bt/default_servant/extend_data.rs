@@ -19,16 +19,16 @@ pub struct HandshakeData {
     pub v: Option<String>,
 
     /// 握手数据接收方的 ip
-    pub yourip: Option<String>,
+    pub yourip: Option<Vec<u8>>,
 
     /// 发送方的 ipv6 地址
-    pub ipv6: Option<String>,
+    pub ipv6: Option<Vec<u8>>,
 
     /// 发送方的 ipv4 地址
-    pub ipv4: Option<String>,
+    pub ipv4: Option<Vec<u8>>,
 
     /// 请求队列大小，客户端可以接受的未处理请求数
-    pub reqq: Option<u8>,
+    pub reqq: Option<usize>,
 
     /// 种子元数据大小
     pub metadata_size: Option<u32>,
@@ -74,22 +74,22 @@ impl FromBencode for HandshakeData {
                        .map(Some)?;
                 }
                 (b"yourip", value) => { 
-                    yourip = String::decode_bencode_object(value)
-                       .context("yourip")
-                       .map(Some)?;
+                    yourip = value.try_into_bytes()
+                        .context("yourip")
+                        .map(|v| Some(v.to_vec()))?;
                 }
                 (b"ipv6", value) => {
-                    ipv6 = String::decode_bencode_object(value)
-                       .context("ipv6")
-                       .map(Some)?;
+                    ipv6 = value.try_into_bytes()
+                        .context("ipv6")
+                        .map(|v| Some(v.to_vec()))?;
                 }
                 (b"ipv4", value) => {
-                    ipv4 = String::decode_bencode_object(value)
-                       .context("ipv4")
-                       .map(Some)?;
+                    ipv4 = value.try_into_bytes()
+                        .context("ipv4")
+                        .map(|v| Some(v.to_vec()))?;
                 }
                 (b"reqq", value) => {
-                    reqq = u8::decode_bencode_object(value)
+                    reqq = usize::decode_bencode_object(value)
                        .context("reqq")
                        .map(Some)?;
                 }

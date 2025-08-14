@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bytes::Bytes;
 use doro_macro::route;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -52,7 +53,7 @@ async fn fun3(args: Vec<String>) -> Result<Ret<R>> {
 }
 
 // 处理请求
-async fn handle_request(code: u32, body: Option<&[u8]>) {
+async fn handle_request(code: u32, body: Option<Bytes>) {
     let result = super::handle_request(code, body).await;
     match result {
         Ok(response) => {
@@ -75,10 +76,10 @@ async fn test_main() {
             created_at: None,
         },
     };
-    handle_request(0, Some(&serde_json::to_vec(&request).unwrap())).await;
+    handle_request(0, Some(Bytes::from_owner(serde_json::to_vec(&request).unwrap()))).await;
     handle_request(1, None).await;
-    handle_request(2, Some(&serde_json::to_vec(&request).unwrap())).await;
+    handle_request(2, Some(Bytes::from_owner(serde_json::to_vec(&request).unwrap()))).await;
 
     let request = vec!["arg1".to_string(), "arg2".to_string()];
-    handle_request(3, Some(&serde_json::to_vec(&request).unwrap())).await;
+    handle_request(3, Some(Bytes::from_owner(serde_json::to_vec(&request).unwrap()))).await;
 }

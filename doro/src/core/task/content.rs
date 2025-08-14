@@ -16,7 +16,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace};
 
-use crate::base_peer::{PeerInfoExt, PeerLaunch};
+use crate::base_peer::{PeerInfoExt, PeerLaunch, PeerLaunchCallback};
 use crate::base_peer::error::{deadly_error, ErrorType, PeerExitReason};
 use crate::base_peer::rate_control::RateControl;
 use crate::base_peer::rate_control::probe::Dashbord;
@@ -32,6 +32,8 @@ use crate::task::{Async, HostSource, ReceiveHost, Subscriber, Task, TaskCallback
 use crate::task_manager::PeerId;
 use crate::torrent::TorrentArc;
 use crate::tracker::{AnnounceInfo, Tracker};
+
+pub mod event;
 
 #[derive(Debug)]
 pub struct PeerInfo {
@@ -99,6 +101,13 @@ impl PeerInfoExt for PeerInfo {
     fn get_source(&self) -> HostSource {
         self.source
     }
+    
+    fn get_peer_conn_limit(&self) -> usize {
+        if_else!(self.lt_running, 
+            Context::get_config().torrent_lt_peer_conn_limit(), 
+            Context::get_config().torrent_peer_conn_limit()
+        )
+    }
 }
 
 /// 下载种子内容的任务
@@ -119,7 +128,7 @@ pub struct DownloadContentInner {
     handles: Mutex<Option<JoinSet<()>>>,
 
     /// peer 启动器
-    peer_launch: Mutex<Option<PeerLaunch<PeerInfo, DefaultServant>>>,
+    peer_launch: Mutex<Option<PeerLaunch<PeerInfo, DefaultServant, Dispatch>>>,
 
     /// dht 定时扫描
     dht_timed_task: Mutex<Option<DHTTimedTask<PeerInfo, Dispatch>>>,
@@ -170,13 +179,9 @@ impl DownloadContent {
         let servant = DefaultServantBuilder::new(torrent.info_hash, peer_id.clone())
             .set_save_path(save_path.clone()).set_bytefield(bytefield.clone())
             .set_underway_bytefield(underway_bytefield.clone())
+            .set_torrent(torrent.clone())
             .set_piece_finished(*status.write_pe() != TorrentStatus::Download)
             .arc_build();
-
-        let peer_launch = PeerLaunch::new(
-            Arc::downgrade(&servant),
-            peers.clone(),
-        );
 
         let task_control = TaskControl(Arc::new(TaskControlInner {
             id,
@@ -186,9 +191,12 @@ impl DownloadContent {
             uploaded: uploaded.clone(),
             servant: servant.clone(),
             callback: OnceLock::new(),
+            subscribers: RwLock::new(Vec::new()),
         }));
 
         let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+        let channel = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+        let peer_launch_singal = channel.0.clone();
 
         let dispatch = Arc::new(Dispatch {
             id,
@@ -201,10 +209,15 @@ impl DownloadContent {
             peer_transfer_speed: peer_transfer_speed.clone(),
             torrent: torrent.clone(),
             download: download.clone(),
-            peer_start_lock: Arc::new(tokio::sync::Mutex::new(())),
-            peer_launch_singal: peer_launch.get_sender(),
+            peer_launch_singal,
             dht_peer_scan_signal: tx
         });
+
+        let peer_launch = PeerLaunch::new(
+            Arc::downgrade(&servant),
+            peers.clone(), wait_queue.clone(), unstart_host.clone(), 
+            Arc::downgrade(&dispatch), channel
+        );
 
         let dht_timed_task = DHTTimedTask::new(
             id,
@@ -222,7 +235,10 @@ impl DownloadContent {
             torrent.info.length,
             Context::get_config().tcp_server_addr().port(),
         );
-        let tracker = Tracker::new(Arc::downgrade(&dispatch), peer_id.clone(), torrent.clone(), info);
+        let tracker = Tracker::new(
+            Arc::downgrade(&dispatch), peer_id.clone(), 
+            torrent.get_trackers(), info, torrent.info_hash
+        );
 
         Ok(Self(Arc::new(DownloadContentInner {
             id,
@@ -289,8 +305,9 @@ impl Task for DownloadContent {
 
     /// todo - 暂停任务
     fn pause(&self) -> Async<Result<()>> {
-        // let this = self.clone();
-        Box::pin(async move { Ok(()) })
+        Box::pin(async move {
+            Ok(())
+        })
     }
 
     /// 关闭任务
@@ -301,10 +318,9 @@ impl Task for DownloadContent {
         })
     }
 
-    /// todo - 订阅任务的状态变化
-    fn subscribe_inside_info(&self, _subscriber: Box<dyn Subscriber>) -> Async<()> {
-        // let this = self.clone();
-        Box::pin(async move {})
+    /// 订阅任务的内部执行信息
+    fn subscribe_inside_info(&self, subscriber: Subscriber) {
+        self.task_control.add_subscribe(subscriber);
     }
 }
 
@@ -329,6 +345,9 @@ struct TaskControlInner {
 
     /// 任务回调句柄
     callback: OnceLock<Box<dyn TaskCallback>>,
+
+    /// 执行消息订阅者
+    subscribers: RwLock<Vec<Subscriber>>,
 }
 
 impl Drop for TaskControlInner {
@@ -395,6 +414,10 @@ impl TaskControl {
     async fn finish(&self) {
         self.callback().finish(self.id).await;
     }
+
+    fn add_subscribe(&self, subscriber: Subscriber) {
+        self.subscribers.write_pe().push(subscriber);
+    }
 }
 
 /// 执行派遣，派遣任务给 peer
@@ -431,9 +454,6 @@ struct Dispatch {
     /// 已下载的量
     download: Arc<AtomicU64>,
 
-    /// peer 启动锁，保证不会超出数量限制
-    peer_start_lock: Arc<tokio::sync::Mutex<()>>,
-
     /// peer 启动信号
     peer_launch_singal: Sender<PeerInfo>,
 
@@ -443,7 +463,7 @@ struct Dispatch {
 
 impl Drop for Dispatch {
     fn drop(&mut self) {
-        info!("dispatch 已 drop")
+        info!("Dispatch - [{}] 已 drop", self.id);
     }
 }
 
@@ -456,12 +476,11 @@ impl Dispatch {
     /// 直接启动一个 peer
     async fn start_peer(&self, addr: SocketAddr, source: HostSource) -> Result<()> {
         debug!("启动peer: {}", addr);
-        if self.unstart_host.contains(&addr) || self.is_finished() {
-            debug!("[{addr}] 已在启动队列中，或下载任务已完成，忽略启动请求");
+        if self.is_finished() {
+            debug!("[{addr}] 下载任务已完成，忽略启动请求");
             return Ok(());
         }
 
-        self.unstart_host.insert(addr);
         let id = GlobalId::next_id();
         let pi = PeerInfo::new(id, addr, source, Dashbord::new());
 
@@ -496,22 +515,7 @@ impl Dispatch {
     async fn do_start_peer(&self, mut pi: PeerInfo, lt: bool) -> Result<()> {
         pi.reset();
         pi.set_lt_running(lt);
-        
-        {
-            let limit = if_else!(lt, 
-                Context::get_config().torrent_lt_peer_conn_limit(), 
-                Context::get_config().torrent_peer_conn_limit()
-            );
-
-            let lock = self.peer_start_lock.lock().await;
-            if limit < self.peers.len() {
-                self.wait_queue.lock_pe().push_back(pi);
-                return Ok(());
-            }
-            self.peer_launch_singal.send(pi).await?;
-            drop(lock);
-        }
-        
+        self.peer_launch_singal.send(pi).await.unwrap();
         Ok(())
     }
 
@@ -768,5 +772,18 @@ impl PeerSwitch for Dispatch {
     /// 是否完成下载
     fn is_finished(&self) -> bool {
         self.is_finished()
+    }
+}
+
+#[async_trait]
+impl PeerLaunchCallback for Dispatch {
+    /// 当 peer 启动失败时调用
+    async fn on_peer_start_failed(&self, _peer_info: Box<dyn PeerInfoExt>) {
+        self.start_wait_peer().await;
+    }
+
+    /// 当 peer 启动成功时调用
+    async fn on_peer_start_success(&self, _peer_id: Id) {
+        // 启动成功，但什么都不需要做
     }
 }
