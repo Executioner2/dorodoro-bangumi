@@ -833,12 +833,12 @@ impl BBRRateControl {
                 // if true {
                 debug!(
                     "\ninflight: {}\tcwnd: {}\t\
-                send rate: {}\t发送间隔: {}\t\
-                max_bw: {}\tmin rtt: {:?}\t\
-                inflight limit: {}\tstate: {:?}\t\
-                is_app_limited: {}\tinterval: {:?}\t\
-                delivered: {}\t
-                ",
+                    send rate: {}\t发送间隔: {}\t\
+                    max_bw: {}\tmin rtt: {:?}\t\
+                    inflight limit: {}\tstate: {:?}\t\
+                    is_app_limited: {}\tinterval: {:?}\t\
+                    delivered: {}\t
+                    ",
                     self.throttle.inflight(),
                     self.throttle.cwnd(),
                     self.throttle.pacing_rate(),

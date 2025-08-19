@@ -10,7 +10,7 @@ use std::ops::Deref;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use doro_util::global::{GlobalId, Id};
@@ -102,6 +102,7 @@ impl Magnet {
     }
 }
 
+#[derive(Debug)]
 struct PeerInfo {
     /// peer id
     id: Id,
@@ -111,6 +112,24 @@ struct PeerInfo {
 
     /// 主机来源
     source: HostSource,
+
+    /// 是否来自等待队列
+    waited: bool,
+}
+
+impl PeerInfo {
+    fn new(id: Id, addr: SocketAddr, source: HostSource) -> Self {
+        Self {
+            id,
+            addr,
+            source,
+            waited: false,
+        }
+    }
+
+    fn set_waited(&mut self, b: bool) {
+        self.waited = b;
+    }
 }
 
 impl PeerInfoExt for PeerInfo {
@@ -136,6 +155,10 @@ impl PeerInfoExt for PeerInfo {
 
     fn get_peer_conn_limit(&self) -> usize {
         Context::get_config().torrent_peer_conn_limit()
+    }
+    
+    fn is_from_waited(&self) -> bool {
+        self.waited
     }
 }
 
@@ -418,32 +441,32 @@ impl Dispatch {
         self.task_control.finish().await;
     }
 
+    async fn take_from_wait_queue(&self) -> Option<PeerInfo> {
+        if let Some(mut pi) = self.wait_queue.lock_pe().pop_front() {
+            pi.set_waited(true);
+            Some(pi)
+        } else {
+            self.dht_peer_scan_signal.send(()).await.unwrap();
+            None
+        }
+    }
+
     /// 从等待队列中唤醒 peer
     async fn start_wait_peer(&self) {
-        loop {
-            // 超过配额，加入等待队列中
-            let pi = { self.wait_queue.lock_pe().pop_front() };
-            if let Some(pi) = pi {
-                if self.start_peer(pi).await.is_ok() {
-                    break;
-                }
-            } else {
-                self.dht_peer_scan_signal.send(()).await.unwrap();
-                break;
-            }
+        if let Some(pi) = self.take_from_wait_queue().await {
+            self.start_peer(pi).await
         }
     }
 
     /// 启动 peer
-    async fn start_peer(&self, pi: PeerInfo) -> Result<()> {
+    async fn start_peer(&self, pi: PeerInfo) {
         debug!("启动peer: {}", pi.get_name());
         if self.is_finished() {
             debug!("[{}] 下载任务已完成，忽略启动请求", pi.get_name());
-            return Ok(());
+            return;
         }
 
         self.peer_launch_singal.send(pi).await.unwrap();
-        Ok(())
     }
 }
 
@@ -514,10 +537,8 @@ impl ReceiveHost for Dispatch {
     /// 接收主机地址
     async fn receive_host(&self, addr: SocketAddr, source: HostSource) {
         let id = GlobalId::next_id();
-        let pi = PeerInfo { id, addr, source };
-        if let Err(e) = self.start_peer(pi).await {
-            debug!("task [{}] 启动 peer 失败: {e}", self.id)
-        }
+        let pi = PeerInfo::new(id, addr, source);
+        self.start_peer(pi).await
     }
 
     /// 接收多个主机地址
@@ -538,5 +559,11 @@ impl PeerLaunchCallback for Dispatch {
     /// 当 peer 启动成功时调用
     async fn on_peer_start_success(&self, _peer_id: Id) {
         // 启动成功，但什么都不需要做
+    }
+
+    /// 发生不可逆的错误
+    async fn on_panic(&self, error: Error) {
+        error!("发生不可逆的错误: {error}");
+        self.task_control.finish().await;
     }
 }

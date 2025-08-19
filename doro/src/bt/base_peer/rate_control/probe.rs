@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use doro_util::collection::FixedQueue;
 use doro_util::win_minmax::Minmax;
 use doro_util::{datetime, if_else};
-use tracing::{debug, level_enabled, trace, Level};
+use tracing::{level_enabled, trace, Level};
 
 use super::{PacketAck, PacketSend, RateControl};
 
@@ -455,7 +455,7 @@ impl PacketAck for Probe {
         if level_enabled!(Level::DEBUG) {
             let (rate1, unit1) = doro_util::net::rate_formatting(origin_bw);
             let (rate2, unit2) = doro_util::net::rate_formatting(rs.bw);
-            debug!(
+            trace!(
                 "\ncwnd: {}\tmax bw: {:.2}{}\tnew bw: {:.2}{}\tcwnd_gain: {}\t\
                 down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}\tfbr: {}",
                 self.dashbord.cwnd(),

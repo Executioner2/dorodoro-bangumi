@@ -245,7 +245,7 @@ async fn decrypt_b2a_handshake_packet(
             let mut append = vec![0u8; pos + vc_len - recv.len()];
             if let Err(e) = socket.read_exact_with_timeout(&mut append, TIMEOUT).await {
                 return Err(anyhow!(
-                    "vc 数据不足\t已遍历偏移量[{pos}\t需要读取[{}]个字节\n{:?}",
+                    "vc 数据不足\t已遍历偏移量[{pos}]\t需要读取[{}]个字节\n{:?}",
                     append.len(),
                     e
                 ));

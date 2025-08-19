@@ -52,6 +52,9 @@ pub struct PeerInfo {
     /// 是否长期运行
     lt_running: bool,
 
+    /// 是否来自等待队列
+    waited: bool,
+
     /// 错误的分块数量
     error_piece_cnt: u32,
 }
@@ -64,6 +67,7 @@ impl PeerInfo {
             source,
             dashbord,
             lt_running: true,
+            waited: false,
             error_piece_cnt: 0,
         }
     }
@@ -74,11 +78,16 @@ impl PeerInfo {
 
     fn reset(&mut self) {
         self.lt_running = true;
+        self.dashbord.clear_ing();
     }
 
     fn set_lt_running(&mut self, running: bool) {
         self.lt_running = running;
     }
+
+    fn set_waited(&mut self, b: bool) {
+        self.waited = b;
+    } 
 }
 
 impl PeerInfoExt for PeerInfo {
@@ -107,6 +116,10 @@ impl PeerInfoExt for PeerInfo {
             Context::get_config().torrent_lt_peer_conn_limit(), 
             Context::get_config().torrent_peer_conn_limit()
         )
+    }
+
+    fn is_from_waited(&self) -> bool {
+        self.waited
     }
 }
 
@@ -474,11 +487,11 @@ impl Dispatch {
     }
 
     /// 直接启动一个 peer
-    async fn start_peer(&self, addr: SocketAddr, source: HostSource) -> Result<()> {
+    async fn start_peer(&self, addr: SocketAddr, source: HostSource) {
         debug!("启动peer: {}", addr);
         if self.is_finished() {
             debug!("[{addr}] 下载任务已完成，忽略启动请求");
-            return Ok(());
+            return;
         }
 
         let id = GlobalId::next_id();
@@ -487,36 +500,29 @@ impl Dispatch {
         self.do_start_peer(pi, true).await
     }
 
-    /// 从等待队列中唤醒 peer
-    async fn start_wait_peer(&self) {
-        loop {
-            // 超过配额，加入等待队列中
-            let pi = { self.wait_queue.lock_pe().pop_front() };
-            if let Some(pi) = pi {
-                let lt = pi.lt_running;
-                if self.do_start_peer(pi, lt).await.is_ok() {
-                    break;
-                }
-            } else {
-                self.dht_peer_scan_signal.send(()).await.unwrap();
-                break;
-            }
+    async fn take_from_wait_queue(&self) -> Option<PeerInfo> {
+        if let Some(mut pi) = self.wait_queue.lock_pe().pop_front() {
+            pi.set_waited(true);
+            Some(pi)
+        } else {
+            self.dht_peer_scan_signal.send(()).await.unwrap();
+            None
         }
     }
 
-    /// 从临时队列中唤醒 peer
-    async fn start_temp_peer(&self, pi: PeerInfo) -> Result<()> {
-        // 超过配额，加入等待队列中
-        // gasket 通知关闭 peer 关闭，此过程是异步的，因此可能有 1 个 peer 的延迟
-        self.do_start_peer(pi, false).await
+    /// 从等待队列中唤醒 peer
+    async fn start_wait_peer(&self) {
+        if let Some(pi) = self.take_from_wait_queue().await {
+            let lt = pi.is_lt();
+            self.do_start_peer(pi, lt).await
+        }
     }
 
     /// 启动 peer
-    async fn do_start_peer(&self, mut pi: PeerInfo, lt: bool) -> Result<()> {
+    async fn do_start_peer(&self, mut pi: PeerInfo, lt: bool) {
         pi.reset();
         pi.set_lt_running(lt);
         self.peer_launch_singal.send(pi).await.unwrap();
-        Ok(())
     }
 
     /// 检查是否下载完成
@@ -547,9 +553,7 @@ impl Dispatch {
 impl ReceiveHost for Dispatch {
     /// 接收主机地址
     async fn receive_host(&self, host: SocketAddr, source: HostSource) {
-        if let Err(e) = self.start_peer(host, source).await {
-            debug!("task [{}] 启动 peer 失败: {e}", self.id)
-        }
+        self.start_peer(host, source).await
     }
 
     /// 接收多个主机地址
@@ -636,8 +640,7 @@ impl ServantCallback for Dispatch {
 
     /// 对端传来他拥有的分片
     async fn owner_bitfield(&self, sc: Box<dyn ServantContext>, _bitfield: Arc<RwLock<BytesMut>>) -> Result<()> {
-        let peer = sc.get_peer();
-        self.servant.request_piece(peer.get_id()).await
+        self.servant.request_piece(sc.get_peer().get_id()).await
     }
 
     /// 握手成功
@@ -662,12 +665,17 @@ impl ServantCallback for Dispatch {
                 PeerExitReason::DownloadFinished => {
                     self.unstart_host.remove(&peer.addr);
                 }
-                PeerExitReason::PeriodicPeerReplace | PeerExitReason::NotHasJob => {
+                PeerExitReason::PeriodicPeerReplace => {
                     self.wait_queue.lock_pe().push_back(peer);
                     PeerSwitch::start_temp_peer(self).await;
                 }
+                PeerExitReason::NotHasJob => {
+                    self.unstart_host.remove(&peer.addr);
+                    self.start_wait_peer().await;
+                }
                 PeerExitReason::Exception(e) if e.error_type() == ErrorType::DeadlyError => {
                     error!("peer [{}] 引发致命错误，加入黑名单，原因: {}", peer.get_name(), e);
+                    self.start_wait_peer().await;
                 }
                 _ => {
                     self.unstart_host.remove(&peer.addr);
@@ -712,17 +720,14 @@ impl PeerSwitch for Dispatch {
 
     /// 开启一个新的临时 peer
     async fn start_temp_peer(&self) {
-        loop {
-            let pi = { self.wait_queue.lock_pe().pop_front() };
-            if let Some(pi) = pi {
-                if self.start_temp_peer(pi).await.is_ok() {
-                    break;
-                }
-            } else {
-                self.dht_peer_scan_signal.send(()).await.unwrap();
-                break;
-            }
+        if let Some(pi) = self.take_from_wait_queue().await {
+            self.do_start_peer(pi, false).await
         }
+    }
+
+    /// 获得 lt peer 数量
+    fn lt_peer_num(&self) -> usize {
+        self.peers.iter().filter(|peer| peer.is_lt()).count()
     }
 
     /// 找到最慢的 lt peer
@@ -773,6 +778,26 @@ impl PeerSwitch for Dispatch {
     fn is_finished(&self) -> bool {
         self.is_finished()
     }
+
+    /// 列出所有 peer 的速度信息        
+    /// 返回值: (peer_name, peer_bw, peer_cwnd, peer_lt)
+    fn list_rate_info(&self) -> Vec<(String, u64, u32, bool)> {
+        // for peer in self.peers.iter() {
+        //     if let Some(peer) = self.servant.get_peer(peer.id) {
+        //         if peer.get_response_pieces().is_empty() {
+        //             info!("狗日的速度为响应分片没有了，也不关闭，不知道想干嘛，peer: {peer:#?}");
+        //         }
+        //     }
+        // }
+        self.peers.iter().map(|peer| {
+            (peer.get_name(), peer.dashbord.bw(), peer.dashbord.cwnd(), peer.is_lt())
+        }).collect::<Vec<_>>()
+    }
+
+    /// 等待队列长度
+    fn get_wait_queue_len(&self) -> usize {
+        self.wait_queue.lock_pe().len()
+    }
 }
 
 #[async_trait]
@@ -785,5 +810,11 @@ impl PeerLaunchCallback for Dispatch {
     /// 当 peer 启动成功时调用
     async fn on_peer_start_success(&self, _peer_id: Id) {
         // 启动成功，但什么都不需要做
+    }
+
+    /// 发生不可逆的错误
+    async fn on_panic(&self, error: Error) {
+        error!("发生不可逆的错误: {error}");
+        self.task_control.finish().await;
     }
 }

@@ -8,6 +8,7 @@
 //! 长度的需要加上消息类型的 1 字节。
 
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem;
 use std::net::SocketAddr;
@@ -29,7 +30,7 @@ use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinSet;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, error};
 
 use crate::base_peer::listener::{ReadFuture, WriteFuture};
 use crate::base_peer::rate_control::probe::{Dashbord, Probe};
@@ -56,12 +57,25 @@ pub mod rate_control;
 pub mod reserved;
 
 /// 尝试获取 servant 实例，如果没有，则直接 return Ok(())
-macro_rules! try_get_servant {
+macro_rules! try_get_servant_or_err {
     ($self: expr) => {
         match $self.servant.upgrade() {
             Some(servant) => servant,
             None => {
                 return Err(anyhow!("servant weak ref released"));
+            }
+        }
+    };
+}
+
+/// 尝试获取 servant 实例，如果没有，这直接 break
+macro_rules! try_get_servant_or_brack {
+    ($self: expr) => {
+        match $self.servant.upgrade() {
+            Some(servant) => servant,
+            None => {
+                trace!("servant weak ref released");
+                break;
             }
         }
     };
@@ -258,7 +272,7 @@ impl TryFrom<u8> for MsgType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Writer {
     inner: OnceLock<Sender<Vec<u8>>>,
 }
@@ -384,7 +398,7 @@ impl BasePeer {
     #[rustfmt::skip]
     async fn crypto_handshake(&self, socket: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.id);
-        let servant = try_get_servant!(self);
+        let servant = try_get_servant_or_err!(self);
         let info_hash = servant.info_hash();
         pe_crypto::init_handshake(
             socket,
@@ -397,7 +411,7 @@ impl BasePeer {
     #[rustfmt::skip]
     async fn protocol_handshake(&self, socket: &mut TcpStreamWrapper) -> Result<()> {
         trace!("发送握手信息 peer_no: {}", self.id);
-        let servant = try_get_servant!(self);
+        let servant = try_get_servant_or_err!(self);
         let msg_size = 1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN;
         let mut bytes = Vec::with_capacity(msg_size);
         let info_hash = servant.info_hash();
@@ -475,26 +489,19 @@ impl BasePeer {
         } else {
             None
         }
-    } 
+    }
 
     /// 持续监听收到的数据，并进行分发
     async fn persist_listen(self) {
         let mut rx = self.channel.1.lock_pe().take().unwrap();
         let mut task_pool = JoinSet::new(); // 任务池
         loop {
-            let servant = match self.servant.upgrade() {
-                Some(servant) => servant,
-                None => {
-                    trace!("servant weak ref released");
-                    break;
-                }
-            };
-
             tokio::select! {
                 cmd = rx.recv() => {
                     if let Some(cmd) = cmd {
                         let cmd: command::Command = cmd.instance();
                         let ts = self.take_async_semaphore(&task_pool);
+                        let servant = try_get_servant_or_brack!(self);
                         if ts.is_none() {
                             if let Err(e) = cmd.handle((servant.clone(), ts)).await {
                                 servant.happen_exeception(self.id, e).await;
@@ -509,6 +516,7 @@ impl BasePeer {
                     }
                 }
                 ret = task_pool.join_next(), if !task_pool.is_empty() => {
+                    let servant = try_get_servant_or_brack!(self);
                     match ret {
                         Some(Ok(Err(e))) => {
                             servant.happen_exeception(self.id, e).await;
@@ -551,14 +559,14 @@ impl BasePeer {
             self.dashbord.clone(),
             handles, self.opposite_reserved.load(Ordering::Relaxed)
         );
-        let servant = try_get_servant!(self);
+        let servant = try_get_servant_or_err!(self);
         servant.add_peer(self.id, peer).await;
 
         Ok(())
     }
 }
 
-#[derive(Eq, PartialEq, Hash, Clone, Copy)]
+#[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
 pub enum Status {
     /// 不可下载
     Choke,
@@ -642,6 +650,7 @@ impl Piece {
     }
 }
 
+#[derive(Debug)]
 pub struct PeerInner {
     /// 编号
     id: Id,
@@ -698,6 +707,9 @@ pub struct PeerInner {
 
     /// metadata 分片索引
     metadata_piece_idx: AtomicUsize,
+
+    /// 同步锁
+    sync_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Drop for PeerInner {
@@ -715,7 +727,7 @@ impl Deref for Peer {
 }
 
 /// 暴露给外部的 Peer 通信 socket 封装
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Peer(Arc<PeerInner>);
 
 impl Peer {
@@ -742,6 +754,7 @@ impl Peer {
             metadata: Mutex::new(None),
             metadata_bitfield: Mutex::new(None),
             metadata_piece_idx: AtomicUsize::new(0),
+            sync_lock: Arc::new(tokio::sync::Mutex::new(()))
         }))
     }
 
@@ -788,8 +801,12 @@ impl Peer {
         Ok(())
     }
 
+    pub fn get_sync_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.sync_lock.clone()
+    }
+
     pub fn is_can_be_download(&self) -> bool {
-        *self.status.read_pe() == Status::UnChoke
+        *self.status.read_pe() == Status::UnChoke && self.recv_bitfield.load(Ordering::Relaxed)
     }
 
     pub fn dashbord(&self) -> &Dashbord {
@@ -913,34 +930,41 @@ impl Peer {
         *self.status.read_pe()
     }
 
+    /// 设置状态
+    pub fn set_status(&self, status: Status) {
+        *self.status.write_pe() = status;
+    }
+
     pub fn op_status(&self) -> Status {
         *self.op_status.read_pe()
+    }
+
+    /// 设置对端 peer 的状态    
+    pub fn set_op_status(&self, status: Status) {
+        *self.op_status.write_pe() = status;
     }
 
     pub fn op_bitfield(&self) -> Arc<RwLock<BytesMut>> {
         self.op_bitfield.clone()
     }
 
-    /// 设置状态
-    pub fn set_status(&self, status: Status) {
-        *self.status.write_pe() = status;
-    }
-
-    /// 设置对端 peer 的状态    
-    pub fn set_op_status(&self, status: Status) {
+    pub fn set_op_bitfield(&self, bitfield: BytesMut) {
+        *self.op_bitfield.write_pe() = bitfield;
         self.recv_bitfield.store(true, Ordering::Relaxed);
-        *self.op_status.write_pe() = status;
-    }
-
-    /// 是否可以发送数据，即 inflight 数据小于 cwnd
-    pub fn has_send_window_space(&self) -> bool {
-        self.dashbord.inflight() <= self.dashbord.cwnd()
     }
 
     /// 是否还有传输数据（指等待响应的数据，或者对方已经 UnChoke，但是我们还没有收到对方的 bitfield）    
     /// ture 表示还有数据，false 表示没有数据
     pub fn has_transfer_data(&self) -> bool {
-        !self.response_pieces.is_empty() || !self.recv_bitfield.load(Ordering::Relaxed)
+        (!self.response_pieces.is_empty() && self.dashbord.inflight() > 0) || (
+            self.status() == Status::UnChoke &&
+            !self.recv_bitfield.load(Ordering::Relaxed)
+        )
+    }
+
+    /// 是否可以发送数据，即 inflight 数据小于 cwnd
+    pub fn has_send_window_space(&self) -> bool {
+        self.dashbord.inflight() <= self.dashbord.cwnd()
     }
 
     /// 重置分片请求的起始位置
@@ -1097,13 +1121,13 @@ impl Peer {
     /// 关闭此 peer
     pub async fn shutdown(&self) {
         if self.runnable.swap(false, Ordering::Relaxed) {
-            let mut handles = {
+            let handles = {
                 match self.handles.lock_pe().take() {
                     Some(handles) => handles,
                     None => return,
                 }
             };
-            handles.shutdown().await;
+            drop(handles)
         }
     }
 }
@@ -1112,6 +1136,7 @@ impl Peer {
 /// 所以，我们对外共享 Peer，只能共享 PeerWrapper，PeerWrapper 包装了可以 Sync 的 Peer，但是
 /// 我们指定 PeerWrapper 不可 Sync，保证使用者无法再次让 PeerWrapper 在多线程中被共享。以避免
 /// 内存泄漏
+#[derive(Debug)]
 pub struct PeerWrapper {
     /// 内部还是指向 Peer
     inner: Peer,
@@ -1129,7 +1154,7 @@ impl Deref for PeerWrapper {
 }
 
 /// peer info 扩展
-pub trait PeerInfoExt: Send {
+pub trait PeerInfoExt: Send + Debug {
     /// 获取 peer id
     fn get_id(&self) -> Id;
 
@@ -1147,6 +1172,9 @@ pub trait PeerInfoExt: Send {
 
     /// 获取 peer 链接限制
     fn get_peer_conn_limit(&self) -> usize;
+
+    /// 是否来自等待队列
+    fn is_from_waited(&self) -> bool;
 }
 
 #[async_trait]
@@ -1156,6 +1184,9 @@ pub trait PeerLaunchCallback {
 
     /// 当 peer 启动成功时调用
     async fn on_peer_start_success(&self, peer_id: Id);
+
+    /// 发生不可逆的错误
+    async fn on_panic(&self, error: Error);
 }
 
 /// peer 启动器
@@ -1251,14 +1282,14 @@ where
                 peer_info = self.channel.1.recv() => {
                     match peer_info {
                         Some(peer_info) => {
-                            if self.unstart_host.contains(&peer_info.get_addr()) {
+                            if !peer_info.is_from_waited() && self.unstart_host.contains(&peer_info.get_addr()) {
                                 debug!("[{}] 已在启动队列中，或者被禁用", peer_info.get_name());
                                 continue;
                             }
 
                             self.unstart_host.insert(peer_info.get_addr());
                             let limit = peer_info.get_peer_conn_limit();
-                            if limit < self.peers.len() {
+                            if self.peers.len() + self.join_set.len() >= limit  {
                                 self.wait_queue.lock_pe().push_back(peer_info);
                                 continue;
                             }
@@ -1285,8 +1316,12 @@ where
                             self.handle_peer_start_result(ret).await;
                         }
                         Some(Err(e)) => {
-                            // 不可逆的错误，无法恢复，需要 panic
-                            panic!("peer 启动器的任务出错: {e}");
+                            // 不可逆的错误，无法恢复，当作 panic 处理
+                            if let Some(callback) = self.callback.upgrade() {
+                                callback.on_panic(anyhow!("peer 启动器的任务出错: {e}")).await;
+                            } else {
+                                error!("peer 启动器的任务出错: {e}");    
+                            }
                         }
                         None => {
                             // 不会走到这个分支来的

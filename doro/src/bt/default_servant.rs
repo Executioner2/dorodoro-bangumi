@@ -12,7 +12,7 @@ use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
 use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, bytes_util};
 use doro_util::global::Id;
 use doro_util::bytes_util::Bytes2Int;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::base_peer::error::{exception, PeerExitReason};
 use crate::base_peer::rate_control::{PacketSend, RateControl};
@@ -266,10 +266,9 @@ impl DefaultServant {
         let mut ret = None;
         for mut item in request_pieces.iter_mut() {
             let piece_length = torrent.piece_length(*item.key());
-            let offset = *item.value() + default_block_size;
-            if offset < piece_length {
-                ret = Some((*item.key(), offset));
-                *item.value_mut() = offset;
+            if *item.value() < piece_length {
+                ret = Some((*item.key(), *item.value()));
+                *item.value_mut() += default_block_size;
                 break;
             }
         }
@@ -277,7 +276,7 @@ impl DefaultServant {
         if ret.is_some() {
             let key = ret.unwrap().0;
             let piece_length = torrent.piece_length(key);
-            request_pieces.remove_if(&key, |_, v| *v + default_block_size >= piece_length);
+            request_pieces.remove_if(&key, |_, v| *v >= piece_length);
             return ret;
         }
 
@@ -295,6 +294,7 @@ impl DefaultServant {
             if let Some((piece_idx, offset)) = self.apply_download_piece(piece_idx as u32) {
                 let piece_length = torrent.piece_length(piece_idx);
                 peer.reset_request_piece_origin(piece_idx, offset, piece_length);
+                peer.get_request_pieces().get_mut(&piece_idx).map_ext(|mut v| *v += default_block_size);
                 return Some((piece_idx, offset));
             }
         }
@@ -408,7 +408,7 @@ impl DefaultServant {
         self.remove_finish_piece(piece_idx);
     }
 
-    /// 获取正在进行中的分片的 idx
+    /// 获取正在进行中或者暂停的分片的 idx
     fn get_piece_status_idx(&self, piece_idx: u32) -> Option<u32> {
         if let Some(status) = self.underway_bytefield.get(&piece_idx) {
             return match status.value() {
@@ -438,13 +438,45 @@ impl DefaultServant {
             return Ok(());
         }
 
-        if self.try_free_slow_piece(&peer, torrent) {
+        if self.try_free_slow_piece(&peer, torrent).await {
             // 这里能够释放掉慢速 piece，那么说明是成功将其分配给了当前 peer 的
             // 那么接下来再次请求 piece，应该不会再走到这里，所以最多递归两层才
             // 是符合预期的。
             self.request_piece(peer.get_id()).await
         } else {
+            // let mut peers = self.peers
+            // .iter().filter(|item| *item.key() != peer.get_id())
+            // .map(|item| (item.value().name(), item.dashbord().bw(), item.get_response_pieces().len()))
+            // .collect::<Vec<_>>();
+            // peers.sort_unstable_by_key(|peer| peer.1);
+            // let println = {
+            //     let mut str = String::new();
+            //     peers.iter().for_each(|peer| {
+            //         let rate = doro_util::net::rate_formatting(peer.1);
+            //         str.push_str(&format!("{} - [{}]: {:.2}{}\n", peer.0, peer.2, rate.0, rate.1));
+            //     });
+            //     str
+            // };
+            // let re_bit = {
+            //     let mut str = String::new();
+            //     if peers.is_empty() {
+            //         let bytefield = self.bytefield.lock_pe();
+            //         for i in 0..torrent.piece_num() {
+            //             let (idx, offset) = bytes_util::bitmap_offset(i as u32);
+            //             let have = bytefield.get(idx).map(|bit| bit & offset != 0).unwrap_or(false);
+            //             if !have {
+            //                 let ub = self.underway_bytefield.get(&(i as u32));
+            //                 str.push_str(&format!("{i} - 未完成，ub 状态: {:?}\n", ub.map(|ub| ub.value().clone())));
+            //             }
+            //         }
+            //     }
+            //     str
+            // };
+            // let rate = doro_util::net::rate_formatting(peer.dashbord().bw());
+            // info!("[{}] 尝试抢夺慢速 peer 的 piece 下载任务失败\tresponse_pieces: [{}]bw: [{:.2}{}]\npeers: [{println}]\n还没下载完的 piece: [{re_bit}]",
+            // peer.name(), peer.get_response_pieces().len(), rate.0, rate.1);
             if !peer.has_transfer_data() { 
+                trace!("[{}] 关闭 peer 连接，因为没有传输数据", peer.name());
                 // 已经没有传输中的数据了，那么就关闭这个 peer 连接
                 self.peer_exit(peer.get_id(), PeerExitReason::NotHasJob).await;
             }
@@ -453,17 +485,25 @@ impl DefaultServant {
     }
 
     /// 尝试释放掉下载的慢，并且当前 peer 可以下载的 piece  
-    /// 如果释放成功，则返回 true，否则返回 false
-    fn try_free_slow_piece(&self, peer: &Peer, torrent: &TorrentArc) -> bool {
+    /// 如果释放成功，则返回 true，否则返回 false       
+    /// 保证同一个 peer 线程安全
+    async fn try_free_slow_piece(&self, peer: &Peer, torrent: &TorrentArc) -> bool {
+        // 抢夺上锁，避免并发抢夺时，状态不一致，而导致没有抢到的线程把 peer 关闭掉
+        // 再因为抢夺时，ub 状态不会改为 Pause，然后抢到了还没开始，没抢到的线程把
+        // 这个 peer 关掉后，抢到的 ub 无法归还（因为无法再从 peers 集合中找到它了）
+        let sync_lock = peer.get_sync_lock();
+        let _lock = sync_lock.lock().await;
+
         let mut peers = self.peers
             .iter().filter(|item| *item.key() != peer.get_id())
-            .map(|item| item.value().clone())
+            .map(|item| item.value().wrapper())
             .collect::<Vec<_>>();
         peers.sort_unstable_by_key(|peer| peer.dashbord().bw());
         let mut free_piece = vec![];
 
+        let bw = peer.dashbord().bw();
         for p in peers.iter() {
-            if !coordinator::faster(peer.dashbord().bw(), p.dashbord().bw()) {
+            if !coordinator::faster(bw, p.dashbord().bw()) {
                 break;
             }
             
@@ -473,15 +513,22 @@ impl DefaultServant {
                 let ret = peer.op_bitfield().read_pe().get(idx)
                     .map(|bit| bit & ost != 0).unwrap_or(false);
                 if ret {
-                    self.set_piece_status_pause(*piece_idx);
-                    free_piece.push(*piece_idx);
+                    // 不需要设置暂停，避免设置暂停后，被其他 peer 抢过去
+                    let offset = self.get_piece_status_idx(*piece_idx).unwrap();
+                    p.get_request_pieces().remove(piece_idx);
+                    free_piece.push((*piece_idx, offset));
                 }
                 !ret
             });
 
+            if !p.has_transfer_data() {
+                // 受害者已经没有传输中的数据了，那么就关闭这个 peer 连接
+                trace!("[{}] 关闭 peer 连接，因为它的任务已经被其它 peer 抢夺", p.name());
+                self.peer_exit(p.get_id(), PeerExitReason::NotHasJob).await;
+            }
+
             if !free_piece.is_empty() {
-                for piece_idx in free_piece {
-                    let offset = self.get_piece_status_idx(piece_idx).unwrap();
+                for (piece_idx, offset) in free_piece {
                     peer.reset_request_piece_origin(piece_idx, offset, torrent.piece_length(piece_idx));
                 }
                 return true;
@@ -569,6 +616,8 @@ impl Servant for DefaultServant {
             return Ok(());
         }
 
+        let sync_lock = peer.get_sync_lock();
+        let lock = sync_lock.lock().await;
         while peer.has_send_window_space() {
             if let Some((piece_idx, block_offset)) = self.try_find_downloadable_peice(torrent, &peer) {
                 let default_block_size = Context::get_config().block_size();
@@ -577,6 +626,18 @@ impl Servant for DefaultServant {
                 peer.request_piece(piece_idx, block_offset, block_size).await?;
                 peer.dashbord().send(block_size);
             } else {
+                if peer.dashbord().inflight() == 0 && !peer.get_response_pieces().is_empty() && peer.get_request_pieces().is_empty() { 
+                    // 响应丢失，没有传输的数据，但是有等待响应的数据，
+                    // 同时请求记录又没了的情况。那么重置请求记录
+                    let pieces = peer.get_response_pieces().iter().map(|piece| {
+                        (*piece.key(), piece.block_offset())
+                    }).collect::<Vec<_>>();
+                    for (piece_idx, block_offset) in pieces {
+                        peer.reset_request_piece_origin(piece_idx, block_offset, torrent.piece_length(piece_idx));    
+                    }
+                    continue;
+                }
+                drop(lock); // 释放锁，避免重入死锁
                 self.try_loot_slow_peer(peer, torrent).await?;
                 break;
             }
@@ -638,6 +699,8 @@ impl Servant for DefaultServant {
             if let Some(callback) = self.callback() {
                 callback.on_peer_exit(dsc, reason).await;
             }
+        } else {
+            debug!("没有找到这个 peer - [{id}] 的上下文信息，无法退出");
         }
     }
 }
@@ -650,9 +713,10 @@ impl DefaultServant {
         Ok(())
     }
 
-    /// 让我门请求数据
+    /// 让我们请求数据
     async fn handle_un_choke(&self, peer: Peer) -> Result<()> {
         trace!("[{}] 对端告诉我们可以下载数据", peer.name());
+        // info!("[{}] 对端告诉我们可以下载数据", peer.name());
         peer.set_status(Status::UnChoke);
         try_get_callback!(self).request_available(self.servant_context(peer)).await
     }
@@ -690,6 +754,7 @@ impl DefaultServant {
     #[rustfmt::skip]
     async fn handle_bitfield(&self, peer: Peer, payload: Bytes) -> Result<()> {
         trace!("[{}] 对端告诉我们他有哪些分块可以下载: {:?}", peer.name(), &payload[..]);
+        // info!("[{}] 对端告诉我们他有哪些分块可以下载", peer.name());
         let torrent = try_get_torrent!(self, "由于没有种子信息，无法处理对端的 Bitfield 消息");
         let bit_len = torrent.bitfield_len();
 
@@ -698,8 +763,8 @@ impl DefaultServant {
             peer.name(), bit_len, payload.len()
         );
 
+        peer.set_op_bitfield(BytesMut::from(payload));
         let bitfield = peer.op_bitfield();
-        *bitfield.write_pe() = BytesMut::from(payload);
         let sc = self.servant_context(peer);
         try_get_callback!(self).owner_bitfield(sc, bitfield).await
     }

@@ -8,9 +8,10 @@ use doro_util::collection::FixedQueue;
 use doro_util::global::Id;
 use doro_util::sync::MutexExt;
 use tokio::time::Instant;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, level_enabled, trace, Level};
 
 use crate::base_peer::error::PeerExitReason;
+use crate::context::Context;
 
 pub const SCALE: u8 = 8;
 pub const UNIT: u32 = 1 << SCALE;
@@ -50,6 +51,9 @@ pub trait PeerSwitch {
     /// 开启一个新的临时 peer
     async fn start_temp_peer(&self);
 
+    /// 获得 lt peer 数量
+    fn lt_peer_num(&self) -> usize;
+
     /// 找到最慢的 lt peer
     fn find_slowest_lt_peer(&self) -> Option<PeerSpeed>;
 
@@ -70,6 +74,13 @@ pub trait PeerSwitch {
 
     /// 是否完成下载
     fn is_finished(&self) -> bool;
+
+    /// 列出所有 peer 的速度信息        
+    /// 返回值: (peer_name, peer_bw, peer_cwnd, peer_lt)
+    fn list_rate_info(&self) -> Vec<(String, u64, u32, bool)>;
+
+    /// 等待队列长度
+    fn get_wait_queue_len(&self) -> usize;
 }
 
 /// 协调器，用于定时统计上传/下载速率，进行分块下载分配
@@ -129,31 +140,38 @@ impl<T: PeerSwitch> Coordinator<T> {
 
     /// 检查是否可以升级为 lt peer
     async fn checkout_upgrade_lt_peer(&mut self) -> Option<()> {
-        let stp = self.switch.find_slowest_lt_peer();
+        let lt_peer_num = self.switch.lt_peer_num();
         let ftp = self.switch.find_fastest_temp_peer();
+        if lt_peer_num < Context::get_config().torrent_lt_peer_conn_limit() {
+            self.switch.upgrage_lt_peer(ftp.as_ref()?.id)?;
+            debug!("将临时 peer 升级为 lt peer，addr: {}", ftp.as_ref()?.addr);
+            return Some(());
+        }
 
-        if ftp.is_none() {
+        let stp = self.switch.find_slowest_lt_peer();
+
+        if stp.is_none() {
             // 没有 lt peer 了，那么直接把当前这个临时 peer 升级为 lt peer
-            self.switch.upgrage_lt_peer(stp.as_ref()?.id)?;
+            self.switch.upgrage_lt_peer(ftp.as_ref()?.id)?;
             debug!("将临时 peer 升级为 lt peer，addr: {}", stp.as_ref()?.addr);
-        } else if faster(stp.as_ref()?.bw, ftp.as_ref()?.bw) {
+        } else if faster(ftp.as_ref()?.bw, stp.as_ref()?.bw) {
             // 替换 peer
-            self.switch.replace_peer(ftp.as_ref()?.id, stp.as_ref()?.id).await?;
+            self.switch.replace_peer(stp.as_ref()?.id, ftp.as_ref()?.id).await?;
             debug!("将 {} 替换为 lt peer，停止 {}", ftp.as_ref()?.addr, stp.as_ref()?.addr);
         } else {
             // 关闭临时 peer
             let cmd = PeerExitReason::PeriodicPeerReplace;
-            self.switch.notify_peer_stop(stp.as_ref()?.id, cmd).await;
-            debug!("关闭临时 peer，addr: {}", stp.as_ref()?.addr);
+            self.switch.notify_peer_stop(ftp.as_ref()?.id, cmd).await;
+            debug!("关闭临时 peer，addr: {}", ftp.as_ref()?.addr);
         }
 
         Some(())
     }
 
     async fn peer_alloc(&mut self) {
-        // if level_enabled!(Level::DEBUG) {
-        //     self.printf_peer_status();
-        // }
+        if level_enabled!(Level::DEBUG) {
+            self.printf_peer_status();
+        }
 
         if self.alloc_cnt.load(Ordering::Relaxed) < ALLOC_CNT_THRESH {
             self.alloc_cnt.fetch_add(1, Ordering::Relaxed);
@@ -171,30 +189,17 @@ impl<T: PeerSwitch> Coordinator<T> {
         self.switch.start_temp_peer().await;
     }
 
-    // fn printf_peer_status(&self) {
-    //     let mut peers = self
-    //         .ctx
-    //         .peers
-    //         .iter()
-    //         .map(|item| {
-    //             (
-    //                 item.value().addr,
-    //                 item.value().dashbord.bw(),
-    //                 item.value().dashbord.cwnd(),
-    //             )
-    //         })
-    //         .collect::<Vec<_>>();
-    //     peers.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-    //     let mut str = String::new();
-    //     for (addr, bw, cwnd) in peers {
-    //         let (rate, unit) = doro_util::net::rate_formatting(bw);
-    //         str.push_str(&format!("{}: {:.2} {} - [{}]\t", addr, rate, unit, cwnd));
-    //     }
-    //     let len: usize = tokio::task::block_in_place(move || {
-    //         Handle::current().block_on(async { self.ctx.wait_queue.lock().await.len() })
-    //     });
-    //     debug!("\n当前 peer 状态: {} [wait num: {}]", str, len);
-    // }
+    fn printf_peer_status(&self) {
+        let mut peers = self.switch.list_rate_info();
+        peers.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let mut str = String::new();
+        for (name, bw, cwnd, lt) in peers {
+            let (rate, unit) = doro_util::net::rate_formatting(bw);
+            str.push_str(&format!("{name}: {rate:.2} {unit} - [{cwnd}] - lt: {lt}\n"));
+        }
+        let len = self.switch.get_wait_queue_len();
+        debug!("\n[wait num: {}]\n当前 peer 状态:\n{}", len, str);
+    }
 }
 
 impl<T: PeerSwitch> Coordinator<T> {
