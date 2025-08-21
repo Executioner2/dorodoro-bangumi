@@ -18,3 +18,4 @@ pub mod sync;
 mod test_global_register;
 pub mod timer;
 pub mod win_minmax;
+pub mod xml;

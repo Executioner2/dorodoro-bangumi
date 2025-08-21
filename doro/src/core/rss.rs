@@ -143,11 +143,6 @@ pub async fn flush_all_feeds() -> Result<()> {
     Ok(())
 }
 
-// pub fn init() -> JoinHandle<()> {
-//     let global_rss = GLOBAL_RSS.get_or_init(|| Self { cancel_token });
-//     tokio::spawn(Box::pin(global_rss.clone().interval_refresh()))
-// }
-
 /// 注册定时刷新订阅任务
 pub async fn interval_refresh() {
     let mut tick = tokio::time::interval(REFRESH_INTERVAL);
