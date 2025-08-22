@@ -17,9 +17,6 @@ pub trait AttributesExt {
         &mut self, attr_name: N,
     ) -> Result<Option<Attribute<'_>>, AttrError>;
 
-    // 获取属性值，如果不存在或者出现错误则返回 None
-    // fn get_attribute_value<N: AsRef<[u8]> + Sized>(&mut self, attr_name: N) -> Option<String>;
-
     /// 转为 hashmap
     fn to_hashmap(&mut self) -> anyhow::Result<AttributesMap<'_>>;
 }

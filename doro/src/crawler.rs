@@ -14,14 +14,17 @@ pub trait Crawler: Sync + Send + 'static {
     /// 列出所有季度
     async fn list_quarter(&self) -> Result<Vec<Quarter>>;
 
+    /// 列出所有资源
+    async fn list_resource(&self) -> Result<Vec<Resource>>;
+
     /// 列出指定季度的资源
     async fn list_resource_from_quarter(&self, quarter: Quarter) -> Result<Vec<Resource>>;
 
     /// 列出指定资源的组
-    async fn list_source_group(&self, resource: Resource) -> Result<Vec<Group>>;
+    async fn list_source_group(&self, resource_id: &str) -> Result<Vec<Group>>;
 
     /// 列出指定资源的订阅源
-    async fn list_subscribe_sources(&self, resource: Resource) -> Result<Vec<Vec<Source>>>;
+    async fn list_subscribe_sources(&self, resource_id: &str) -> Result<Vec<Vec<Source>>>;
 
     /// 搜索资源
     async fn search_resource(&self, keyword: &str) -> Result<(Vec<Resource>, Vec<Source>)>;

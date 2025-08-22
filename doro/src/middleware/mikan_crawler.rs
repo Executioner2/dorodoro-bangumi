@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ParseState::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -10,7 +9,8 @@ use ctor::ctor;
 use doro_util::hashmap;
 use doro_util::xml::{self, AttributeExt, AttributesExt};
 use quick_xml::Reader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
+use serde::Serialize;
 
 use crate::entity::{Group, Quarter, Resource, Source};
 use crate::{BangumiCrawler, Crawler};
@@ -84,21 +84,6 @@ impl SourceBuilder {
     }
 }
 
-#[derive(Eq, PartialEq, Clone, Copy, Debug)]
-enum ParseState {
-    /// 还未准备好解析项
-    NotReady,
-
-    /// 准备好开始解析项
-    Ready,
-
-    /// 正在解析项
-    Ing,
-
-    /// 解析项完成
-    Finish,
-}
-
 #[allow(dead_code)]
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
 enum SearchTableItem {
@@ -135,7 +120,7 @@ impl MikanCrawler {
     }
 
     /// 请求获取资源数据
-    async fn fetch_data(&self, url: &str, params: &HashMap<&str, String>) -> Result<Bytes> {
+    async fn fetch_data<T: Serialize + ?Sized>(&self, url: &str, params: &T) -> Result<Bytes> {
         let client = reqwest::Client::new();
         let data = client
             .get(format!("{BASE_URL}{url}"))
@@ -157,56 +142,105 @@ impl MikanCrawler {
         })
     }
 
-    /// 处理资源列表的开始标签
-    fn handle_resource_start_tag(
-        tag: BytesStart<'_>, state: ParseState, resource: &mut ResourceBuilder,
-        parse_date_flag: &mut bool,
-    ) -> Result<ParseState> {
-        let mut attrs = tag.html_attributes();
-        let mut attrs = attrs.to_hashmap()?;
-        let class = attrs.try_get_attribute("class");
+    /// 从首页解析资源
+    fn parse_resource_from_home(reader: &mut Reader<&[u8]>) -> Result<Option<Resource>> {
+        let mut resource = ResourceBuilder::default();
+        let mut parse_date = false;
 
-        match (tag.name().as_ref(), state) {
-            (b"ul", NotReady) if matches!(class.as_ref(), Some(c) if c.contains(b"an-ul")) => {
-                return Ok(Ready);
-            }
-            (b"li", Ready) => {
-                return Ok(Ing);
-            }
-            (b"span", Ing) if matches!(class.as_ref(), Some(c) if c.contains(b"js-expand_bangumi")) =>
-            {
-                resource.image_url = attrs
-                    .try_get_attribute("data-src")
-                    .and_then(|a| String::from_utf8(a.value.to_vec()).ok());
-                resource.id = attrs.get_attribute_value("data-bangumiid");
-                return Ok(Ing);
-            }
-            (b"div", Ing) if class.is_some() => {
-                let class = class.unwrap();
-                if class.contains(b"date-text") {
-                    *parse_date_flag = true;
-                    return Ok(Ing);
+        loop {
+            match reader.read_event()? {
+                Event::Start(tag) => {
+                    let mut attrs = tag.html_attributes();
+                    let mut attrs = attrs.to_hashmap()?;
+                    let class = attrs.try_get_attribute("class");
+                    match tag.name().as_ref() {
+                        b"span" if matches!(class.as_ref(), Some(c) if c.contains(b"js-expand_bangumi")) =>
+                        {
+                            resource.image_url = attrs
+                                .try_get_attribute("data-src")
+                                .and_then(|a| String::from_utf8(a.value.to_vec()).ok());
+                            resource.id = attrs.get_attribute_value("data-bangumiid");
+                        }
+                        b"a" if matches!(class.as_ref(), Some(c) if c.contains(b"an-text")) => {
+                            resource.name = attrs.get_attribute_value("title");
+                            resource.link = attrs.get_attribute_value("href");
+                        }
+                        b"div" if matches!(class.as_ref(), Some(c) if c.contains(b"date-text")) => {
+                            parse_date = true;
+                        }
+                        _ => {}
+                    }
                 }
-                if class.contains(b"num-node")
-                    || class.contains(b"an-info")
-                    || class.contains(b"an-info-group")
-                    || class.contains(b"an-info-icon")
-                {
-                    return Ok(Ing);
+                Event::Text(text) if parse_date => {
+                    let date_str = text.html_content()?;
+                    resource.last_update = MikanCrawler::parse_date(&date_str);
+                    parse_date = false;
                 }
+                Event::Eof => break,
+                _ => {}
             }
-            (b"a", Ing) if matches!(class.as_ref(), Some(c) if c.contains(b"an-text")) => {
-                resource.link = attrs.get_attribute_value("href");
-                resource.name = attrs.get_attribute_value("title");
-                return Ok(Ing);
-            }
-            (b"i", Ing) if matches!(class.as_ref(), Some(c) if c.contains(b"fa")) => {
-                return Ok(Finish);
-            }
-            _ => {}
         }
 
-        Ok(NotReady)
+        Ok(resource.build())
+    }
+
+    /// 从首页解析资源集合
+    fn parse_resources_from_home(
+        reader: &mut Reader<&[u8]>, source: &[u8],
+    ) -> Result<Vec<Resource>> {
+        let mut ret = Vec::new();
+
+        loop {
+            match reader.read_event()? {
+                Event::Start(tag) => {
+                    if tag.name().as_ref() == b"li" {
+                        let range = reader.read_to_end(tag.name())?;
+                        let mut reader =
+                            Reader::from_reader(&source[range.start as usize..range.end as usize]);
+                        reader.config_mut().trim_text(true);
+                        reader.config_mut().check_end_names = false;
+                        if let Some(resource) = Self::parse_resource_from_home(&mut reader)? {
+                            ret.push(resource);
+                        }
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+
+        Ok(ret)
+    }
+
+    /// 从首页解析资源集合分组
+    fn parse_resources_group_from_home(
+        reader: &mut Reader<&[u8]>, source: &[u8],
+    ) -> Result<Vec<Resource>> {
+        let mut ret = Vec::new();
+
+        loop {
+            match reader.read_event()? {
+                Event::Start(tag) => {
+                    let mut attrs = tag.html_attributes();
+                    let mut attrs = attrs.to_hashmap()?;
+                    let class = attrs.try_get_attribute("class");
+                    if tag.name().as_ref() == b"ul"
+                        && matches!(class.as_ref(), Some(c) if c.contains(b"an-ul"))
+                    {
+                        let range = reader.read_to_end(tag.name())?;
+                        let data = &source[range.start as usize..range.end as usize];
+                        let mut reader = Reader::from_reader(data);
+                        reader.config_mut().trim_text(true);
+                        reader.config_mut().check_end_names = false;
+                        ret.extend(Self::parse_resources_from_home(&mut reader, data)?);
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+
+        Ok(ret)
     }
 
     /// 解析字幕组项
@@ -609,6 +643,41 @@ impl Crawler for MikanCrawler {
         Ok(ret)
     }
 
+    async fn list_resource(&self) -> Result<Vec<Resource>> {
+        let params: HashMap<String, String> = hashmap!();
+        let data = self.fetch_data("", &params).await?;
+
+        let mut reader = Reader::from_reader(data.as_ref());
+        reader.config_mut().trim_text(true);
+        reader.config_mut().check_end_names = false;
+
+        let mut sk_body_range = None;
+        loop {
+            match reader.read_event()? {
+                Event::Start(tag) => {
+                    let mut attrs = tag.html_attributes();
+                    if matches!(attrs.try_get_attribute("id")?, Some(c) if c.contains("sk-body")) {
+                        sk_body_range = Some(reader.read_to_end(tag.name())?);
+                        break;
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+
+        if sk_body_range.is_some() {
+            let range = sk_body_range.unwrap();
+            let data = &data[range.start as usize..range.end as usize];
+            let mut reader = Reader::from_reader(data);
+            reader.config_mut().trim_text(true);
+            reader.config_mut().check_end_names = false;
+            return Self::parse_resources_group_from_home(&mut reader, data);
+        }
+
+        Ok(vec![])
+    }
+
     async fn list_resource_from_quarter(&self, quarter: Quarter) -> Result<Vec<Resource>> {
         let params = hashmap!(
             "year" => quarter.group,
@@ -623,45 +692,13 @@ impl Crawler for MikanCrawler {
         reader.config_mut().trim_text(true);
         reader.config_mut().check_end_names = false;
 
-        let mut state = NotReady;
-        let mut resource_builder = ResourceBuilder::default();
-        let mut parse_date = false;
-        let mut ret = Vec::new();
-
-        loop {
-            match reader.read_event()? {
-                Event::Start(tag) => {
-                    state = MikanCrawler::handle_resource_start_tag(
-                        tag,
-                        state,
-                        &mut resource_builder,
-                        &mut parse_date,
-                    )?;
-                    if state == Finish {
-                        if let Some(resource) = resource_builder.build() {
-                            ret.push(resource);
-                        }
-                        resource_builder = ResourceBuilder::default();
-                        state = Ready;
-                    }
-                }
-                Event::Text(bytes_text) if parse_date => {
-                    let date_str = bytes_text.html_content()?;
-                    resource_builder.last_update = MikanCrawler::parse_date(&date_str);
-                    parse_date = false;
-                }
-                Event::Eof => break,
-                _ => {}
-            }
-        }
-
-        Ok(ret)
+        Self::parse_resources_group_from_home(&mut reader, &data)
     }
 
-    async fn list_source_group(&self, resource: Resource) -> Result<Vec<Group>> {
+    async fn list_source_group(&self, resource_id: &str) -> Result<Vec<Group>> {
         let params = hashmap!(
-            "bangumiId" => resource.id,
-            "showSubscribed" => "false".to_string(),
+            "bangumiId" => resource_id,
+            "showSubscribed" => "false",
         );
 
         let data = self.fetch_data("/Home/ExpandBangumi", &params).await?;
@@ -673,10 +710,10 @@ impl Crawler for MikanCrawler {
         Ok(groups)
     }
 
-    async fn list_subscribe_sources(&self, resource: Resource) -> Result<Vec<Vec<Source>>> {
+    async fn list_subscribe_sources(&self, resource_id: &str) -> Result<Vec<Vec<Source>>> {
         let params = hashmap!(
-            "bangumiId" => resource.id,
-            "showSubscribed" => "false".to_string(),
+            "bangumiId" => resource_id,
+            "showSubscribed" => "false",
         );
 
         let data = self.fetch_data("/Home/ExpandBangumi", &params).await?;
@@ -715,7 +752,7 @@ impl Crawler for MikanCrawler {
     }
 
     async fn search_resource(&self, keyword: &str) -> Result<(Vec<Resource>, Vec<Source>)> {
-        let params = hashmap!("searchstr" => keyword.to_string());
+        let params = hashmap!("searchstr" => keyword);
         let data = self.fetch_data("/Home/Search", &params).await?;
 
         let mut reader = Reader::from_reader(data.as_ref());
