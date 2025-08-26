@@ -13,8 +13,13 @@ use std::marker::PhantomData;
 use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;

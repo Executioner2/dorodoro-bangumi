@@ -1,7 +1,12 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use async_trait::async_trait;
 use doro_util::collection::FixedQueue;

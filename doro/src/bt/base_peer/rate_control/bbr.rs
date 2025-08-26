@@ -10,8 +10,13 @@ mod tests;
 
 use std::os::fd::RawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use doro_util::timer::CountdownTimer;
 use doro_util::win_minmax::Minmax;

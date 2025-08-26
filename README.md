@@ -32,3 +32,60 @@ dorodoro-bangumi（暂定名）是一款 Rust 编写，独立部署的自动追�
   - 在性能方面 enum_dispatch 表现是很不错的，但是在实际使用中，发现有两个致命的缺点：
     1. 无法区分命名空间：被连接的枚举或 trait，必须是唯一的，这就意味着，无法在不同 mod 中命名相同的枚举或 trait。
     2. trait 泛型无法指定具体类型实现：如果被 dispatch 的 trait 上定义了泛型，连接的枚举无法指定具体的类型。详见 `test/enum_dispatch.rs`
+
+# 启动方式
+## 直接启动
+```shell
+cargo run --package doro --bin doro
+```
+
+## 保留 symbols 的调试启动
+```shell
+cargo run --profile dev-with-symbols --package doro --bin doro
+```
+
+## dev 环境下以 tokio console 启动（linux or macos）
+安装 tokio-console
+```shell
+cargo install tokio-console
+```
+
+运行 doro
+```shell
+RUSTFLAGS="--cfg tokio_unstable" TOKIO_CONSOLE=true RUST_LOG=trace cargo run --features dev --package doro --bin doro
+```
+
+打开监控面板
+```shell
+tokio-console http://127.0.0.1:9090
+```
+
+# 源码构建
+## mips 平台
+- 配置交叉编译环境
+```shell
+wget https://mirror-03.infra.openwrt.org/releases/24.10.2/targets/ramips/mt7621/openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+
+zstd -d openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+
+tar -xvf openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar
+
+mv openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64 /usr/local/bin/
+
+cat >> /etc/profile << 'EOF'
+export STAGING_DIR='/usr/local/bin/openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64/staging_dir'
+export PATH=$PATH:$STAGING_DIR/'toolchain-mipsel_24kc_gcc-13.3.0_musl'/bin
+EOF
+
+source /etc/profile
+```
+
+- 安装 nightly 工具链
+```shell
+rustup toolchain install nightly
+```
+
+- 通过 nightly 构建
+```shell
+cargo +nightly build -r -Z build-std --target mipsel-unknown-linux-musl
+```

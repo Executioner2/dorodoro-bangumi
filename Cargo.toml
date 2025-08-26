@@ -12,6 +12,11 @@ members = [
 bendy = { path = "lib/bendy" }
 
 # 性能调试用
+[profile.dev-with-symbols]
+inherits = "dev"      # 继承 dev 的基本配置
+debug = 1             # 启用调试信息
+strip = false         # 不要去除 symbols
+
+# 正式发布用
 [profile.release]
-debug = 1 # 启用调试信息
-strip = false # 不要去除 symbols
+strip = true          # 去除 symbols 减小体积

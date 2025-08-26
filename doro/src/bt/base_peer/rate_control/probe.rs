@@ -13,8 +13,13 @@
 //!      - 上下浮动相对来说有延迟，不平滑，会受到毛刺影响
 //!      - 暂时无法进行速率估算，因为需要测量 rtt
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use doro_util::collection::FixedQueue;
 use doro_util::win_minmax::Minmax;
@@ -213,7 +218,7 @@ impl TimeFixeQueue {
         self.queue.is_empty()
     }
 
-    pub fn iter(&self) -> std::collections::vec_deque::Iter<(u32, u64)> {
+    pub fn iter(&self) -> std::collections::vec_deque::Iter<'_, (u32, u64)> {
         self.queue.iter()
     }
 }

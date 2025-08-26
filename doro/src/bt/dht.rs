@@ -58,7 +58,7 @@ impl DHTRequest {
     }
 
     /// 发送一个 ping 操作
-    async fn ping(&self, addr: &SocketAddr) -> Option<DHTBase<Ping>> {
+    async fn ping(&self, addr: &SocketAddr) -> Option<DHTBase<'_, Ping<'_>>> {
         debug!("开始尝试 ping");
         let t = self.udp_server.tran_id();
         let ping = DHTBase::<Ping>::request(Ping::new(self.own_id.cow()), "ping".to_string(), t);

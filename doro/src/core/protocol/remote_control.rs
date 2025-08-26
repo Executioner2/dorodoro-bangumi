@@ -64,7 +64,7 @@ impl<'a, T: AsyncRead + Unpin> HandshakeParse<'a, T> {
     }
 }
 
-impl<'a, T: AsyncRead + Unpin> Future for HandshakeParse<'a, T> {
+impl<T: AsyncRead + Unpin> Future for HandshakeParse<'_, T> {
     type Output = FutureRet<AuthInfo>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

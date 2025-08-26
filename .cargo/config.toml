@@ -1,0 +1,7 @@
+[target.mipsel-unknown-linux-musl]
+linker="mipsel-openwrt-linux-gcc"
+rustflags = [
+    "-C", "link-arg=--sysroot=${STAGING_DIR}/toolchain-mipsel_24kc_gcc-13.3.0_musl",
+    "-C", "link-arg=-L${STAGING_DIR}/toolchain-mipsel_24kc_gcc-13.3.0_musl/lib",
+    "-C", "link-arg=-L${STAGING_DIR}/toolchain-mipsel_24kc_gcc-13.3.0_musl/mipsel-openwrt-linux-musl/lib",
+]

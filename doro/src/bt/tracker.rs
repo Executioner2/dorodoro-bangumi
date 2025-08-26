@@ -4,9 +4,13 @@ pub mod udp_tracker;
 use core::fmt::Display;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use ahash::AHashSet;
 use anyhow::Result;

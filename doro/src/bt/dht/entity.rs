@@ -75,7 +75,7 @@ pub struct DHTBase<'a, T> {
     pub reqq: Option<u32>,
 }
 
-impl<'a, T> DHTBase<'a, T> {
+impl<T> DHTBase<'_, T> {
     pub fn request(a: T, q: String, t: u16) -> Self {
         Self {
             a: Some(a),
@@ -101,7 +101,7 @@ impl<'a, T> DHTBase<'a, T> {
     }
 }
 
-impl<'a, T: FromBencode> FromBencode for DHTBase<'a, T> {
+impl<T: FromBencode> FromBencode for DHTBase<'_, T> {
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -191,7 +191,7 @@ impl<'a, T: FromBencode> FromBencode for DHTBase<'a, T> {
     }
 }
 
-impl<'a, T: ToBencode> ToBencode for DHTBase<'a, T> {
+impl<T: ToBencode> ToBencode for DHTBase<'_, T> {
     const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
@@ -228,7 +228,7 @@ impl<'a> Ping<'a> {
     }
 }
 
-impl<'a> ToBencode for Ping<'a> {
+impl ToBencode for Ping<'_> {
     const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
@@ -242,7 +242,7 @@ impl<'a> ToBencode for Ping<'a> {
     }
 }
 
-impl<'a> FromBencode for Ping<'a> {
+impl FromBencode for Ping<'_> {
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -282,7 +282,7 @@ pub struct GetPeersResp<'a> {
     pub p: Option<u16>,
 }
 
-impl<'a> FromBencode for GetPeersResp<'a> {
+impl FromBencode for GetPeersResp<'_> {
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -349,7 +349,7 @@ impl<'a> GetPeersReq<'a> {
     }
 }
 
-impl<'a> ToBencode for GetPeersReq<'a> {
+impl ToBencode for GetPeersReq<'_> {
     const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
@@ -373,7 +373,7 @@ impl<'a> FindNodeReq<'a> {
     }
 }
 
-impl<'a> ToBencode for FindNodeReq<'a> {
+impl ToBencode for FindNodeReq<'_> {
     const MAX_DEPTH: usize = MAX_DEPTH;
 
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
@@ -391,7 +391,7 @@ pub struct FindNodeResp<'a> {
     pub nodes: Vec<Host>,
 }
 
-impl<'a> FromBencode for FindNodeResp<'a> {
+impl FromBencode for FindNodeResp<'_> {
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,

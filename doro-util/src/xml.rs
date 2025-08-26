@@ -24,10 +24,10 @@ pub trait AttributesExt {
 /// quick xml 的 reader 扩展
 pub trait ReaderExt {
     /// 获取下一个事件，遇到 Eof 事件时返回 None
-    fn next_event(&mut self) -> anyhow::Result<Option<Event>>;
+    fn next_event(&mut self) -> anyhow::Result<Option<Event<'_>>>;
 }
 
-impl<'a> AttributeExt for Attribute<'a> {
+impl AttributeExt for Attribute<'_> {
     fn contains<N: AsRef<[u8]> + Sized>(&self, val: N) -> bool {
         let value = self.value.as_ref();
         let target = val.as_ref();
@@ -76,7 +76,7 @@ impl<'a> AttributesExt for Attributes<'a> {
 }
 
 impl ReaderExt for Reader<&[u8]> {
-    fn next_event(&mut self) -> anyhow::Result<Option<Event>> {
+    fn next_event(&mut self) -> anyhow::Result<Option<Event<'_>>> {
         match Reader::read_event(self)? {
             Event::Eof => Ok(None),
             event => Ok(Some(event)),

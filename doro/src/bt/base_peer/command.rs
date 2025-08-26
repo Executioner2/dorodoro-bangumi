@@ -25,7 +25,7 @@ pub struct Exit {
     pub(crate) id: Id,
     pub(crate) reason: PeerExitReason,
 }
-impl<'a> CommandHandler<'a, Result<()>> for Exit {
+impl CommandHandler<'_, Result<()>> for Exit {
     type Target = ServantRef;
 
     /// 什么都不需要做，在 peer 中会处理的
@@ -43,7 +43,7 @@ pub struct PeerTransfer {
     pub(crate) buf: Bytes,
     pub(crate) read_size: u64,
 }
-impl<'a> CommandHandler<'a, Result<()>> for PeerTransfer {
+impl CommandHandler<'_, Result<()>> for PeerTransfer {
     type Target = ServantRef;
 
     async fn handle(self, (servant, _ats): Self::Target) -> Result<()> {
@@ -57,7 +57,7 @@ impl<'a> CommandHandler<'a, Result<()>> for PeerTransfer {
 pub struct Heartbeat {
     pub(crate) id: Id,
 }
-impl<'a> CommandHandler<'a, Result<()>> for Heartbeat {
+impl CommandHandler<'_, Result<()>> for Heartbeat {
     type Target = ServantRef;
 
     async fn handle(self, (servant, _ats): Self::Target) -> Result<()> {

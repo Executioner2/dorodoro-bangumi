@@ -1,7 +1,12 @@
 use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Default)]
 pub struct Id(u64);
