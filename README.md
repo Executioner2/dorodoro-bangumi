@@ -21,7 +21,7 @@ dorodoro-bangumi（暂定名）是一款 Rust 编写，独立部署的自动追�
 - [x] 实现 dht 节点发现
 - [x] 重构 Error 结构
 - [x] 项目结构整改，改为 workspace
-- [ ]~~重构 Bencoding 结构~~ (用 bendy 库代替了)
+- [ ] ~~重构 Bencoding 结构~~ (用 bendy 库代替了)
 
 # 开发过程的一些记录
 ## 选型和优化
