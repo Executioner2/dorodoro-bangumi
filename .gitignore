@@ -9,13 +9,11 @@ logs
 */.DS_Store
 
 **/*.rs.bk
+*/Cargo.lock
 Cargo.lock
 
 # 用一段时间再决定要不要使用.zed（这个目录里包含启动配置）
 .zed
-
-# 用一段时间再决定要不要使用.vscode（这个目录里包含启动配置）
-.vscode
 
 # Instruments 输出文件
 output.trace
