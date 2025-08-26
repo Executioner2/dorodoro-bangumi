@@ -1,0 +1,38 @@
+language: rust
+sudo: false
+
+rust:
+  - stable
+  - beta
+  - nightly
+  - 1.36.0   # stable alloc
+
+os:
+  - linux
+  - windows
+  - osx
+
+env:
+  global:
+    - RUST_BACKTRACE=1
+
+script:
+  - cargo test --all
+  - cargo test --all --no-default-features
+  - cargo test --all --features serde
+
+matrix:
+  include:
+     - name: "Rust: 1.36 - embedded"
+       rust: 1.36.0
+       install:
+         - rustup target add thumbv7m-none-eabi
+       script:
+         - cargo build --all --no-default-features --target=thumbv7m-none-eabi
+     - name: "Rust 1.38 - Windows"
+       rust: 1.38.0
+       os: windows
+  exclude:
+     # backtrace on Windows requires 1.38
+     - os: windows
+       rust: 1.36.0

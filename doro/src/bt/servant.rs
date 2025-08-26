@@ -45,6 +45,9 @@ pub trait Servant: Send + Sync + 'static {
     /// 请求分片
     async fn request_piece(&self, id: Id) -> Result<()>;
 
+    /// 请求 metadata 的分片
+    async fn request_metadata_piece(&self, id: Id) -> Result<()>;
+
     /// 发生异常
     async fn happen_exeception(&self, id: Id, error: Error);
 
@@ -70,42 +73,53 @@ pub trait ServantCallback: Send + Sync + 'static {
     /// 有新的分片可用了
     async fn have_piece_available(
         &self, sc: Box<dyn ServantContext>, piece_idx: u32, block_offset: u32,
-    ) -> Result<()>;
+    ) -> Result<()> { Ok(()) }
 
     /// 可以进行请求
-    async fn request_available(&self, sc: Box<dyn ServantContext>) -> Result<()>;
+    async fn request_available(&self, sc: Box<dyn ServantContext>) -> Result<()> { Ok(()) }
 
     /// 上报网络读取量
-    fn reported_read_size(&self, sc: Box<dyn ServantContext>, read_size: u64);
+    fn reported_read_size(&self, sc: Box<dyn ServantContext>, read_size: u64) { }
 
     /// 分块存储成功
     async fn on_store_block_success(
         &self, sc: Box<dyn ServantContext>, piece_idx: u32, block_offset: u32, block_size: u32,
-    );
+    ) { }
 
     /// 分块存储失败
     async fn on_store_block_failed(
         &self, sc: Box<dyn ServantContext>, piece_idx: u32, block_offset: u32, block_size: u32,
         error: Error,
-    );
+    ) { }
 
     /// 分片校验成功
-    async fn on_verify_piece_success(&self, sc: Box<dyn ServantContext>, piece_idx: u32);
+    async fn on_verify_piece_success(&self, sc: Box<dyn ServantContext>, piece_idx: u32) { }
 
     /// 分片校验失败
     async fn on_verify_piece_failed(
         &self, sc: Box<dyn ServantContext>, piece_idx: u32, error: Error,
-    );
+    ) { }
 
     /// 对端传来他拥有的分片
-    async fn owner_bitfield(&self, sc: Box<dyn ServantContext>, bitfield: Arc<RwLock<BytesMut>>) -> Result<()>;
+    async fn owner_bitfield(&self, sc: Box<dyn ServantContext>, bitfield: Arc<RwLock<BytesMut>>) -> Result<()> { Ok(()) }
 
     /// 握手成功
     async fn on_handshake_success(&self, sc: Box<dyn ServantContext>) -> Result<()>;
+
+    /// 扩展协议握手成功
+    async fn on_extend_handshake_success(&self, sc: Box<dyn ServantContext>) -> Result<()> {
+        Ok(())
+    }
+
+    /// metadata 下载完成
+    async fn on_metadata_complete(&self, sc: Box<dyn ServantContext>) -> Result<()> { Ok(()) }
+
+    /// metadata 分片写入完成
+    async fn on_metadata_piece_write(&self, sc: Box<dyn ServantContext>) -> Result<()> { Ok(()) }
 
     /// peer 退出
     async fn on_peer_exit(&self, sc: Box<dyn ServantContext>, reason: PeerExitReason);
 
     /// piece 下载完成
-    async fn on_piece_download_finished(&self, sc: Box<dyn ServantContext>);
+    async fn on_piece_download_finished(&self, sc: Box<dyn ServantContext>) { }
 }

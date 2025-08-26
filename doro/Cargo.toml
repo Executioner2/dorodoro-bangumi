@@ -10,11 +10,11 @@ dev = ["console-subscriber"] # 开发环境
 doro-macro = { path = "../doro-macro" }
 doro-util = { path = "../doro-util" }
 
-tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "tokio-macros", "fs"] }
+tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "tokio-macros", "fs"] }
 tokio-util = "0.7.14"
 byteorder = "1.4"
 rand = "0.9.0"
-reqwest = { version = "0.12.15", features = ["blocking"] }
+reqwest = { version = "0.12.15", features = ["blocking", "rustls-tls"], default-features = false}
 bytes = "1.10.1"
 sha1 = "0.10.6"
 tracing = "0.1.41"
@@ -28,14 +28,13 @@ dashmap = "6.1.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 bincode = "2.0.1"
 memmap2 = "0.9.5"
-fnv = "1.0.7"
 libc = "0.2.172"
 futures = "0.3.31"
-bendy = "0.3.3"
+bendy = "^0.3.3"
 num-bigint = "0.4.6"
 num-traits = "0.2.19"
 rc4 = "0.1.0"
-ctor = "0.4.2"
+ctor = "0.5.0"
 anyhow = "1.0.98"
 rss = "2.0.12"
 serde = { version = "1.0.219", features = ["derive"] }
@@ -44,6 +43,10 @@ serde_json = "1.0.140"
 json-value = "0.3.3"
 thiserror = "2.0.12"
 console-subscriber = { version = "0.4.1", optional = true }
+url = "2.5.4"
+chrono = { version = "0.4.41", features = ["serde"] }
+quick-xml = "0.38.2"
+portable-atomic = "1.11.1"
 
 [dev-dependencies]
 nix = { version = "0.30.1", features = ["socket", "net", "uio"] }

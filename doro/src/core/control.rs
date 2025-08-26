@@ -93,8 +93,8 @@ impl Dispatcher {
         let send = Emitter::global()
             .get(&Self::get_transfer_id(self.get_suffix()))
             .unwrap();
+        // todo - 考虑增加限制
         tokio::spawn(Box::pin(async move {
-            let data = data.as_ref().map(|d| d.as_ref());
             let crp = {
                 match router::handle_request(code, data).await {
                     Ok(data) => ControlResponsePacket::Ok(code, tran_id, data),

@@ -27,7 +27,7 @@ impl<T> FixedQueue<T> {
         self.limit
     }
 
-    pub fn iter(&self) -> std::collections::vec_deque::Iter<T> {
+    pub fn iter(&self) -> std::collections::vec_deque::Iter<'_, T> {
         self.queue.iter()
     }
 

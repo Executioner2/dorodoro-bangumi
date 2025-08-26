@@ -1,3 +1,4 @@
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", unix)))]
 pub mod bbr;
 pub mod probe;
 

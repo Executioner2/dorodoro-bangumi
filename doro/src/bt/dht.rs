@@ -14,8 +14,10 @@ use doro_util::sync::MutexExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tokio::sync::Semaphore;
-use tracing::{debug, error, trace};
+use tokio::sync::mpsc::Receiver;
+use tracing::{debug, error, info, trace};
 
+use crate::config::{DHT_EXPECT_PEERS, DHT_FIND_PEERS_INTERVAL, DHT_WAIT_PEER_LIMIT};
 use crate::context::Context;
 use crate::dht::entity::{DHTBase, GetPeersReq, GetPeersResp, Host, Ping};
 use crate::dht::routing::{Node, NodeId, REFRESH_INTERVAL, RoutingTable};
@@ -56,7 +58,7 @@ impl DHTRequest {
     }
 
     /// 发送一个 ping 操作
-    async fn ping(&self, addr: &SocketAddr) -> Option<DHTBase<Ping>> {
+    async fn ping(&self, addr: &SocketAddr) -> Option<DHTBase<'_, Ping<'_>>> {
         debug!("开始尝试 ping");
         let t = self.udp_server.tran_id();
         let ping = DHTBase::<Ping>::request(Ping::new(self.own_id.cow()), "ping".to_string(), t);
@@ -385,4 +387,79 @@ pub async fn find_peers<T>(
     }
 
     debug!("find peers 结束");
+}
+
+/// dht 定时任务
+pub struct DHTTimedTask<T, D> {
+    /// 任务 id
+    id: Id,
+
+    /// 资源 hash 值
+    info_hash: NodeId,
+
+    /// 等待队列
+    wait_queue: Arc<Mutex<VecDeque<T>>>,
+
+    /// 发现 peer 后回调
+    dispatch: Weak<D>,
+
+    /// 主动扫描信号
+    recv: Receiver<()>,
+}
+
+impl<T, D> Drop for DHTTimedTask<T, D> {
+    fn drop(&mut self) {
+        info!("DHTTimedTask [{}] 已 drop", self.id)
+    }
+}
+
+impl<T, D: ReceiveHost + Send + Sync + 'static> DHTTimedTask<T, D> {
+    pub fn new(
+        id: Id, info_hash: NodeId, wait_queue: Arc<Mutex<VecDeque<T>>>, dispatch: Weak<D>,
+        recv: Receiver<()>,
+    ) -> Self {
+        Self {
+            id,
+            info_hash,
+            wait_queue,
+            dispatch,
+            recv,
+        }
+    }
+
+    async fn find_peers(&self) {
+        if self.wait_queue.lock_pe().len() < DHT_WAIT_PEER_LIMIT {
+            #[rustfmt::skip]
+            find_peers(
+                self.info_hash.clone(),
+                self.dispatch.clone(),
+                self.id,
+                DHT_EXPECT_PEERS,
+            ).await;
+        }
+    }
+
+    pub async fn run(mut self) {
+        let mut tick = tokio::time::interval(DHT_FIND_PEERS_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    self.find_peers().await;
+                }
+                ret = self.recv.recv() => {
+                    match ret {
+                        Some(()) => {
+                            tick.reset();
+                            self.find_peers().await;
+                        }
+                        None => {
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

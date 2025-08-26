@@ -19,6 +19,7 @@ use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use url::Url;
 
 default_logger!(Level::DEBUG);
 
@@ -466,4 +467,14 @@ async fn test_join_set_task_finished() {
     join_set.join_next().await;
 
     info!("join_all 结束\tjoin_set 长度: {}", join_set.len());
+}
+
+#[test]
+fn test_parse_magnet_link() {
+    let link = "magnet:?xt=urn:btih:15372d70d8a9eb542f7d153c36d63c2ede788514&tr=http%3a%2f%2ft.nyaatracker.com%2fannounce&tr=http%3a%2f%2ftracker.kamigami.org%3a2710%2fannounce&tr=http%3a%2f%2fshare.camoe.cn%3a8080%2fannounce&tr=http%3a%2f%2fopentracker.acgnx.se%2fannounce&tr=http%3a%2f%2fanidex.moe%3a6969%2fannounce&tr=http%3a%2f%2ft.acg.rip%3a6699%2fannounce&tr=https%3a%2f%2ftr.bangumi.moe%3a9696%2fannounce&tr=udp%3a%2f%2ftr.bangumi.moe%3a6969%2fannounce&tr=http%3a%2f%2fopen.acgtracker.com%3a1096%2fannounce&tr=udp%3a%2f%2ftracker.opentrackr.org%3a1337%2fannounce";
+    let url = Url::parse(link).unwrap();
+    info!("url: {:?}", url);
+    url.query_pairs().for_each(|(k, v)| {
+        info!("{}: {}", k, v);
+    });
 }

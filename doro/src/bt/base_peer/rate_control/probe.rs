@@ -13,13 +13,18 @@
 //!      - 上下浮动相对来说有延迟，不平滑，会受到毛刺影响
 //!      - 暂时无法进行速率估算，因为需要测量 rtt
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use doro_util::collection::FixedQueue;
 use doro_util::win_minmax::Minmax;
 use doro_util::{datetime, if_else};
-use tracing::{debug, level_enabled, trace, Level};
+use tracing::{level_enabled, trace, Level};
 
 use super::{PacketAck, PacketSend, RateControl};
 
@@ -213,7 +218,7 @@ impl TimeFixeQueue {
         self.queue.is_empty()
     }
 
-    pub fn iter(&self) -> std::collections::vec_deque::Iter<(u32, u64)> {
+    pub fn iter(&self) -> std::collections::vec_deque::Iter<'_, (u32, u64)> {
         self.queue.iter()
     }
 }
@@ -455,7 +460,7 @@ impl PacketAck for Probe {
         if level_enabled!(Level::DEBUG) {
             let (rate1, unit1) = doro_util::net::rate_formatting(origin_bw);
             let (rate2, unit2) = doro_util::net::rate_formatting(rs.bw);
-            debug!(
+            trace!(
                 "\ncwnd: {}\tmax bw: {:.2}{}\tnew bw: {:.2}{}\tcwnd_gain: {}\t\
                 down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}\tfbr: {}",
                 self.dashbord.cwnd(),

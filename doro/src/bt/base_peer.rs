@@ -7,25 +7,35 @@
 //!
 //! 长度的需要加上消息类型的 1 字节。
 
+use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
+
 use anyhow::{anyhow, Error, Result};
-use bytes::BytesMut;
-use dashmap::DashMap;
+use async_trait::async_trait;
+use bendy::decoding::FromBencode;
+use bendy::encoding::ToBencode;
+use bytes::{Bytes, BytesMut};
+use dashmap::{DashMap, DashSet};
 use doro_util::option_ext::OptionExt;
 use doro_util::{anyhow_eq, bytes_util};
-use doro_util::bytes_util::WriteBytesBigEndian;
+use doro_util::bytes_util::{WriteBytesBigEndian, Bytes2Int};
 use doro_util::global::Id;
 use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinSet;
-use tracing::trace;
+use tracing::{debug, info, trace, error};
 
 use crate::base_peer::listener::{ReadFuture, WriteFuture};
 use crate::base_peer::rate_control::probe::{Dashbord, Probe};
@@ -35,10 +45,14 @@ use crate::bt::socket::TcpStreamWrapper;
 use crate::command::CommandHandler;
 use crate::config::CHANNEL_BUFFER;
 use crate::context::{AsyncSemaphore, Context};
+use crate::default_servant::extend_data::{HandshakeData, Metadata};
 use crate::emitter::transfer::TransferPtr;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use crate::servant::Servant;
+use crate::task::magnet::Magnet;
+use crate::task::HostSource;
 use crate::task_manager::PeerId;
+use crate::torrent::{Info, Torrent, TorrentArc};
 
 pub mod command;
 pub mod error;
@@ -48,7 +62,7 @@ pub mod rate_control;
 pub mod reserved;
 
 /// 尝试获取 servant 实例，如果没有，则直接 return Ok(())
-macro_rules! try_get_servant {
+macro_rules! try_get_servant_or_err {
     ($self: expr) => {
         match $self.servant.upgrade() {
             Some(servant) => servant,
@@ -57,6 +71,77 @@ macro_rules! try_get_servant {
             }
         }
     };
+}
+
+/// 尝试获取 servant 实例，如果没有，这直接 break
+macro_rules! try_get_servant_or_brack {
+    ($self: expr) => {
+        match $self.servant.upgrade() {
+            Some(servant) => servant,
+            None => {
+                trace!("servant weak ref released");
+                break;
+            }
+        }
+    };
+}
+
+/// metadata 信息的分块大小
+pub const METADATA_PIECE_SIZE: usize = 16384;
+
+/// 本端的扩展 id 定义
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum ExtendedId {
+    /// 扩展协议握手
+    Handshake = 0,
+
+    /// Peer Exchange       
+    /// peer 交换
+    UtPex = 1,
+
+    /// 元数据交换          
+    /// 通过磁链链接获取种子元数据信息
+    UtMetadata = 2,
+
+    /// 上传模式（超级种子模式）        
+    /// 表示客户端处于仅上传状态
+    UploadOnly = 3,
+
+    /// µTorrent 的 NAT 打洞消息    
+    /// 建立直接 P2P 连接
+    UtHolepunch = 4,
+
+    /// 评论扩展
+    UtComment = 6,
+}
+
+impl ExtendedId {
+    pub const fn get_value(&self) -> u8 {
+        *self as u8
+    }
+
+    pub fn get_name(&self) -> &'static str {
+        match self {
+            ExtendedId::Handshake => "handshake",
+            ExtendedId::UtPex => "ut_pex",
+            ExtendedId::UtMetadata => "ut_metadata",
+            ExtendedId::UploadOnly => "upload_only",
+            ExtendedId::UtHolepunch => "ut_holepunch",
+            ExtendedId::UtComment => "ut_comment",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "handshake" => Some(ExtendedId::Handshake),
+            "ut_pex" => Some(ExtendedId::UtPex),
+            "ut_metadata" => Some(ExtendedId::UtMetadata),
+            "upload_only" => Some(ExtendedId::UploadOnly),
+            "ut_holepunch" => Some(ExtendedId::UtHolepunch),
+            "ut_comment" => Some(ExtendedId::UtComment),
+            _ => None,
+        }
+    }
 }
 
 /// Peer 通信的消息类型
@@ -159,7 +244,7 @@ pub enum MsgType {
     /// 扩展协议
     ///
     /// 格式：`length:u32 | 20:u8 | extended_id:u64 | extended_data:bencode`
-    LTEPHandshake = 20,
+    ExtensionProtocol = 20,
 
     // ===========================================================================
     // Hash Transfer Protocol
@@ -192,7 +277,7 @@ impl TryFrom<u8> for MsgType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Writer {
     inner: OnceLock<Sender<Vec<u8>>>,
 }
@@ -262,6 +347,9 @@ pub struct BasePeerInner {
     /// 对端的 peer id
     opposite_peer_id: Mutex<Option<PeerId>>,
 
+    /// 对端的 reserved 扩展位
+    opposite_reserved: AtomicU64,
+
     /// 读取到数据时，通过此通道传输
     channel: (Sender<TransferPtr>, Mutex<Option<Receiver<TransferPtr>>>),
 }
@@ -296,6 +384,7 @@ impl BasePeer {
             dashbord,
             writer: Writer::new(),
             opposite_peer_id: Mutex::new(None),
+            opposite_reserved: AtomicU64::new(0),
             channel: (tx, Mutex::new(Some(rx))),
         }))
     }
@@ -314,7 +403,7 @@ impl BasePeer {
     #[rustfmt::skip]
     async fn crypto_handshake(&self, socket: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.id);
-        let servant = try_get_servant!(self);
+        let servant = try_get_servant_or_err!(self);
         let info_hash = servant.info_hash();
         pe_crypto::init_handshake(
             socket,
@@ -327,7 +416,7 @@ impl BasePeer {
     #[rustfmt::skip]
     async fn protocol_handshake(&self, socket: &mut TcpStreamWrapper) -> Result<()> {
         trace!("发送握手信息 peer_no: {}", self.id);
-        let servant = try_get_servant!(self);
+        let servant = try_get_servant_or_err!(self);
         let msg_size = 1 + BIT_TORRENT_PROTOCOL_LEN as usize + BIT_TORRENT_PAYLOAD_LEN;
         let mut bytes = Vec::with_capacity(msg_size);
         let info_hash = servant.info_hash();
@@ -346,12 +435,14 @@ impl BasePeer {
         anyhow_eq!(size, bytes.len(), "握手响应数据长度与预期不符 [{}]\t[{}]", size, bytes.len());
 
         let protocol_len = u8::from_be_bytes([handshake_resp[0]]) as usize;
+        let reserved = u64::from_be_slice(&handshake_resp[1 + protocol_len..1 + protocol_len + 8]);
         let resp_info_hash = &handshake_resp[1 + protocol_len + 8..1 + protocol_len + 8 + 20];
         let peer_id = &handshake_resp[1 + protocol_len + 8 + 20..];
 
         anyhow_eq!(info_hash, resp_info_hash, "对端的 info_hash 与本地不符");
 
         *self.opposite_peer_id.lock_pe() = Some(PeerId::new(peer_id.try_into()?));
+        self.opposite_reserved.store(reserved, Ordering::Relaxed);
 
         Ok(())
     }
@@ -403,26 +494,19 @@ impl BasePeer {
         } else {
             None
         }
-    } 
+    }
 
     /// 持续监听收到的数据，并进行分发
     async fn persist_listen(self) {
         let mut rx = self.channel.1.lock_pe().take().unwrap();
         let mut task_pool = JoinSet::new(); // 任务池
         loop {
-            let servant = match self.servant.upgrade() {
-                Some(servant) => servant,
-                None => {
-                    trace!("servant weak ref released");
-                    break;
-                }
-            };
-
             tokio::select! {
                 cmd = rx.recv() => {
                     if let Some(cmd) = cmd {
                         let cmd: command::Command = cmd.instance();
                         let ts = self.take_async_semaphore(&task_pool);
+                        let servant = try_get_servant_or_brack!(self);
                         if ts.is_none() {
                             if let Err(e) = cmd.handle((servant.clone(), ts)).await {
                                 servant.happen_exeception(self.id, e).await;
@@ -437,9 +521,17 @@ impl BasePeer {
                     }
                 }
                 ret = task_pool.join_next(), if !task_pool.is_empty() => {
-                    if let Some(Err(e)) = ret {
-                        servant.happen_exeception(self.id, e.into()).await;
-                        break;
+                    let servant = try_get_servant_or_brack!(self);
+                    match ret {
+                        Some(Ok(Err(e))) => {
+                            servant.happen_exeception(self.id, e).await;
+                            break;    
+                        },
+                        Some(Err(e)) => {
+                            servant.happen_exeception(self.id, e.into()).await;
+                            break;    
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -470,16 +562,16 @@ impl BasePeer {
             self.id, self.addr,
             self.writer.clone(),
             self.dashbord.clone(),
-            handles
+            handles, self.opposite_reserved.load(Ordering::Relaxed)
         );
-        let servant = try_get_servant!(self);
+        let servant = try_get_servant_or_err!(self);
         servant.add_peer(self.id, peer).await;
 
         Ok(())
     }
 }
 
-#[derive(Eq, PartialEq, Hash, Clone, Copy)]
+#[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
 pub enum Status {
     /// 不可下载
     Choke,
@@ -539,10 +631,10 @@ impl Piece {
         // 更新连续块偏移
         let bo_idx = Self::block_offset_idx(self.block_offset, self.block_size);
         let (idx, mut offset) = bytes_util::bitmap_offset(bo_idx);
-        'first_loop: for i in idx..self.bitmap.len() {
+        'first_loop: for value in self.bitmap[idx..].iter() {
             let mut k = offset;
             while k != 0 {
-                if self.bitmap[i] & k == 0 {
+                if *value & k == 0 {
                     break 'first_loop;
                 }
                 self.block_offset += self.block_size;
@@ -563,6 +655,7 @@ impl Piece {
     }
 }
 
+#[derive(Debug)]
 pub struct PeerInner {
     /// 编号
     id: Id,
@@ -593,6 +686,9 @@ pub struct PeerInner {
     /// 对面 peer 的 bitfield
     op_bitfield: Arc<RwLock<BytesMut>>,
 
+    /// 对端的扩展位
+    op_reserved: u64,
+
     /// 是否接收到了对方的 bitfield
     recv_bitfield: AtomicBool,
 
@@ -601,6 +697,24 @@ pub struct PeerInner {
 
     /// 异步任务句柄
     handles: Mutex<Option<JoinSet<()>>>,
+
+    /// 扩展 id 映射
+    extend_id_map: DashMap<u8, u8>,
+
+    /// 扩展协议握手数据
+    extend_handshake_data: OnceLock<HandshakeData>,
+
+    /// metadata 数据
+    metadata: Mutex<Option<Vec<u8>>>,
+
+    /// metadata 位图
+    metadata_bitfield: Mutex<Option<Vec<u8>>>,
+
+    /// metadata 分片索引
+    metadata_piece_idx: AtomicUsize,
+
+    /// 同步锁
+    sync_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Drop for PeerInner {
@@ -618,11 +732,14 @@ impl Deref for Peer {
 }
 
 /// 暴露给外部的 Peer 通信 socket 封装
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Peer(Arc<PeerInner>);
 
 impl Peer {
-    fn new(id: Id, addr: SocketAddr, writer: Writer, dashbord: Dashbord, handles: JoinSet<()>) -> Self {
+    fn new(id: Id, addr: SocketAddr, writer: Writer, dashbord: Dashbord, handles: JoinSet<()>, op_reserved: u64) -> Self {
+        let extend_id_map = DashMap::new();
+        extend_id_map.insert(0, ExtendedId::Handshake.get_value()); // 扩展协议的握手 id 固定为 0
+
         Peer(Arc::new(PeerInner {
             id,
             runnable: AtomicBool::new(true),
@@ -633,9 +750,16 @@ impl Peer {
             status: RwLock::new(Status::Choke),
             op_status: RwLock::new(Status::Choke),
             op_bitfield: Arc::new(RwLock::new(BytesMut::new())),
+            op_reserved,
             recv_bitfield: AtomicBool::new(false),
             dashbord,
-            handles: Mutex::new(Some(handles))
+            handles: Mutex::new(Some(handles)),
+            extend_id_map,
+            extend_handshake_data: OnceLock::new(),
+            metadata: Mutex::new(None),
+            metadata_bitfield: Mutex::new(None),
+            metadata_piece_idx: AtomicUsize::new(0),
+            sync_lock: Arc::new(tokio::sync::Mutex::new(()))
         }))
     }
 
@@ -682,24 +806,133 @@ impl Peer {
         Ok(())
     }
 
+    pub fn get_sync_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.sync_lock.clone()
+    }
+
     pub fn is_can_be_download(&self) -> bool {
-        *self.status.read_pe() == Status::UnChoke
+        *self.status.read_pe() == Status::UnChoke && self.recv_bitfield.load(Ordering::Relaxed)
     }
 
     pub fn dashbord(&self) -> &Dashbord {
         &self.dashbord
     }
 
+    pub fn is_can_be_request_metadata(&self) -> bool {
+        self.is_ltep() && self.extend_handshake_data.get()
+            .is_some_and(|data| data.m.contains_key(ExtendedId::UtMetadata.get_name()))
+    }
+
+    /// 对端是否支持 LTEP（扩展协议）
+    pub fn is_ltep(&self) -> bool {
+        self.op_reserved & reserved::LTEP != 0
+    }
+
+    /// 扩展 id 转换
+    pub fn extend_id_transform(&self, id: u8) -> Option<u8> {
+        self.extend_id_map.get(&id).map(|v| *v.value())
+    }
+
+    /// 添加扩展 id 映射
+    pub fn add_extend_id(&self, source_id: u8, target_id: ExtendedId) {
+        self.extend_id_map.insert(source_id, target_id.get_value());
+    }
+
+    /// 设置扩展协议握手数据
+    pub fn set_extend_handshake_data(&self, data: HandshakeData) -> Result<()> {
+        self.extend_handshake_data.set(data)
+            .map_err(|_| anyhow!("扩展协议握手数据已存在"))
+    }
+
+    /// 获取 metadata   
+    /// 调用此方法应该确保 metadata 已经初始化
+    pub fn parse_torrent_from_metadata(&self, magnet: Arc<Magnet>) -> Result<TorrentArc> {
+        let metadata = self.metadata.lock_pe();
+        if metadata.is_none() {
+            return Err(anyhow!("metadata 未初始化"));
+        }
+
+        let metadata = metadata.as_ref().unwrap();
+        let info = Info::from_bencode(metadata.as_slice())
+            .map_err(|e| anyhow!("解析 torrent 元数据失败\t{e}"))?;
+        Ok(TorrentArc::new(Torrent::new(info, magnet.info_hash, magnet.trackers.clone())))
+    }
+
+    /// 从扩展协议握手数据中获取种子元数据大小
+    pub fn get_metadata_size(&self) -> Option<u32> {
+        self.extend_handshake_data.get()?.metadata_size
+    }
+
+    /// 检查对端是否支持指定的扩展协议
+    pub fn check_extend_support(&self, extend: ExtendedId) -> bool {
+        self.extend_handshake_data.get()
+            .is_some_and(|data| data.m.contains_key(extend.get_name()))
+    }
+
+    /// 初始化 metadata
+    pub fn init_metadata_piece(&self, size: usize) {
+        let mut metadata = self.metadata.lock_pe();
+        if metadata.is_none() {
+            *metadata = Some(vec![0u8; size]);
+        }
+
+        let mut metadata_bitfield = self.metadata_bitfield.lock_pe();
+        if metadata_bitfield.is_none() {
+            let bit_len = size.div_ceil(METADATA_PIECE_SIZE);
+            let len = (bit_len + 7) >> 3;
+            *metadata_bitfield = Some(vec![0u8; len]);
+        }
+    }
+
+    /// 设置 metadata 的分片数据
+    pub fn set_metadata_piece(&self, piece_idx: u32, data: Bytes) -> Result<()> {
+        {
+            let mut metadata_lock = self.metadata.lock_pe();
+            let metadata = metadata_lock.as_mut().unwrap();
+            let index = piece_idx as usize * METADATA_PIECE_SIZE;
+            if index + data.len() > metadata.len() {
+                return Err(anyhow!("metadata 分片 [{piece_idx}] 数据异常，长度 [{}] 超出范围", data.len()));
+            }
+            metadata[index..index+data.len()].copy_from_slice(&data);
+        }
+        
+        {
+            let mut metadata_bitfield_lock = self.metadata_bitfield.lock_pe();
+            let metadata_bitfield = metadata_bitfield_lock.as_mut().unwrap();
+            let (idx, offset) = bytes_util::bitmap_offset(piece_idx);
+            metadata_bitfield[idx] |= offset;
+
+            let mut metadata_piece_idx = self.metadata_piece_idx.load(Ordering::Acquire);
+            let (idx, mut offset) = bytes_util::bitmap_offset(metadata_piece_idx as u32);
+            'first_loop: for value in metadata_bitfield[idx..].iter() {
+                let mut k = offset;
+                while k != 0 {
+                    if *value & k == 0 {
+                        break 'first_loop;
+                    }
+                    metadata_piece_idx += 1;
+                    k >>= 1;
+                }
+                offset = 1 << 7
+            }
+
+            self.metadata_piece_idx.store(metadata_piece_idx, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    pub fn is_metadata_complete(&self) -> bool {
+        let total_size = { self.metadata.lock_pe().as_ref().unwrap().len() };
+        let total_piece_size = total_size.div_ceil(METADATA_PIECE_SIZE);
+        self.metadata_piece_idx.load(Ordering::Relaxed) >= total_piece_size
+    }
+
+    pub fn get_metadata_piece_idx(&self) -> u32 {
+        self.metadata_piece_idx.load(Ordering::Relaxed) as u32
+    }
+
     pub fn status(&self) -> Status {
         *self.status.read_pe()
-    }
-
-    pub fn op_status(&self) -> Status {
-        *self.op_status.read_pe()
-    }
-
-    pub fn op_bitfield(&self) -> Arc<RwLock<BytesMut>> {
-        self.op_bitfield.clone()
     }
 
     /// 设置状态
@@ -707,21 +940,36 @@ impl Peer {
         *self.status.write_pe() = status;
     }
 
+    pub fn op_status(&self) -> Status {
+        *self.op_status.read_pe()
+    }
+
     /// 设置对端 peer 的状态    
     pub fn set_op_status(&self, status: Status) {
-        self.recv_bitfield.store(true, Ordering::Relaxed);
         *self.op_status.write_pe() = status;
     }
 
-    /// 是否可以发送数据，即 inflight 数据小于 cwnd
-    pub fn has_send_window_space(&self) -> bool {
-        self.dashbord.inflight() <= self.dashbord.cwnd()
+    pub fn op_bitfield(&self) -> Arc<RwLock<BytesMut>> {
+        self.op_bitfield.clone()
+    }
+
+    pub fn set_op_bitfield(&self, bitfield: BytesMut) {
+        *self.op_bitfield.write_pe() = bitfield;
+        self.recv_bitfield.store(true, Ordering::Relaxed);
     }
 
     /// 是否还有传输数据（指等待响应的数据，或者对方已经 UnChoke，但是我们还没有收到对方的 bitfield）    
     /// ture 表示还有数据，false 表示没有数据
     pub fn has_transfer_data(&self) -> bool {
-        !self.response_pieces.is_empty() || !self.recv_bitfield.load(Ordering::Relaxed)
+        (!self.response_pieces.is_empty() && self.dashbord.inflight() > 0) || (
+            self.status() == Status::UnChoke &&
+            !self.recv_bitfield.load(Ordering::Relaxed)
+        )
+    }
+
+    /// 是否可以发送数据，即 inflight 数据小于 cwnd
+    pub fn has_send_window_space(&self) -> bool {
+        self.dashbord.inflight() <= self.dashbord.cwnd()
     }
 
     /// 重置分片请求的起始位置
@@ -833,16 +1081,58 @@ impl Peer {
         self.send(bytes).await
     }
 
+    /// 请求扩展协议握手数据
+    pub async fn request_extend_handsake(&self) -> Result<()> {
+        self.check_runnable()?;
+        if !self.is_ltep() {
+            return Err(anyhow!("对端不支持扩展协议，无法请求扩展协议握手数据"));
+        }
+
+        let mut handshake = HandshakeData::new();
+        handshake.m.insert(ExtendedId::UtMetadata.get_name().to_string(), ExtendedId::UtMetadata.get_value());
+        let handshake = handshake.to_bencode()
+            .map_err(|e| anyhow!("扩展协议握手数据编码失败\t{e}"))?;
+
+        let mut bytes = Vec::with_capacity(6 + handshake.len());
+        bytes.write_u32(2 + handshake.len() as u32)?;
+        bytes.write_u8(MsgType::ExtensionProtocol as u8)?;
+        bytes.write_u8(ExtendedId::Handshake.get_value())?;
+        bytes.write_bytes(&handshake)?;
+        self.send(bytes).await
+    }
+
+    /// 请求 metadata 分片
+    pub async fn request_metadata_piece(&self, piece: u32) -> Result<()> {
+        self.check_runnable()?;
+        if !self.is_can_be_request_metadata() {
+            return Err(anyhow!("对端不支持 ut_metadata 扩展协议，无法请求 metadata 分片"));
+        }
+
+        let metadata = Metadata::request(piece).to_bencode()
+            .map_err(|e| anyhow!("metadata 请求数据编码失败\t{e}"))?;
+        let msg_type = self.extend_handshake_data
+            .get().unwrap()
+            .m.get(ExtendedId::UtMetadata.get_name())
+            .unwrap();
+
+        let mut bytes = Vec::with_capacity(6 + metadata.len());
+        bytes.write_u32(2 + metadata.len() as u32)?;
+        bytes.write_u8(MsgType::ExtensionProtocol as u8)?;
+        bytes.write_u8(*msg_type)?;
+        bytes.write_bytes(&metadata)?;
+        self.send(bytes).await
+    }
+
     /// 关闭此 peer
     pub async fn shutdown(&self) {
         if self.runnable.swap(false, Ordering::Relaxed) {
-            let mut handles = {
+            let handles = {
                 match self.handles.lock_pe().take() {
                     Some(handles) => handles,
                     None => return,
                 }
             };
-            handles.shutdown().await;
+            drop(handles)
         }
     }
 }
@@ -851,6 +1141,7 @@ impl Peer {
 /// 所以，我们对外共享 Peer，只能共享 PeerWrapper，PeerWrapper 包装了可以 Sync 的 Peer，但是
 /// 我们指定 PeerWrapper 不可 Sync，保证使用者无法再次让 PeerWrapper 在多线程中被共享。以避免
 /// 内存泄漏
+#[derive(Debug)]
 pub struct PeerWrapper {
     /// 内部还是指向 Peer
     inner: Peer,
@@ -864,5 +1155,186 @@ impl Deref for PeerWrapper {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+/// peer info 扩展
+pub trait PeerInfoExt: Send + Debug {
+    /// 获取 peer id
+    fn get_id(&self) -> Id;
+
+    /// 获取 peer 地址
+    fn get_addr(&self) -> SocketAddr;
+
+    /// 获取 dashbord
+    fn get_dashbord(&self) -> Dashbord;
+
+    /// 获取 peer 名称
+    fn get_name(&self) -> String;
+
+    /// 获取 peer 来源
+    fn get_source(&self) -> HostSource;
+
+    /// 获取 peer 链接限制
+    fn get_peer_conn_limit(&self) -> usize;
+
+    /// 是否来自等待队列
+    fn is_from_waited(&self) -> bool;
+}
+
+#[async_trait]
+pub trait PeerLaunchCallback {
+    /// 当 peer 启动失败时调用
+    async fn on_peer_start_failed(&self, peer_info: Box<dyn PeerInfoExt>);
+
+    /// 当 peer 启动成功时调用
+    async fn on_peer_start_success(&self, peer_id: Id);
+
+    /// 发生不可逆的错误
+    async fn on_panic(&self, error: Error);
+}
+
+/// peer 启动器
+pub struct PeerLaunch<T, S, C> {
+    /// peer 启动任务池
+    join_set: JoinSet<PeerStartResult<(T, Option<AsyncSemaphore>)>>,
+
+    /// peer 事件处理
+    servant: Weak<S>,
+
+    /// 等待队列
+    wait_queue: Arc<Mutex<VecDeque<T>>>,
+
+    /// 不可启动的 host 集合
+    unstart_host: Arc<DashSet<SocketAddr>>,
+
+    /// peer 启动事件回调
+    callback: Weak<C>,
+
+    /// peer 管理集合
+    peers: Arc<DashMap<Id, T>>,
+
+    /// 消费通道
+    channel: (Sender<T>, Receiver<T>)
+}
+
+impl<T, S, C> Drop for PeerLaunch<T, S, C> {
+    fn drop(&mut self) {
+        info!("PeerLaunch 已 drop");
+    }
+}
+
+impl<T, S, C> PeerLaunch<T, S, C>
+where 
+    T: PeerInfoExt + Send + 'static,
+    S: Servant,
+    C: PeerLaunchCallback,
+{
+    pub fn new(servant: Weak<S>, peers: Arc<DashMap<Id, T>>, 
+        wait_queue: Arc<Mutex<VecDeque<T>>>, unstart_host: Arc<DashSet<SocketAddr>>,
+        callback: Weak<C>, channel: (Sender<T>, Receiver<T>)
+    ) -> Self {
+        Self {
+            join_set: JoinSet::new(),
+            servant,
+            callback,
+            peers,
+            channel,
+            wait_queue,
+            unstart_host,
+        }
+    }
+
+    pub fn get_sender(&self) -> Sender<T> {
+        self.channel.0.clone()
+    }
+
+    fn get_async_start_limit(&self) -> usize {
+        let config = Context::get_config();
+        config.async_peer_start_limit().max(config.torrent_peer_conn_limit().saturating_sub(self.peers.len()))
+    }
+
+    fn take_async_semaphore(&self) -> Option<AsyncSemaphore> {
+        if self.join_set.len() < self.get_async_start_limit() {
+            Context::take_async_peer_start_semaphore()
+        } else {
+            None
+        }
+    }
+
+    async fn handle_peer_start_result(&self, ret: PeerStartResult<(T, Option<AsyncSemaphore>)>) {
+        match ret {
+            PeerStartResult::Success((peer_info, _)) => {
+                let id = peer_info.get_id();
+                self.peers.insert(peer_info.get_id(), peer_info);
+                if let Some(callback) = self.callback.upgrade() {
+                    callback.on_peer_start_success(id).await;
+                }
+            }
+            PeerStartResult::Failed((peer_info, _), e) => {
+                debug!("peer [{}] 启动失败: {}", peer_info.get_name(), e);
+                self.unstart_host.remove(&peer_info.get_addr());
+                if let Some(callback) = self.callback.upgrade() {
+                    callback.on_peer_start_failed(Box::new(peer_info)).await;
+                }
+            }
+        }
+    }
+
+    pub async fn run(mut self) {
+        loop {
+            tokio::select! {
+                peer_info = self.channel.1.recv() => {
+                    match peer_info {
+                        Some(peer_info) => {
+                            if !peer_info.is_from_waited() && self.unstart_host.contains(&peer_info.get_addr()) {
+                                debug!("[{}] 已在启动队列中，或者被禁用", peer_info.get_name());
+                                continue;
+                            }
+
+                            self.unstart_host.insert(peer_info.get_addr());
+                            let limit = peer_info.get_peer_conn_limit();
+                            if self.peers.len() + self.join_set.len() >= limit  {
+                                self.wait_queue.lock_pe().push_back(peer_info);
+                                continue;
+                            }
+
+                            let bp = BasePeer::new(
+                                peer_info.get_id(), peer_info.get_addr(), 
+                                self.servant.clone(), peer_info.get_dashbord()
+                            );
+                            let ts = self.take_async_semaphore();
+                            if ts.is_none() {
+                                self.handle_peer_start_result(bp.async_run((peer_info, ts)).await).await;
+                            } else {
+                                self.join_set.spawn(bp.async_run((peer_info, ts)));
+                            }
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                } 
+                ret = self.join_set.join_next(), if !self.join_set.is_empty() => {
+                    match ret {
+                        Some(Ok(ret)) => {
+                            self.handle_peer_start_result(ret).await;
+                        }
+                        Some(Err(e)) => {
+                            // 不可逆的错误，无法恢复，当作 panic 处理
+                            if let Some(callback) = self.callback.upgrade() {
+                                callback.on_panic(anyhow!("peer 启动器的任务出错: {e}")).await;
+                            } else {
+                                error!("peer 启动器的任务出错: {e}");    
+                            }
+                        }
+                        None => {
+                            // 不会走到这个分支来的
+                            info!("peer 启动器的任务集合为空，没有 peer 在启动中");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

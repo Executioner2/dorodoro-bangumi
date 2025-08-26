@@ -50,7 +50,7 @@ impl NodeId {
         res
     }
 
-    pub fn cow(&self) -> Cow<Self> {
+    pub fn cow(&self) -> Cow<'_, Self> {
         Cow::Borrowed(self)
     }
 

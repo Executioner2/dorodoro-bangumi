@@ -2,8 +2,13 @@ use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 
 use byteorder::{BigEndian, WriteBytesExt};
 use bytes::Bytes;

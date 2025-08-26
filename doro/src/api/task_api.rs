@@ -64,7 +64,7 @@ pub struct File {
 /// 解析 torrent 链接，支持磁力链接和文件哈希值
 #[route(code = 1001)]
 pub async fn parse_torrent_link(link: String) -> Result<Ret<TorrentRet>> {
-    let r = task_service::parse_torrent_link(link.as_str())?;
+    let r = task_service::parse_torrent_link(link.as_str()).await?;
     Ok(Ret::ok(r))
 }
 

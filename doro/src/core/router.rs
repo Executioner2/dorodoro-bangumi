@@ -3,10 +3,12 @@ pub mod ret;
 mod tests;
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::pin::Pin;
+use std::sync::{OnceLock, RwLock};
 
 use anyhow::{Result, anyhow};
-use async_trait::async_trait;
+use bytes::Bytes;
+use doro_util::sync::{ReadLockExt, WriteLockExt};
 use json_value::JsonValue;
 use serde::Serialize;
 
@@ -14,79 +16,66 @@ use crate::router::ret::Ret;
 
 pub type Code = u32;
 
-#[async_trait]
-pub trait RouteHandler: Send + Sync {
-    async fn handle(&self, body: Option<&[u8]>) -> Result<Vec<u8>>;
+/// 没有输入参数的函数
+trait AsyncNoneInputFn: Send {
+    fn call(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>;
 }
 
-pub enum HandlerFnType<F1, F2> {
-    OnlyContext(F1),
-    ContextAndBody(F2),
+/// 有输入参数的函数
+trait AsyncHasInputFn: Send {
+    fn call(&self, input: JsonValue) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>;
 }
 
-#[async_trait]
-pub trait HandlerTrait<T: Serialize + Send + Sync + 'static>: Send + Sync {
-    async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret<T>>;
-}
+struct NoneInputFnPtr<F>(F);
 
-pub struct HandlerWrapper<Ret> {
-    pub handle: Arc<dyn HandlerTrait<Ret> + Send + Sync>,
-}
-
-#[async_trait]
-impl<Ret> RouteHandler for HandlerWrapper<Ret>
+impl<F, Fut, T> AsyncNoneInputFn for NoneInputFnPtr<F>
 where
-    Ret: Serialize + 'static + Send + Sync,
+    F: Fn() -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<Ret<T>>> + Send,
+    T: serde::Serialize + Send + 'static,
 {
-    async fn handle(&self, body: Option<&[u8]>) -> Result<Vec<u8>> {
-        let body_data = match body {
-            Some(b) => Some(serde_json::from_slice(b)?),
-            None => None,
-        };
-
-        let ret = self.handle.call(body_data).await?;
-        Ok(serde_json::to_vec(&ret)?)
+    fn call(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>> {
+        let future = self.0.clone();
+        Box::pin(async move {
+            let result = future().await;
+            Ok(serde_json::to_vec(&handle_ret_after(result))?)
+        })
     }
 }
 
-pub struct NoneInputHandler<F, Fut> {
-    pub f: F,
-    pub _phantom: std::marker::PhantomData<Fut>,
-}
+struct HasInputFnPtr<F>(F);
 
-#[async_trait]
-impl<F, Fut, T> HandlerTrait<T> for NoneInputHandler<F, Fut>
+impl<F, Fut, T> AsyncHasInputFn for HasInputFnPtr<F>
 where
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Ret<T>>> + Send + Sync,
-    T: Serialize + Send + Sync + 'static,
+    F: Fn(JsonValue) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<Ret<T>>> + Send,
+    T: serde::Serialize + Send + 'static,
 {
-    async fn call(&self, _: Option<JsonValue>) -> Result<Ret<T>> {
-        Ok(handle_ret_after((self.f)().await))
+    fn call(&self, input: JsonValue) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>> {
+        let future = (self.0).clone();
+        Box::pin(async move {
+            let result = future(input).await;
+            Ok(serde_json::to_vec(&handle_ret_after(result))?)
+        })
     }
 }
 
-pub struct HasInputHandler<F, Fut> {
-    pub f: F,
-    pub _phantom: std::marker::PhantomData<Fut>,
+/// 函数指针
+#[derive(Clone, Copy)]
+enum FunctionPtr {
+    /// 没有输入参数的函数裸指针
+    NoneInput(*const dyn AsyncNoneInputFn),
+
+    /// 有输入参数的函数裸指针
+    HasInput(*const dyn AsyncHasInputFn),
 }
 
-#[async_trait]
-impl<F, Fut, T> HandlerTrait<T> for HasInputHandler<F, Fut>
-where
-    F: Fn(JsonValue) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Ret<T>>> + Send + Sync,
-    T: Serialize + Send + Sync + 'static,
-{
-    async fn call(&self, json_value: Option<JsonValue>) -> Result<Ret<T>> {
-        let json_value = json_value.ok_or_else(|| anyhow!("Missing request params"))?;
-        Ok(handle_ret_after((self.f)(json_value).await))
-    }
-}
+unsafe impl Send for FunctionPtr {}
+unsafe impl Sync for FunctionPtr {}
 
 #[derive(Default)]
 pub struct Router {
-    routes: RwLock<HashMap<u32, Arc<dyn RouteHandler>>>,
+    routes: RwLock<HashMap<u32, FunctionPtr>>,
 }
 
 impl Router {
@@ -95,21 +84,56 @@ impl Router {
         ROUTER.get_or_init(Router::default)
     }
 
-    pub fn register_handler(&self, code: Code, handler: Arc<dyn RouteHandler>) {
-        if self.routes.write().unwrap().insert(code, handler).is_some() {
-            panic!("Route for code {code} already registered")
-        }
+    /// 注册没有输入的函数
+    pub fn register_none_input_fn<F, Fut, T>(&self, code: Code, f: F)
+    where
+        F: Fn() -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<Ret<T>>> + Send,
+        T: Serialize + Send + 'static,
+    {
+        let boxed = Box::new(NoneInputFnPtr(f));
+        let ptr = Box::into_raw(boxed);
+        self.routes
+            .write_pe()
+            .insert(code, FunctionPtr::NoneInput(ptr));
     }
 
-    pub async fn handle_request(&self, code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
+    /// 注册有输入的函数
+    pub fn register_has_input_fn<F, Fut, T>(&self, code: Code, f: F)
+    where
+        F: Fn(JsonValue) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<Ret<T>>> + Send,
+        T: Serialize + Send + 'static,
+    {
+        let boxed = Box::new(HasInputFnPtr(f));
+        let ptr = Box::into_raw(boxed);
+        self.routes
+            .write_pe()
+            .insert(code, FunctionPtr::HasInput(ptr));
+    }
+
+    pub async fn handle_request(&self, code: Code, body: Option<Bytes>) -> Result<Vec<u8>> {
         let handler = self
             .routes
-            .read()
-            .unwrap()
+            .read_pe()
             .get(&code)
             .ok_or_else(|| anyhow!("No handler for code {}", code))
             .cloned()?;
-        handler.handle(body).await
+
+        match handler {
+            FunctionPtr::NoneInput(ptr) => {
+                let handler = unsafe { &*ptr };
+                handler.call().await
+            }
+            FunctionPtr::HasInput(ptr) => {
+                let body_data = match body {
+                    Some(b) => serde_json::from_slice(b.as_ref())?,
+                    None => return Err(anyhow!("Missing request params")),
+                };
+                let handler = unsafe { &*ptr };
+                handler.call(body_data).await
+            }
+        }
     }
 }
 
@@ -118,35 +142,23 @@ macro_rules! register_route {
     ($register_fn:ident, $code:expr, $handler:ident,true) => {
         #[ctor::ctor]
         fn $register_fn() {
-            use $crate::core::router::{HandlerWrapper, HasInputHandler, Router};
-            let wrapper = HandlerWrapper {
-                handle: std::sync::Arc::new(HasInputHandler {
-                    f: $handler,
-                    _phantom: std::marker::PhantomData,
-                }),
-            };
-            Router::global().register_handler($code, std::sync::Arc::new(wrapper))
+            use $crate::core::router::Router;
+            Router::global().register_has_input_fn($code, $handler)
         }
     };
     ($register_fn:ident, $code:expr, $handler:ident,false) => {
         #[ctor::ctor]
         fn $register_fn() {
-            use $crate::core::router::{HandlerWrapper, NoneInputHandler, Router};
-            let wrapper = HandlerWrapper {
-                handle: std::sync::Arc::new(NoneInputHandler {
-                    f: $handler,
-                    _phantom: std::marker::PhantomData,
-                }),
-            };
-            Router::global().register_handler($code, std::sync::Arc::new(wrapper))
+            use $crate::core::router::Router;
+            Router::global().register_none_input_fn($code, $handler)
         }
     };
 }
 
-fn handle_ret_after<T: Serialize + Send + Sync + 'static>(ret: Result<Ret<T>>) -> Ret<T> {
+fn handle_ret_after<T: Serialize + 'static>(ret: Result<Ret<T>>) -> Ret<T> {
     ret.unwrap_or_else(|e| Ret::default_err(e.to_string()))
 }
 
-pub async fn handle_request(code: Code, body: Option<&[u8]>) -> Result<Vec<u8>> {
+pub async fn handle_request(code: Code, body: Option<Bytes>) -> Result<Vec<u8>> {
     Router::global().handle_request(code, body).await
 }

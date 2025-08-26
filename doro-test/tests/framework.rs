@@ -404,7 +404,7 @@ impl Bootstrap {
 
 default_logger!();
 
-#[tokio::main]
+#[tokio::test]
 async fn main() {
     Bootstrap::start().await;
 }

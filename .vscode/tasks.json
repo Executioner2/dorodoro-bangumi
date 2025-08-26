@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "run doro",
+      "type": "shell",
+      "command": "cargo run --package doro --bin doro",
+      "options": {
+        "env": {
+          // "RUST_LOG": "info"
+          // "RUST_LOG": "trace"
+          "RUST_LOG": "debug"
+        }
+      }
+    },
+    {
+      "label": "run doro tokio console",
+      "type": "shell",
+      "command": "cargo run --features dev --package doro --bin doro",
+      "options": {
+        "env": {
+          "RUSTFLAGS": "--cfg tokio_unstable",
+          "TOKIO_CONSOLE": "true",
+          "RUST_LOG": "info"
+        }
+      }
+    }
+  ]
+}
