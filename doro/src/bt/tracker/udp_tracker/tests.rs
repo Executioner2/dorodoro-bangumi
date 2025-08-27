@@ -48,7 +48,7 @@ async fn test_connect() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_announce() {
-    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
+    let torrent = Torrent::parse_torrent("tests/resources/Grisaia Phantom Trigger - 12.torrent").unwrap();
 
     let peer_id = doro_util::rand::gen_peer_id();
     let mut tracker = UdpTracker::new(
@@ -120,7 +120,7 @@ fn test_request_download() {
 
 async fn request_download() {
     // 本机的 peer 客户端
-    let torrent = Arc::new(Torrent::parse_torrent("tests/resources/test3.torrent").unwrap());
+    let torrent = Arc::new(Torrent::parse_torrent("tests/resources/Grisaia Phantom Trigger - 12.torrent").unwrap());
 
     let protocol_len = 19u8;
     let protocol = b"BitTorrent protocol";

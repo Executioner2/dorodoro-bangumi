@@ -18,7 +18,7 @@ default_logger!(Level::DEBUG);
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_bencoded_string() {
-    let bytes = fs::read("tests/resources/test6.torrent").unwrap();
+    let bytes = fs::read("tests/resources/[VCB-Studio] Kannagi [Ma10p_1080p].torrent").unwrap();
     let data = Torrent::parse_torrent(bytes).unwrap();
     debug!("decoded data: {:?}", data);
 }
@@ -37,14 +37,14 @@ fn test_parse_announce_file() {
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_parse_torrent_file() {
-    assert!(Torrent::parse_torrent("tests/resources/test2.torrent").is_ok())
+    assert!(Torrent::parse_torrent("tests/resources/Grisaia Phantom Trigger - 12.torrent").is_ok())
 }
 
 /// 验证 info hash 正确性
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_info_hash() {
-    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent").unwrap();
+    let torrent = Torrent::parse_torrent("tests/resources/Grisaia Phantom Trigger - 12.torrent").unwrap();
     let s = hex::encode(torrent.info_hash);
     assert_eq!(s, "a4a88248f0b76a3ff7d7c9bd7a7a134c12090cbe");
 }
@@ -53,7 +53,7 @@ fn test_info_hash() {
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_udp_tracker_handshake() {
-    let torrent = Torrent::parse_torrent("tests/resources/test6.torrent").unwrap();
+    let torrent = Torrent::parse_torrent("tests/resources/[VCB-Studio] Kannagi [Ma10p_1080p].torrent").unwrap();
 
     debug!("tracker: {}", torrent.announce);
 
@@ -91,7 +91,7 @@ fn test_udp_tracker_handshake() {
 #[test]
 #[cfg_attr(miri, ignore)] // miri 不支持的操作，忽略掉
 fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
-    let torrent = Torrent::parse_torrent("tests/resources/test3.torrent")?;
+    let torrent = Torrent::parse_torrent("tests/resources/Grisaia Phantom Trigger - 12.torrent")?;
 
     let announce = "http://nyaa.tracker.wf:7777/announce";
     let port = "6881";
@@ -125,7 +125,7 @@ fn test_http_tracker_handshake() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_piece_hash() {
-    let torrent = Torrent::parse_torrent("tests/resources/test6.torrent").unwrap();
+    let torrent = Torrent::parse_torrent("tests/resources/[VCB-Studio] Kannagi [Ma10p_1080p].torrent").unwrap();
     debug!("文件序: {:?}", torrent.info.files);
     debug!("tracker: {}", torrent.announce);
     for (i, data) in torrent.info.pieces.chunks(20).enumerate() {

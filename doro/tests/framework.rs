@@ -133,7 +133,7 @@ async fn test_add_torrent() {
     let request = task_api::Task {
         task_name: Some("好东西".to_string()),
         download_path: Some("./download".to_string()),
-        source: TorrentSource::LocalFile("./tests/resources/test6.torrent".to_string()),
+        source: TorrentSource::LocalFile("./tests/resources/[VCB-Studio] Kannagi [Ma10p_1080p].torrent".to_string()),
         mkdir_torrent_name: Some(true),
     };
     let data = serde_json::to_vec(&request).unwrap();
