@@ -66,7 +66,7 @@ impl TaskManager {
 
     /// 从数据库中加载任务
     async fn load_task_from_db(&self) {
-        let conn = Context::global().get_conn().await.unwrap();
+        let conn = Context::get_conn().await.unwrap();
         let torrents = conn.list_torrent().unwrap();
         for entity in torrents {
             if entity.status == Some(TorrentStatus::Download) && entity.serail.is_some() {

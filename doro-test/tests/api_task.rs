@@ -13,7 +13,7 @@ async fn test_parse_torrent_link() {
     let link = "magnet:?xt=urn:btih:2da35cf6f641283c91a3806665eefbd2ecef1efa&tr=http%3a%2f%2ft.nyaatracker.com%2fannounce&tr=http%3a%2f%2ftracker.kamigami.org%3a2710%2fannounce&tr=http%3a%2f%2fshare.camoe.cn%3a8080%2fannounce&tr=http%3a%2f%2fopentracker.acgnx.se%2fannounce&tr=http%3a%2f%2fanidex.moe%3a6969%2fannounce&tr=http%3a%2f%2ft.acg.rip%3a6699%2fannounce&tr=https%3a%2f%2ftr.bangumi.moe%3a9696%2fannounce&tr=udp%3a%2f%2ftr.bangumi.moe%3a6969%2fannounce&tr=http%3a%2f%2fopen.acgtracker.com%3a1096%2fannounce&tr=udp%3a%2f%2ftracker.opentrackr.org%3a1337%2fannounce";
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, link).await.unwrap();
+    let rf = client.request(code, Some(link)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -32,7 +32,7 @@ async fn test_parse_torrent_file() {
     let code = 1002;
     let file_path = "./tests/resources/[VCB-Studio] Kannagi [Ma10p_1080p].torrent";
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, file_path).await.unwrap();
+    let rf = client.request(code, Some(file_path)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -57,7 +57,7 @@ async fn test_add_task_from_local_file() {
     };
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, task).await.unwrap();
+    let rf = client.request(code, Some(task)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -83,7 +83,7 @@ async fn test_add_task_from_magnet_link() {
     };
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, task).await.unwrap();
+    let rf = client.request(code, Some(task)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 

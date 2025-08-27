@@ -17,7 +17,7 @@ async fn test_add_rss_feed() {
     };
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, rss_feed).await.unwrap();
+    let rf = client.request(code, Some(rss_feed)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 

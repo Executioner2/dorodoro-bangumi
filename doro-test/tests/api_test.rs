@@ -11,7 +11,7 @@ async fn test_client_base() {
     let code = 10001;
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, "/").await.unwrap();
+    let rf = client.request(code, Some("/")).await.unwrap();
     let ret = rf.await;
 
     assert_eq!(ret.code, code);

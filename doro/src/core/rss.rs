@@ -45,7 +45,7 @@ pub async fn subscribe(url: String, title: Option<String>, save_path: Option<Str
     };
 
     let res = {
-        let mut conn = Context::global().get_conn().await?;
+        let mut conn = Context::get_conn().await?;
         conn.add_subscribe(rss_entity)
     };
 
@@ -57,7 +57,7 @@ pub async fn subscribe(url: String, title: Option<String>, save_path: Option<Str
 
 async fn consumer_not_read(url: &String, channel: Channel) -> Result<()> {
     let (rss_entity, read_guids) = {
-        let conn = Context::global().get_conn().await?;
+        let conn = Context::get_conn().await?;
         let rss_entity = conn
             .get_rss_by_url(url)?
             .ok_or(anyhow!("not found subscribe by url: {}", url))?;
@@ -105,7 +105,7 @@ async fn flush_feed(rss_entity: Arc<RSSEntity>, permit: OwnedSemaphorePermit) ->
     hasher.update(&content);
     let hash = hex::encode(hasher.finalize().as_mut_slice());
     if hash != *rss_entity.hash.as_ref().unwrap() {
-        let conn = Context::global().get_conn().await?;
+        let conn = Context::get_conn().await?;
         conn.update_subscribe(rss_entity.id.unwrap(), datetime::now_secs(), &hash)?;
         consumer_not_read(rss_entity.url.as_ref().unwrap(), channel).await?;
     }
@@ -114,7 +114,7 @@ async fn flush_feed(rss_entity: Arc<RSSEntity>, permit: OwnedSemaphorePermit) ->
 }
 
 pub async fn flush_all_feeds() -> Result<()> {
-    let conn = Context::global().get_conn().await?;
+    let conn = Context::get_conn().await?;
     let last_update = datetime::now_secs() - REFRESH_INTERVAL.as_secs();
     let rss_entities = conn.list_subscribe_not_update(last_update)?;
     let hash_semaphore = Arc::new(Semaphore::new(

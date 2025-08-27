@@ -57,7 +57,7 @@ async fn load_torrent_from_rss_feed(rss_id: u64, guid: &str, url: &str) -> Resul
         .await?;
     let res = TorrentArc::parse_torrent(content);
     if res.is_ok() {
-        let mut conn = Context::global().get_conn().await?;
+        let mut conn = Context::get_conn().await?;
         conn.mark_read(rss_id, guid)?;
     }
     res
@@ -125,13 +125,13 @@ pub async fn add_task(task: Task) -> Result<bool> {
     let mut save_path = task
         .download_path
         .map(PathBuf::from)
-        .unwrap_or(Context::get_config().default_download_dir().clone());
+        .unwrap_or(Context::get_config().default_download_dir());
     if task.mkdir_torrent_name == Some(true) {
         save_path.push(torrent.info.name.clone());
     }
 
     let ret = {
-        let mut conn = Context::global().get_conn().await?;
+        let mut conn = Context::get_conn().await?;
         conn.add_torrent(&torrent, &save_path)?
     };
 
