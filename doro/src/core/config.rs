@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
+
 // ===========================================================================
 // 写死的配置值，一般也不会改的
 // ===========================================================================
@@ -26,12 +27,12 @@ pub const DHT_EXPECT_PEERS: usize = 25;
 /// 每间隔一分钟扫描一次 peers
 pub const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Clone, Encode, Decode, Default)]
+#[derive(Clone, Default)]
 pub struct Config {
     inner: Arc<ConfigInner>,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Serialize, Deserialize)]
 pub struct ClientAuth {
     pub username: String,
     pub password: String,
@@ -46,8 +47,8 @@ impl ClientAuth {
     }
 }
 
-#[derive(Encode, Decode)]
-struct ConfigInner {
+#[derive(Serialize, Deserialize)]
+pub struct ConfigInner {
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
 
@@ -147,6 +148,16 @@ impl Default for ConfigInner {
 impl Config {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn from_inner(inner: ConfigInner) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    pub fn inner(&self) -> &ConfigInner {
+        &self.inner
     }
 
     pub fn set_tcp_server_addr(mut self, tcp_server_addr: SocketAddr) -> Self {

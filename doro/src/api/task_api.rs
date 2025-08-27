@@ -28,6 +28,9 @@ pub struct Task {
 
     /// 种子源
     pub source: TorrentSource,
+
+    /// 是否新建此种子名的目录
+    pub mkdir_torrent_name: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

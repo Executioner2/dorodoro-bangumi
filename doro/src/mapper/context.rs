@@ -1,6 +1,4 @@
 use anyhow::Result;
-use doro_util::bytes_util;
-use rusqlite::OptionalExtension;
 
 use crate::config::Config;
 use crate::db::ConnWrapper;
@@ -43,24 +41,23 @@ impl ContextMapper for ConnWrapper {
     fn load_context(&self) -> Result<Option<ContextEntity>> {
         let mut stmt =
             self.prepare_cached("select id, config from context order by id desc limit 1")?;
-        stmt.query_one([], |row| {
-            let config = {
-                let serial: Vec<u8> = row.get(1)?;
-                bytes_util::decode(serial.as_slice())
-            };
+        let mut rows = stmt.query_and_then([], |row| {
+            let serial: String = row.get(1)?;
+            let x = serde_json::from_str(&serial)?;
+            let config = Config::from_inner(x);
             Ok(ContextEntity {
                 id: Some(row.get(0)?),
                 config: Some(config),
             })
-        })
-        .optional()
-        .map_err(Into::into)
+        })?;
+
+        rows.next().transpose()
     }
 
     fn store_context(&self, entity: ContextEntity) -> Result<usize> {
         let config = entity.config.unwrap();
-        let serial_config = bytes_util::encode(&config);
+        let config_json = serde_json::to_string(config.inner())?;
         let mut stmt = self.prepare_cached("insert into context (config) values (?)")?;
-        stmt.execute([&serial_config]).map_err(Into::into)
+        stmt.execute([&config_json]).map_err(Into::into)
     }
 }

@@ -65,6 +65,9 @@ impl FromBencode for MixedData {
 fn parse_mixed_data(data: &[u8]) -> Result<MixedData, Error> {
     // 1. 创建解码器
     let mut decoder = Decoder::new(data);
+    
+    // 允许字典键值对出现在任意顺序
+    // let mut decoder = Decoder::new(data).with_must_order(false);
 
     // 2. 解析第一个对象（应该是字典）
     let object = match decoder.next_object()? {
@@ -85,6 +88,9 @@ fn parse_mixed_data(data: &[u8]) -> Result<MixedData, Error> {
 fn test_parse_mixed_data() -> Result<(), Box<dyn std::error::Error>> {
     // 示例数据：B编码字典 + 二进制数据
     let data = b"d8:msg_typei1e5:piecei0e10:total_sizei3425ee\x01\x02\x03\x04\x05\x06\x07\x08";
+    
+    // 未按字典序排序的
+    // let data = b"d5:piecei0e8:msg_typei1e10:total_sizei3425ee\x01\x02\x03\x04\x05\x06\x07\x08";
 
     // 解析混合数据
     let mixed_data = parse_mixed_data(data).unwrap();

@@ -65,6 +65,7 @@ async fn test_add_task_from_local_file() {
         download_path: Some("./download".to_string()),
         // source: TorrentSource::LocalFile("./tests/resources/test7.torrent".to_string()),
         source: TorrentSource::LocalFile("/Users/zhaoyuxi/Downloads/c6bbdb50bd685bacf8c0d615bb58a3a0023986ef.torrent".to_string()),
+        mkdir_torrent_name: Some(true),
     };
 
     let mut client = client_util::client().await.unwrap();
@@ -97,6 +98,7 @@ async fn test_add_task_from_magnet_link() {
         task_name: Some("[Nekomoe kissaten][Hibi wa Sugiredo Meshi Umashi][08][1080p][JPTC].mp4".to_string()),
         download_path: Some("./download".to_string()),
         source: TorrentSource::MagnetURI(link.to_string()),
+        mkdir_torrent_name: Some(true),
     };
 
     let mut client = client_util::client().await.unwrap();

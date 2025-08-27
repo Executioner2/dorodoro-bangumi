@@ -122,10 +122,13 @@ pub async fn add_task(task: Task) -> Result<bool> {
         }
     };
 
-    let save_path = task
+    let mut save_path = task
         .download_path
         .map(PathBuf::from)
         .unwrap_or(Context::get_config().default_download_dir().clone());
+    if task.mkdir_torrent_name == Some(true) {
+        save_path.push(torrent.info.name.clone());
+    }
 
     let ret = {
         let mut conn = Context::global().get_conn().await?;

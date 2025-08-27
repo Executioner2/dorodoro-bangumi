@@ -40,7 +40,6 @@
 //     udp_server_handle.await.unwrap();
 // }
 
-use core::str::FromStr;
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow};
@@ -159,7 +158,7 @@ async fn send_find_node(
 #[tokio::test]
 async fn test_request_bootstrap_node() -> Result<()> {
     // let host = "192.168.2.242:3115";
-    // let host = "dht.libtorrent.org:25401";
+    let host = "dht.libtorrent.org:25401";
     // let host = "dht.transmissionbt.com:6881";
     // let host = "router.bittorrent.com:6881";
     // let host = "router.bittorrent.com:25401";
@@ -171,8 +170,8 @@ async fn test_request_bootstrap_node() -> Result<()> {
     // let addr = SocketAddr::from_str("185.157.221.247:25401")?;
     // let addr = SocketAddr::from_str("67.215.246.10:6881")?;
     // let addr = SocketAddr::from_str("87.98.162.88:6881")?;
-    let addr = SocketAddr::from_str("82.221.103.244:6881")?;
-    // let addr = domain_node_dns_resolve(host).await.unwrap();
+    // let addr = SocketAddr::from_str("82.221.103.244:6881")?;
+    let addr = domain_node_dns_resolve(host).await.unwrap();
     info!("解析出来的ip地址: {}", addr);
 
     let mut socket = UdpSocket::bind("0.0.0.0:0").await?;

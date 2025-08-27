@@ -134,6 +134,7 @@ async fn test_add_torrent() {
         task_name: Some("好东西".to_string()),
         download_path: Some("./download".to_string()),
         source: TorrentSource::LocalFile("./tests/resources/test6.torrent".to_string()),
+        mkdir_torrent_name: Some(true),
     };
     let data = serde_json::to_vec(&request).unwrap();
 
