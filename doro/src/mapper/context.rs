@@ -1,4 +1,5 @@
 use anyhow::Result;
+use doro_util::sync::ReadLockExt;
 
 use crate::config::Config;
 use crate::db::ConnWrapper;
@@ -56,7 +57,7 @@ impl ContextMapper for ConnWrapper {
 
     fn store_context(&self, entity: ContextEntity) -> Result<usize> {
         let config = entity.config.unwrap();
-        let config_json = serde_json::to_string(config.inner())?;
+        let config_json = serde_json::to_string(&*config.inner().read_pe())?;
         let mut stmt = self.prepare_cached("insert into context (config) values (?)")?;
         stmt.execute([&config_json]).map_err(Into::into)
     }

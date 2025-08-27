@@ -188,7 +188,7 @@ impl DHT {
     async fn refresh_routing_table(&self) {
         let routing_table = self.routing_table.clone();
         let dht_request = self.dht_request.clone();
-        let conn = Context::global().get_conn().await.unwrap();
+        let conn = Context::get_conn().await.unwrap();
         tokio::spawn(Box::pin(async move {
             debug!("开始刷新 dht 路由表");
             loop {

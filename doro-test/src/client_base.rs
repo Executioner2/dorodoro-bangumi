@@ -73,18 +73,23 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn request<T: Serialize>(&mut self, code: Code, body: T) -> Result<ResponseFuture> {
+    pub async fn request<T: Serialize>(&mut self, code: Code, body: Option<T>) -> Result<ResponseFuture> {
         let tran_id = self.cycle_id.next_tran_id();
         if self.inflight.contains_key(&tran_id) {
             return Err(anyhow!("重复的请求"));
         }
 
         let mut buf = Vec::with_capacity(CODE_SIZE + TRAN_ID_SIZE + LENGTH_SIZE);
-        let data = serde_json::to_vec(&body)?;
         WriteBytesExt::write_u32::<BigEndian>(&mut buf, code)?;
         WriteBytesExt::write_u32::<BigEndian>(&mut buf, tran_id)?;
-        WriteBytesExt::write_u32::<BigEndian>(&mut buf, data.len() as u32)?;
-        buf.extend_from_slice(&data);
+        
+        if let Some(body) = body {
+            let data = serde_json::to_vec(&body)?;
+            WriteBytesExt::write_u32::<BigEndian>(&mut buf, data.len() as u32)?;
+            buf.extend_from_slice(&data);
+        } else {
+            WriteBytesExt::write_u32::<BigEndian>(&mut buf, 0)?;
+        }
 
         self.inflight.insert(tran_id, None);
         self.write.write_all(&buf).await?;

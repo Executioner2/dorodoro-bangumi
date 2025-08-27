@@ -1,8 +1,10 @@
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use doro_util::sync::{ReadLockExt, WriteLockExt};
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -29,10 +31,10 @@ pub const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default)]
 pub struct Config {
-    inner: Arc<ConfigInner>,
+    inner: Arc<RwLock<ConfigInner>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ClientAuth {
     pub username: String,
     pub password: String,
@@ -45,9 +47,22 @@ impl ClientAuth {
             password: "admin".to_string(),
         }
     }
+
+    pub fn new(username: &str, password: &str) -> Self {
+        Self {
+            username: username.to_string(),
+            password: password.to_string(),
+        }
+    }
 }
 
-#[derive(Serialize, Deserialize)]
+impl Debug for ClientAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientAuth").finish()
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ConfigInner {
     /// tcp server 监听地址
     tcp_server_addr: SocketAddr,
@@ -145,6 +160,96 @@ impl Default for ConfigInner {
     }
 }
 
+impl ConfigInner {
+    pub fn set_tcp_server_addr(&mut self, addr: SocketAddr) {
+        self.tcp_server_addr = addr;
+    }
+
+    pub fn set_udp_server_addr(&mut self, addr: SocketAddr) {
+        self.udp_server_addr = addr;
+    }
+
+    pub fn set_udp_packet_limit(&mut self, limit: usize) {
+        self.udp_packet_limit = limit;
+    }
+
+    pub fn set_block_size(&mut self, size: u32) {
+        self.block_size = size;
+    }
+
+    pub fn set_con_req_piece_limit(&mut self, limit: usize) {
+        self.con_req_piece_limit = limit;
+    }
+
+    pub fn set_sucessed_recv_piece(&mut self, limit: usize) {
+        self.sucessed_recv_piece = limit;
+    }
+
+    pub fn set_buf_limit(&mut self, limit: usize) {
+        self.buf_limit = limit;
+    }
+
+    pub fn set_hash_chunk_size(&mut self, size: usize) {
+        self.hash_chunk_size = size;
+    }
+
+    pub fn set_hash_concurrency(&mut self, concurrency: usize) {
+        self.hash_concurrency = concurrency;
+    }
+
+    pub fn set_peer_conn_limit(&mut self, limit: usize) {
+        self.peer_conn_limit = limit;
+    }
+
+    pub fn set_torrent_lt_peer_conn_limit(&mut self, limit: usize) {
+        self.torrent_lt_peer_conn_limit = limit;
+    }
+
+    pub fn set_torrent_temp_peer_conn_limit(&mut self, limit: usize) {
+        self.torrent_temp_peer_conn_limit = limit;
+    }
+
+    pub fn set_peer_connection_timeout(&mut self, timeout: Duration) {
+        self.peer_connection_timeout = timeout;
+    }
+
+    pub fn set_default_download_dir(&mut self, dir: PathBuf) {
+        self.default_download_dir = dir;
+    }
+
+    pub fn set_client_auth(&mut self, auth: ClientAuth) {
+        self.client_auth = auth;
+    }
+
+    pub fn set_rss_refresh_concurrency(&mut self, concurrency: usize) {
+        self.rss_refresh_concurrency = concurrency;
+    }
+
+    pub fn set_error_piece_limit(&mut self, limit: u32) {
+        self.error_piece_limit = limit;
+    }
+
+    pub fn set_async_task_limit(&mut self, limit: usize) {
+        self.async_task_limit = limit;
+    }
+
+    pub fn set_async_task_pool_size(&mut self, size: usize) {
+        self.async_task_pool_size = size;
+    }
+
+    pub fn set_async_peer_start_limit(&mut self, limit: usize) {
+        self.async_peer_start_limit = limit;
+    }
+
+    pub fn set_async_peer_start_pool_size(&mut self, size: usize) {
+        self.async_peer_start_pool_size = size;
+    }
+
+    pub fn set_metadata_size_limit(&mut self, limit: u32) {
+        self.metadata_size_limit = limit;
+    }
+}
+
 impl Config {
     pub fn new() -> Self {
         Self::default()
@@ -152,257 +257,112 @@ impl Config {
 
     pub fn from_inner(inner: ConfigInner) -> Self {
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(RwLock::new(inner)),
         }
     }
 
-    pub fn inner(&self) -> &ConfigInner {
-        &self.inner
+    pub fn update_config(&self, inner: ConfigInner) {
+        *self.inner.write_pe() = inner;
     }
 
-    pub fn set_tcp_server_addr(mut self, tcp_server_addr: SocketAddr) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.tcp_server_addr = tcp_server_addr;
-        }
-        self
+    pub fn update_auth(&self, auth: ClientAuth) {
+        self.inner.write_pe().client_auth = auth;
     }
 
-    pub fn set_udp_server_addr(mut self, udp_server_addr: SocketAddr) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.udp_server_addr = udp_server_addr;
-        }
-        self
-    }
-
-    pub fn set_udp_packet_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.udp_packet_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_block_size(mut self, block_size: u32) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.block_size = block_size;
-        }
-        self
-    }
-
-    pub fn set_con_req_piece_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.con_req_piece_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_sucessed_recv_piece(mut self, num: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.sucessed_recv_piece = num;
-        }
-        self
-    }
-
-    pub fn set_buf_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.buf_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_hash_chunk_size(mut self, size: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.hash_chunk_size = size;
-        }
-        self
-    }
-
-    pub fn set_hash_concurrency(mut self, len: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.hash_concurrency = len;
-        }
-        self
-    }
-
-    pub fn set_peer_conn_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.peer_conn_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_torrent_lt_peer_conn_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.torrent_lt_peer_conn_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_torrent_temp_peer_conn_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.torrent_temp_peer_conn_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_peer_connection_timeout(mut self, timeout: Duration) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.peer_connection_timeout = timeout;
-        }
-        self
-    }
-
-    pub fn set_default_download_dir(mut self, dir: PathBuf) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.default_download_dir = dir;
-        }
-        self
-    }
-
-    pub fn set_client_auth(mut self, auth: ClientAuth) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.client_auth = auth;
-        }
-        self
-    }
-
-    pub fn set_rss_refresh_concurrency(mut self, concurrency: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.rss_refresh_concurrency = concurrency;
-        }
-        self
-    }
-
-    pub fn set_error_piece_limit(mut self, limit: u32) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.error_piece_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_async_task_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.async_task_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_async_task_pool_size(mut self, size: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.async_task_pool_size = size;
-        }
-        self
-    }
-
-    pub fn set_async_peer_start_limit(mut self, limit: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.async_peer_start_limit = limit;
-        }
-        self
-    }
-
-    pub fn set_async_peer_start_pool_size(mut self, size: usize) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.async_peer_start_pool_size = size;
-        }
-        self
-    }
-
-    pub fn set_metadata_size_limit(mut self, limit: u32) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.metadata_size_limit = limit;
-        }
-        self
+    pub fn inner(&self) -> Arc<RwLock<ConfigInner>> {
+        self.inner.clone()
     }
 
     pub fn tcp_server_addr(&self) -> SocketAddr {
-        self.inner.tcp_server_addr
+        self.inner.read_pe().tcp_server_addr
     }
 
     pub fn udp_server_addr(&self) -> SocketAddr {
-        self.inner.udp_server_addr
+        self.inner.read_pe().udp_server_addr
     }
 
     pub fn udp_packet_limit(&self) -> usize {
-        self.inner.udp_packet_limit
+        self.inner.read_pe().udp_packet_limit
     }
 
     pub fn block_size(&self) -> u32 {
-        self.inner.block_size
+        self.inner.read_pe().block_size
     }
 
     pub fn con_req_piece_limit(&self) -> usize {
-        self.inner.con_req_piece_limit
+        self.inner.read_pe().con_req_piece_limit
     }
 
     pub fn sucessed_recv_piece(&self) -> usize {
-        self.inner.sucessed_recv_piece
+        self.inner.read_pe().sucessed_recv_piece
     }
 
     pub fn buf_limit(&self) -> usize {
-        self.inner.buf_limit
+        self.inner.read_pe().buf_limit
     }
 
     pub fn hash_chunk_size(&self) -> usize {
-        self.inner.hash_chunk_size
+        self.inner.read_pe().hash_chunk_size
     }
 
     pub fn hash_concurrency(&self) -> usize {
-        self.inner.hash_concurrency
+        self.inner.read_pe().hash_concurrency
     }
 
     pub fn peer_conn_limit(&self) -> usize {
-        self.inner.peer_conn_limit
+        self.inner.read_pe().peer_conn_limit
     }
 
     pub fn torrent_lt_peer_conn_limit(&self) -> usize {
-        self.inner.torrent_lt_peer_conn_limit
+        self.inner.read_pe().torrent_lt_peer_conn_limit
     }
 
     pub fn torrent_temp_peer_conn_limit(&self) -> usize {
-        self.inner.torrent_temp_peer_conn_limit
+        self.inner.read_pe().torrent_temp_peer_conn_limit
     }
 
     pub fn torrent_peer_conn_limit(&self) -> usize {
-        self.inner.torrent_lt_peer_conn_limit + self.inner.torrent_temp_peer_conn_limit
+        self.inner.read_pe().torrent_lt_peer_conn_limit
+            + self.inner.read_pe().torrent_temp_peer_conn_limit
     }
 
     pub fn peer_connection_timeout(&self) -> Duration {
-        self.inner.peer_connection_timeout
+        self.inner.read_pe().peer_connection_timeout
     }
 
-    pub fn default_download_dir(&self) -> &PathBuf {
-        &self.inner.default_download_dir
+    pub fn default_download_dir(&self) -> PathBuf {
+        self.inner.read_pe().default_download_dir.clone()
     }
 
-    pub fn client_auth(&self) -> &ClientAuth {
-        &self.inner.client_auth
+    pub fn client_auth(&self) -> ClientAuth {
+        self.inner.read_pe().client_auth.clone()
     }
 
     pub fn rss_refresh_concurrency(&self) -> usize {
-        self.inner.rss_refresh_concurrency
+        self.inner.read_pe().rss_refresh_concurrency
     }
 
     pub fn error_piece_limit(&self) -> u32 {
-        self.inner.error_piece_limit
+        self.inner.read_pe().error_piece_limit
     }
 
     pub fn async_task_limit(&self) -> usize {
-        self.inner.async_task_limit
+        self.inner.read_pe().async_task_limit
     }
 
     pub fn async_task_pool_size(&self) -> usize {
-        self.inner.async_task_pool_size
+        self.inner.read_pe().async_task_pool_size
     }
 
     pub fn async_peer_start_limit(&self) -> usize {
-        self.inner.async_peer_start_limit
+        self.inner.read_pe().async_peer_start_limit
     }
 
     pub fn async_peer_start_pool_size(&self) -> usize {
-        self.inner.async_peer_start_pool_size
+        self.inner.read_pe().async_peer_start_pool_size
     }
 
     pub fn metadata_size_limit(&self) -> u32 {
-        self.inner.metadata_size_limit
+        self.inner.read_pe().metadata_size_limit
     }
 }

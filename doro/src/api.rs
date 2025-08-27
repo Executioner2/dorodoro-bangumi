@@ -7,4 +7,5 @@
 
 pub mod bangumi_api;
 pub mod rss_api;
+pub mod system_api;
 pub mod task_api;

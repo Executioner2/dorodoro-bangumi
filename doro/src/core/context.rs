@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::Result;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
-use crate::config::Config;
+use crate::config::{ClientAuth, Config, ConfigInner};
 use crate::db::{ConnWrapper, Db};
 
 /// 异步任务信号量
@@ -78,14 +78,24 @@ impl Context {
         CONTEXT.get().unwrap()
     }
 
+    /// 设置全局配置信息
+    pub fn set_config(config: ConfigInner) {
+        CONTEXT.get().unwrap().config.update_config(config);
+    }
+
+    /// 更新客户端认证信息
+    pub fn update_auth(auth: ClientAuth) {
+        Context::global().config.update_auth(auth);
+    }
+
     /// 返回全局配置信息
     pub fn get_config() -> &'static Config {
         &Context::global().config
     }
 
     /// 返回一个数据库链接
-    pub async fn get_conn(&self) -> Result<ConnWrapper> {
-        let conn = self.db.get_conn().await?;
+    pub async fn get_conn() -> Result<ConnWrapper> {
+        let conn = Context::global().db.get_conn().await?;
         Ok(conn)
     }
 
@@ -112,17 +122,16 @@ impl Context {
     /// 获取异步任务信号量
     pub fn take_async_task_semaphore() -> Option<AsyncSemaphore> {
         let context = Context::global();
-        let current_count = context.async_task_count.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |current| {
-                if current < context.config.async_task_pool_size() {
-                    Some(current + 1)
-                } else {
-                    None
-                }
-            }
-        );
+        let current_count =
+            context
+                .async_task_count
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    if current < context.config.async_task_pool_size() {
+                        Some(current + 1)
+                    } else {
+                        None
+                    }
+                });
 
         match current_count {
             Ok(_) => {
@@ -137,17 +146,16 @@ impl Context {
     /// 获取 peer 异步启动信号量
     pub fn take_async_peer_start_semaphore() -> Option<AsyncSemaphore> {
         let context = Context::global();
-        let current_count = context.async_task_count.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |current| {
-                if current < context.config.async_peer_start_pool_size() {
-                    Some(current + 1)
-                } else {
-                    None
-                }
-            }
-        );
+        let current_count =
+            context
+                .async_task_count
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    if current < context.config.async_peer_start_pool_size() {
+                        Some(current + 1)
+                    } else {
+                        None
+                    }
+                });
 
         match current_count {
             Ok(_) => {

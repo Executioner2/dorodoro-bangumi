@@ -113,7 +113,7 @@ impl TcpServer {
                     #[rustfmt::skip]
                     FutureRet::Ok(auth_info) => {
                         let client_auth = Context::get_config().client_auth();
-                        if let Err(e) = remote_control::auth_verify(client_auth, &auth_info) {
+                        if let Err(e) = remote_control::auth_verify(&client_auth, &auth_info) {
                             remote_control::send_handshake_failed(
                                 &mut socket,
                                 ControlStatus::AuthFailed,

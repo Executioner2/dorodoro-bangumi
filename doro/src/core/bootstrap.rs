@@ -19,7 +19,7 @@ pub async fn start() {
     // 初始化通用资源
     trace!("初始化全局上下文");
     let db = Db::new(mapper::DB_SAVE_PATH, mapper::DB_NAME, mapper::INIT_SQL, DATABASE_CONN_LIMIT).unwrap();
-    let context = load_context(db).await;
+    load_context(db).await;
 
     trace!("启动 tcp server");
     let tcp_server = TcpServer::new();
@@ -30,7 +30,7 @@ pub async fn start() {
     let udp_server_handle = tokio::spawn(Box::pin(udp_server.clone().run()));
 
     trace!("启动 dht");
-    let (routing_table, bootstrap_nodes) = load_routing_table(&context).await;
+    let (routing_table, bootstrap_nodes) = load_routing_table().await;
     let dht_server = DHT::init(udp_server, routing_table, bootstrap_nodes);
     let dht_server_handle = tokio::spawn(Box::pin(dht_server.clone().start_interval_refresh()));
 
@@ -45,7 +45,7 @@ pub async fn start() {
     info!("资源已安全关闭，程序退出");
 }
 
-pub async fn load_context(db: Db) -> Context {
+pub async fn load_context(db: Db) {
     use crate::mapper::context::{ContextEntity, ContextMapper};
     let conn = db.get_conn().await.unwrap();
     let cen = conn.load_context().unwrap();
@@ -63,12 +63,11 @@ pub async fn load_context(db: Db) -> Context {
     }
 
     Context::init(db, config);
-    Context::global().clone()
 }
 
-pub async fn load_routing_table(context: &Context) -> (RoutingTable, Vec<String>) {
+pub async fn load_routing_table() -> (RoutingTable, Vec<String>) {
     use crate::mapper::dht::{DEFAULT_BOOTSTRAP_NODES, DHTEntity, DHTMapper};
-    let conn = context.get_conn().await.unwrap();
+    let conn = Context::get_conn().await.unwrap();
     let dhte = conn.load_dht_entity().unwrap();
     let not_init = dhte.is_none();
 

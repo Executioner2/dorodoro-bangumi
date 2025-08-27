@@ -176,7 +176,7 @@ impl DownloadContent {
         id: Id, peer_id: PeerId, torrent: TorrentArc, save_path: PathBuf,
     ) -> Result<Self> {
         let entity = Self::load_torrent_from_db(&torrent, &save_path).await?.unwrap_or_default();
-        let save_path = Context::get_config().default_download_dir().clone();
+        let save_path = Context::get_config().default_download_dir();
         let save_path = Arc::new(entity.save_path.unwrap_or(save_path));
         let download = Arc::new(AtomicU64::new(entity.download.unwrap_or_default()));
         let uploaded = Arc::new(AtomicU64::new(entity.uploaded.unwrap_or_default()));
@@ -272,7 +272,7 @@ impl DownloadContent {
     /// 初始化资源，从数据库中恢复进度
     #[rustfmt::skip]
     async fn load_torrent_from_db(torrent: &TorrentArc, save_path: &Path) -> Result<Option<TorrentEntity>> {
-        let mut conn = Context::global().get_conn().await?;
+        let mut conn = Context::get_conn().await?;
         match conn.recover_from_db(&torrent.info_hash)? {
             Some(entity) => Ok(Some(entity)),
             None => {
@@ -403,7 +403,7 @@ impl TaskControl {
     /// 保存下载进度
     async fn save_progress(&self) {
         trace!("保存下载进度");
-        let conn = Context::global().get_conn().await.unwrap();
+        let conn = Context::get_conn().await.unwrap();
 
         // 将 ub 转换为 Vec，将 Ing 改为 Pause
         let underway_bytefield = self.servant.underway_bytefield();

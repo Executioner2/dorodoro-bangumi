@@ -26,7 +26,7 @@ async fn test_list_resource() {
     };
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, req).await.unwrap();
+    let rf = client.request(code, Some(req)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -52,7 +52,7 @@ async fn test_list_resource_from_quarter() {
     };
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, req).await.unwrap();
+    let rf = client.request(code, Some(req)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -72,7 +72,7 @@ async fn test_list_quarter() {
     let req = hashmap!("crawler" => "mikan");
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, req).await.unwrap();
+    let rf = client.request(code, Some(req)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -95,7 +95,7 @@ async fn test_list_source_group() {
     );
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, req).await.unwrap();
+    let rf = client.request(code, Some(req)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -118,7 +118,7 @@ async fn test_list_subscribe_sources() {
     );
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, req).await.unwrap();
+    let rf = client.request(code, Some(req)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 
@@ -141,7 +141,7 @@ async fn test_search_resource() {
     );
 
     let mut client = client_util::client().await.unwrap();
-    let rf = client.request(code, req).await.unwrap();
+    let rf = client.request(code, Some(req)).await.unwrap();
     let ret = rf.await;
     client_util::verification_result(&code, &ret);
 

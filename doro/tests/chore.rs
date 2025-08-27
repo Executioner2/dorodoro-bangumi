@@ -509,3 +509,35 @@ fn test_json_serialize() {
     let user2: User2 = serde_json::from_str(json_str).unwrap();
     info!("user2: {:?}", user2);
 }
+
+/// 测试内存是不是立即释放的
+/// 
+/// 观察到结果，两种 hashmap，删除元素不会归还内存，被 drop 后
+/// 归还部分内存给 os，启动时如果是 100KB 左右，drop 后大概在 10MB - 20MB 之间
+/// 
+/// 根据相关资料，问题原因指向内存分配器 [rust 不释放内存](https://dotdev.cn/posts/0192c5503e007d488b79208d06d6c368)
+/// 
+/// 但至少在 macos 上，使用 mimalloc 更糟糕
+#[test]
+#[ignore]
+fn test_mem_release() {
+    info!("等待 5 秒后开始分配内存");
+    thread::sleep(Duration::from_secs(5));
+
+    {
+        let mut map = HashMap::new();
+        // let map = DashMap::new();
+        for i in 0..10000000_usize {
+            map.insert(i, i);
+        }
+        info!("等待 5 秒后，删除元素");
+        thread::sleep(Duration::from_secs(5));
+        map.clear();
+
+        info!("等待 5 秒后，drop map");
+        thread::sleep(Duration::from_secs(5));
+    }
+    info!("map 已经被释放");
+
+    thread::sleep(Duration::from_secs(5));
+}

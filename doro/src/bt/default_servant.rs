@@ -105,7 +105,7 @@ impl DefaultServantBuilder {
             peer_id,
             bytefield: Arc::new(Mutex::new(BytesMut::new())),
             underway_bytefield: Arc::new(DashMap::new()),
-            save_path: Arc::new(Context::get_config().default_download_dir().clone()),
+            save_path: Arc::new(Context::get_config().default_download_dir()),
             piece_finished: false,
             ..Default::default()
         }
