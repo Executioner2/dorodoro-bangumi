@@ -47,7 +47,7 @@ async fn test_insert_and_query_torrent() -> Result<()> {
     let db = Db::new("db", "test.db", INIT_SQL, 10)?;
     let conn = db.get_conn().await?;
 
-    let torrent = Torrent::parse_torrent("./tests/resources/test6.torrent")?;
+    let torrent = Torrent::parse_torrent("./tests/resources/[VCB-Studio] Kannagi [Ma10p_1080p].torrent")?;
     let info_hash = hex::encode(torrent.info_hash);
     let serial = bincode::encode_to_vec(&torrent, config::standard())?;
 

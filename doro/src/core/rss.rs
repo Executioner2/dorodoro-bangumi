@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ahash::HashSet;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use doro_util::datetime;
@@ -28,7 +29,7 @@ pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// 订阅源刷新间隔 15 分钟
 const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
-pub async fn subscribe(url: String, title: Option<String>) -> Result<bool> {
+pub async fn subscribe(url: String, title: Option<String>, save_path: Option<String>) -> Result<bool> {
     let (channel, content) = get_subscribe_channel(&url).await?;
     let mut hasher = Sha1::new();
     hasher.update(&content);
@@ -39,6 +40,7 @@ pub async fn subscribe(url: String, title: Option<String>) -> Result<bool> {
         url: Some(url.clone()),
         hash: Some(hash),
         last_update: Some(datetime::now_secs()),
+        save_path,
         ..Default::default()
     };
 
@@ -62,7 +64,7 @@ async fn consumer_not_read(url: &String, channel: Channel) -> Result<()> {
 
         let read_guids = conn.list_mark_read_guid(url)?; // 已读的 guid
 
-        (rss_entity, read_guids)
+        (rss_entity, HashSet::from_iter(read_guids.into_iter()))
     };
 
     for item in channel.items {
@@ -70,13 +72,14 @@ async fn consumer_not_read(url: &String, channel: Channel) -> Result<()> {
             if !read_guids.contains(&guid.value) {
                 // todo - 应该还要有一些其他过滤条件
                 let task = Task {
-                    task_name: None,
-                    download_path: None,
+                    task_name: item.title,
+                    download_path: rss_entity.save_path.clone(),
                     source: TorrentSource::RSSFeed(
                         rss_entity.id.unwrap(),
                         guid.value,
                         enclosure.url,
                     ),
+                    mkdir_torrent_name: Some(false),
                 };
                 task_service::add_task(task).await?;
             }

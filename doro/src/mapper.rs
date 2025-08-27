@@ -36,7 +36,7 @@ pub static INIT_SQL: &str = r#"
     
     CREATE TABLE "context" (
       "id" INTEGER NOT NULL,
-      "config" blob NOT NULL,
+      "config" text NOT NULL,
       PRIMARY KEY ("id")
     );
     
@@ -54,6 +54,7 @@ pub static INIT_SQL: &str = r#"
         "url" text NOT NULL,
         "hash" text NOT NULL,
         "last_update" INTEGER NOT NULL,
+        "save_path" text,
         PRIMARY KEY ("id")
     );
 

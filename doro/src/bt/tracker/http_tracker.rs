@@ -42,6 +42,8 @@ pub struct Announce {
 }
 
 impl FromBencode for Announce {
+    const MUST_ORDER: bool = false;
+    
     fn decode_bencode_object(object: Object) -> std::result::Result<Self, Error>
     where
         Self: Sized,

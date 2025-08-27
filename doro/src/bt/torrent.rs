@@ -114,6 +114,8 @@ impl Torrent {
 }
 
 impl FromBencode for Torrent {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -285,6 +287,8 @@ impl Info {
 }
 
 impl FromBencode for Info {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -381,6 +385,8 @@ impl File {
 }
 
 impl FromBencode for File {
+    const MUST_ORDER: bool = false;
+    
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,

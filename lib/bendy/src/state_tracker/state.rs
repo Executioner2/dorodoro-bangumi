@@ -21,6 +21,7 @@ enum State<S: AsRef<[u8]>, E> {
 pub struct StateTracker<S: AsRef<[u8]>, E = StructureError> {
     state: Vec<State<S, E>>,
     max_depth: usize,
+    must_order: bool,
 }
 
 impl<S: AsRef<[u8]>, E> Default for StateTracker<S, E> {
@@ -28,6 +29,7 @@ impl<S: AsRef<[u8]>, E> Default for StateTracker<S, E> {
         StateTracker {
             state: Vec::new(),
             max_depth: 2048,
+            must_order: true,
         }
     }
 }
@@ -43,6 +45,10 @@ where
 
     pub fn set_max_depth(&mut self, new_max_depth: usize) {
         self.max_depth = new_max_depth
+    }
+
+    pub fn set_must_order(&mut self, must_order: bool) {
+        self.must_order = must_order
     }
 
     pub fn remaining_depth(&self) -> usize {
@@ -79,7 +85,7 @@ where
                 self.state.push(MapValue(S::from(label)));
             },
             (Some(MapKey(Some(oldlabel))), String(label)) => {
-                if oldlabel.as_ref() >= label {
+                if self.must_order && oldlabel.as_ref() >= label {
                     return self.latch_err(Err(E::from(StructureError::UnsortedKeys)));
                 }
                 self.state.push(MapValue(S::from(label)));

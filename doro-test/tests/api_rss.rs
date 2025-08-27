@@ -13,6 +13,7 @@ async fn test_add_rss_feed() {
     let rss_feed = RSSFeed {
         name: Some("章鱼哔的原罪".to_string()),
         url: "https://mikanani.me/RSS/Bangumi?bangumiId=3649&subgroupid=370".to_string(),
+        save_path: Some("./download/章鱼哔的原罪".to_string()),
     };
 
     let mut client = client_util::client().await.unwrap();

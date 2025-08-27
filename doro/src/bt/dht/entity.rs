@@ -102,6 +102,8 @@ impl<T> DHTBase<'_, T> {
 }
 
 impl<T: FromBencode> FromBencode for DHTBase<'_, T> {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -243,6 +245,8 @@ impl ToBencode for Ping<'_> {
 }
 
 impl FromBencode for Ping<'_> {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -278,11 +282,13 @@ pub struct GetPeersResp<'a> {
     pub id: NodeId,
     pub nodes: Option<Vec<Host>>,
     pub values: Option<Vec<SocketAddrExt>>,
-    pub token: Value<'a>,
+    pub token: Option<Value<'a>>,
     pub p: Option<u16>,
 }
 
 impl FromBencode for GetPeersResp<'_> {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,
@@ -325,7 +331,6 @@ impl FromBencode for GetPeersResp<'_> {
         }
 
         let id = id.ok_or_else(|| Error::missing_field("id"))?;
-        let token = token.ok_or_else(|| Error::missing_field("token"))?;
 
         Ok(GetPeersResp {
             id,
@@ -392,6 +397,8 @@ pub struct FindNodeResp<'a> {
 }
 
 impl FromBencode for FindNodeResp<'_> {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,

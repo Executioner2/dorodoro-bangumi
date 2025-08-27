@@ -8,7 +8,6 @@ use crate::dht::routing::{NodeId, RoutingTable};
 
 lazy_static! {
     pub static ref DEFAULT_BOOTSTRAP_NODES: Vec<String> = vec![
-        "192.168.2.242:3115".to_string(),
         "dht.libtorrent.org:25401".to_string(),
         "dht.transmissionbt.com:6881".to_string(),
         "router.bittorrent.com:6881".to_string(),

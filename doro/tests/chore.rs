@@ -11,6 +11,7 @@ use dashmap::DashMap;
 use doro_util::default_logger;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use serde::{Deserialize, Serialize};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinSet;
@@ -469,7 +470,9 @@ async fn test_join_set_task_finished() {
     info!("join_all 结束\tjoin_set 长度: {}", join_set.len());
 }
 
+/// 测试解析磁链
 #[test]
+#[ignore]
 fn test_parse_magnet_link() {
     let link = "magnet:?xt=urn:btih:15372d70d8a9eb542f7d153c36d63c2ede788514&tr=http%3a%2f%2ft.nyaatracker.com%2fannounce&tr=http%3a%2f%2ftracker.kamigami.org%3a2710%2fannounce&tr=http%3a%2f%2fshare.camoe.cn%3a8080%2fannounce&tr=http%3a%2f%2fopentracker.acgnx.se%2fannounce&tr=http%3a%2f%2fanidex.moe%3a6969%2fannounce&tr=http%3a%2f%2ft.acg.rip%3a6699%2fannounce&tr=https%3a%2f%2ftr.bangumi.moe%3a9696%2fannounce&tr=udp%3a%2f%2ftr.bangumi.moe%3a6969%2fannounce&tr=http%3a%2f%2fopen.acgtracker.com%3a1096%2fannounce&tr=udp%3a%2f%2ftracker.opentrackr.org%3a1337%2fannounce";
     let url = Url::parse(link).unwrap();
@@ -477,4 +480,32 @@ fn test_parse_magnet_link() {
     url.query_pairs().for_each(|(k, v)| {
         info!("{}: {}", k, v);
     });
+}
+
+/// 测试 json 序列化，结构体改变后是否有影响
+#[test]
+#[ignore]
+fn test_json_serialize() {
+    #[derive(Serialize, Deserialize, Debug)]
+    struct User {
+        name: String,
+        age: u32,
+    }
+
+    let user = User {
+        name: "张三".to_string(),
+        age: 18,
+    };
+
+    let json = serde_json::to_string(&user).unwrap();
+    info!("json: {}", json);
+
+    #[derive(Serialize, Deserialize, Debug)]
+    struct User2 {
+        name: String,
+        email: Option<String>,
+    }
+    let json_str = "{\"name\":\"张三\",\"age\":18}";
+    let user2: User2 = serde_json::from_str(json_str).unwrap();
+    info!("user2: {:?}", user2);
 }

@@ -12,6 +12,9 @@ pub struct RSSFeed {
 
     /// 订阅链接
     pub url: String,
+
+    /// 保存路径
+    pub save_path: Option<String>,
 }
 
 // ===========================================================================

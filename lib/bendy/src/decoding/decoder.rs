@@ -35,6 +35,12 @@ impl<'ser> Decoder<'ser> {
         self
     }
 
+    /// 要求必须是有序的键值对
+    pub fn with_must_order(mut self, must_order: bool) -> Self {
+        self.state.set_must_order(must_order);
+        self
+    }
+
     fn take_byte(&mut self) -> Option<u8> {
         if self.offset < self.source.len() {
             let ret = Some(self.source[self.offset]);

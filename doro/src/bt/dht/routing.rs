@@ -145,6 +145,8 @@ impl std::fmt::Display for NodeId {
 }
 
 impl FromBencode for NodeId {
+    const MUST_ORDER: bool = false;
+    
     fn decode_bencode_object(object: Object) -> Result<Self, bendy::decoding::Error>
     where
         Self: Sized,

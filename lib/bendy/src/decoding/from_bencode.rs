@@ -19,12 +19,15 @@ pub trait FromBencode {
     /// Maximum allowed depth of nested structures before the decoding should be aborted.
     const EXPECTED_RECURSION_DEPTH: usize = 2048;
 
+    /// 是否要求必须是有序的
+    const MUST_ORDER: bool = true;
+
     /// Deserialize an object from its byte representation.
     fn from_bencode(bytes: &[u8]) -> Result<Self, Error>
     where
         Self: Sized,
     {
-        let mut decoder = Decoder::new(bytes).with_max_depth(Self::EXPECTED_RECURSION_DEPTH);
+        let mut decoder = Decoder::new(bytes).with_must_order(Self::MUST_ORDER).with_max_depth(Self::EXPECTED_RECURSION_DEPTH);
         let object = decoder.next_object()?;
 
         object.map_or(

@@ -19,6 +19,9 @@ pub struct RSSEntity {
 
     /// 最后更新时间（单位秒时间戳）
     pub last_update: Option<u64>,
+
+    /// 保存路径
+    pub save_path: Option<String>,
 }
 
 #[derive(Default)]
@@ -120,7 +123,7 @@ pub trait RSSMapper {
 impl RSSMapper for ConnWrapper {
     fn get_rss_by_url(&self, url: &str) -> Result<Option<RSSEntity>> {
         let mut stmt = self.prepare_cached(
-            "select id, title, url, hash, last_update from rss where url = ? limit 1",
+            "select id, title, url, hash, last_update, save_path from rss where url = ? limit 1",
         )?;
         stmt.query_row(params![url], |row| {
             Ok(RSSEntity {
@@ -129,6 +132,7 @@ impl RSSMapper for ConnWrapper {
                 url: row.get(2)?,
                 hash: row.get(3)?,
                 last_update: row.get(4)?,
+                save_path: row.get(5)?,
             })
         })
         .optional()
@@ -140,6 +144,7 @@ impl RSSMapper for ConnWrapper {
         let url = re.url.unwrap();
         let hash = re.hash.unwrap();
         let last_update = re.last_update.unwrap();
+        let save_path = re.save_path;
 
         let tx = self.transaction()?;
 
@@ -154,8 +159,8 @@ impl RSSMapper for ConnWrapper {
         }
 
         // 插入订阅源
-        tx.prepare_cached("insert into rss (title, url, hash, last_update) values (?, ?, ?, ?)")?
-            .execute(params![&title, &url, &hash, &last_update])?;
+        tx.prepare_cached("insert into rss (title, url, hash, last_update, save_path) values (?, ?, ?, ?, ?)")?
+            .execute(params![&title, &url, &hash, &last_update, &save_path])?;
 
         tx.commit()?;
         Ok(true)
@@ -163,7 +168,7 @@ impl RSSMapper for ConnWrapper {
 
     fn list_subscribe_not_update(&self, last_update: u64) -> Result<Vec<RSSEntity>> {
         let mut stmt = self.prepare_cached(
-            "select id, title, url, hash, last_update from rss where last_update < ?",
+            "select id, title, url, hash, last_update, save_path from rss where last_update < ?",
         )?;
         let mut rows = stmt.query(params![&last_update])?;
         let mut result = Vec::new();
@@ -175,6 +180,7 @@ impl RSSMapper for ConnWrapper {
                 url: row.get(2)?,
                 hash: row.get(3)?,
                 last_update: row.get(4)?,
+                save_path: row.get(5)?,
             });
         }
 

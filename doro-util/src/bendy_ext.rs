@@ -41,6 +41,8 @@ impl DerefMut for SocketAddrExt {
 }
 
 impl FromBencode for SocketAddrExt {
+    const MUST_ORDER: bool = false;
+    
     fn decode_bencode_object(object: Object) -> Result<Self, Error>
     where
         Self: Sized,

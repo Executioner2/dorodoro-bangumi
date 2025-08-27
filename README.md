@@ -7,12 +7,13 @@ dorodoro-bangumi（暂定名）是一款 Rust 编写，独立部署的自动追�
 - [ ] 基础功能接口完善
 - [ ] 处理直接使用 rc4 加密传输，性能损失严重的问题
 - [ ] 下载量计数可能存在 bug，需要排查确认
+- [ ] **任务下载完成后，内存似乎没有被回收，需要排查下**
 - [ ] 磁力链接解析速度慢，需要优化
 - [ ] 优化运行的 lt_peer 数量低于阈值时，无法快速打满阈值的问题
-- [ ] 处理 bendy 中，固定拒绝未排序 bencode 字符串的行为
 - [ ] 速率控制写得不是很好，需要重构
 - [ ] 定时功能抽离，封装通用逻辑，统一放到一个模块方便维护
 - [ ] bt 上传实现
+- [x] 处理 bendy 中，固定拒绝未排序 bencode 字符串的行为
 - [x] 完成 mikan 资源获取
 - [x] 完成 rss 订阅
 - [x] 实现磁力链接解析
@@ -33,7 +34,7 @@ dorodoro-bangumi（暂定名）是一款 Rust 编写，独立部署的自动追�
     1. 无法区分命名空间：被连接的枚举或 trait，必须是唯一的，这就意味着，无法在不同 mod 中命名相同的枚举或 trait。
     2. trait 泛型无法指定具体类型实现：如果被 dispatch 的 trait 上定义了泛型，连接的枚举无法指定具体的类型。详见 `test/enum_dispatch.rs`
 
-# 启动方式
+# 项目启动方式
 ## 直接启动
 ```shell
 cargo run --package doro --bin doro
@@ -62,7 +63,7 @@ tokio-console http://127.0.0.1:9090
 
 # 源码构建
 ## mips 平台
-- 配置交叉编译环境
+- 配置交叉编译环境（以 mt7621 为例）
 ```shell
 wget https://mirror-03.infra.openwrt.org/releases/24.10.2/targets/ramips/mt7621/openwrt-sdk-24.10.2-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
 

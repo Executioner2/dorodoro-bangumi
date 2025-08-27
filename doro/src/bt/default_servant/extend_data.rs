@@ -44,6 +44,8 @@ impl HandshakeData {
 }
 
 impl FromBencode for HandshakeData {
+    const MUST_ORDER: bool = false;
+    
     fn decode_bencode_object(object: Object) -> Result<Self, bendy::decoding::Error>
     where
         Self: Sized,
@@ -164,6 +166,8 @@ pub enum MetadataType {
 }
 
 impl FromBencode for MetadataType {
+    const MUST_ORDER: bool = false;
+
     fn decode_bencode_object(object: Object) -> Result<Self, bendy::decoding::Error>
     where
         Self: Sized,
@@ -217,6 +221,8 @@ impl Metadata {
 }
 
 impl FromBencode for Metadata {
+    const MUST_ORDER: bool = false;
+    
     fn decode_bencode_object(object: Object) -> Result<Self, bendy::decoding::Error>
     where
         Self: Sized,

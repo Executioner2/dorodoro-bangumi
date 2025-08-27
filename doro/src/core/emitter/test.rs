@@ -165,7 +165,7 @@ fn test_get_enum_tag_from_unsafe_ptr() {
     let x = unsafe { ptr.read() };
     assert_eq!(x, shoutown);
 
-    let add_torrent = Scheduler::AddTorrent(AddTorrent("./test1.torrent"));
+    let add_torrent = Scheduler::AddTorrent(AddTorrent("./[DMG&LKSub][Denki-gai no Honya-san][Fin][GB][MP4].torrent"));
     let ptr = &add_torrent as *const Scheduler as *const ();
     let ptr = ptr as *const u8;
     let x = unsafe { ptr.read() };
