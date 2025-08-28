@@ -363,6 +363,9 @@ pub async fn find_peers<T>(
                     while let Some((node_id, addr)) = queue.pop_front() {
                         check_add_node(&this.routing_table, &this.dht_request, node_id, &addr).await;
                     }
+                    if let Some(receive_host) = receive_host.upgrade() {
+                        receive_host.find_task_finished().await;
+                    }
                     break 'LOOP;
                 }
                 min_dist = md;

@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::ops::Deref;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use anyhow::{anyhow, Error, Result};
@@ -235,6 +235,7 @@ impl ParseMagnet {
             peers: peers.clone(),
             unstart_host: unstart_host.clone(),
             finished: AtomicBool::new(false),
+            peer_find_flag: AtomicBool::new(false),
         });
 
         let peer_launch = PeerLaunch::new(
@@ -421,6 +422,9 @@ struct Dispatch {
 
     /// peer 启动信号
     peer_launch_singal: Sender<PeerInfo>,
+
+    /// 主动查询标记
+    peer_find_flag: AtomicBool,
 }
 
 impl Drop for Dispatch {
@@ -446,7 +450,10 @@ impl Dispatch {
             pi.set_waited(true);
             Some(pi)
         } else {
-            self.dht_peer_scan_signal.send(()).await.unwrap();
+            if !self.peer_find_flag.load(Ordering::Relaxed) {
+                self.dht_peer_scan_signal.send(()).await.unwrap();
+                self.peer_find_flag.store(true, Ordering::Relaxed);
+            }
             None
         }
     }
@@ -534,6 +541,11 @@ impl ServantCallback for Dispatch {
 
 #[async_trait]
 impl ReceiveHost for Dispatch {
+    /// 查询任务完成
+    async fn find_task_finished(&self) {
+        self.peer_find_flag.store(false, Ordering::Relaxed);
+    }
+
     /// 接收主机地址
     async fn receive_host(&self, addr: SocketAddr, source: HostSource) {
         let id = GlobalId::next_id();

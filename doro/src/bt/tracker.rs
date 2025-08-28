@@ -360,8 +360,9 @@ where
                 info.clone(),
                 receive_host.clone(),
             );
-            let interval = task.await;
-            tokio::time::sleep(Duration::from_secs(interval)).await;
+            let interval = Duration::from_secs(task.await);
+            debug!("下一次 tracker peer 请求时间: {interval:?}");
+            tokio::time::sleep(interval).await;
         }
     }
 }

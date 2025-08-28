@@ -86,6 +86,9 @@ pub trait PeerSwitch {
 
     /// 等待队列长度
     fn get_wait_queue_len(&self) -> usize;
+
+    /// 不可启动 host 数量
+    fn get_unstart_host_num(&self) -> usize;
 }
 
 /// 协调器，用于定时统计上传/下载速率，进行分块下载分配
@@ -136,7 +139,6 @@ impl<T: PeerSwitch> Coordinator<T> {
         let len = self.speed_window.lock_pe().len();
         let file_length = self.switch.file_length();
         trace!(
-        // info!(
             "下载速度: {:.2} MiB/s\t当前进度: {:.2}%",
             speed as f64 / len as f64 / 1024.0 / 1024.0,
             download as f64 / file_length as f64 * 100.0
@@ -203,7 +205,8 @@ impl<T: PeerSwitch> Coordinator<T> {
             str.push_str(&format!("{name}: {rate:.2} {unit} - [{cwnd}] - lt: {lt}\n"));
         }
         let len = self.switch.get_wait_queue_len();
-        debug!("\n[wait num: {}]\n当前 peer 状态:\n{}", len, str);
+        let unstart_host_num = self.switch.get_unstart_host_num();
+        debug!("\n[wait num: {}\tunstart host num: {}]\n当前 peer 状态:\n{}", len, unstart_host_num, str);
     }
 }
 
