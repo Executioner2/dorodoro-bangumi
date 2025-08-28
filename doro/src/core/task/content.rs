@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
+use portable_atomic::AtomicBool;
 #[cfg(not(target_has_atomic = "64"))]
 use portable_atomic::AtomicU64;
 
@@ -228,7 +229,8 @@ impl DownloadContent {
             torrent: torrent.clone(),
             download: download.clone(),
             peer_launch_singal,
-            dht_peer_scan_signal: tx
+            dht_peer_scan_signal: tx,
+            peer_find_flag: AtomicBool::new(false)
         });
 
         let peer_launch = PeerLaunch::new(
@@ -477,6 +479,9 @@ struct Dispatch {
 
     /// dht peer 主动扫描信号
     dht_peer_scan_signal: Sender<()>,
+
+    /// 主动查询标记
+    peer_find_flag: AtomicBool,
 }
 
 impl Drop for Dispatch {
@@ -510,7 +515,10 @@ impl Dispatch {
             pi.set_waited(true);
             Some(pi)
         } else {
-            self.dht_peer_scan_signal.send(()).await.unwrap();
+            if !self.peer_find_flag.load(Ordering::Relaxed) {
+                self.dht_peer_scan_signal.send(()).await.unwrap();
+                self.peer_find_flag.store(true, Ordering::Relaxed);
+            }
             None
         }
     }
@@ -527,7 +535,7 @@ impl Dispatch {
     async fn do_start_peer(&self, mut pi: PeerInfo, lt: bool) {
         pi.reset();
         pi.set_lt_running(lt);
-        self.peer_launch_singal.send(pi).await.unwrap();
+        let _ = self.peer_launch_singal.send(pi).await;
     }
 
     /// 检查是否下载完成
@@ -556,6 +564,11 @@ impl Dispatch {
 
 #[async_trait]
 impl ReceiveHost for Dispatch {
+    /// 查询任务完成
+    async fn find_task_finished(&self) {
+        self.peer_find_flag.store(false, Ordering::Relaxed);
+    }
+
     /// 接收主机地址
     async fn receive_host(&self, host: SocketAddr, source: HostSource) {
         self.start_peer(host, source).await
@@ -787,13 +800,6 @@ impl PeerSwitch for Dispatch {
     /// 列出所有 peer 的速度信息        
     /// 返回值: (peer_name, peer_bw, peer_cwnd, peer_lt)
     fn list_rate_info(&self) -> Vec<(String, u64, u32, bool)> {
-        // for peer in self.peers.iter() {
-        //     if let Some(peer) = self.servant.get_peer(peer.id) {
-        //         if peer.get_response_pieces().is_empty() {
-        //             info!("狗日的速度为响应分片没有了，也不关闭，不知道想干嘛，peer: {peer:#?}");
-        //         }
-        //     }
-        // }
         self.peers.iter().map(|peer| {
             (peer.get_name(), peer.dashbord.bw(), peer.dashbord.cwnd(), peer.is_lt())
         }).collect::<Vec<_>>()
@@ -802,6 +808,11 @@ impl PeerSwitch for Dispatch {
     /// 等待队列长度
     fn get_wait_queue_len(&self) -> usize {
         self.wait_queue.lock_pe().len()
+    }
+
+    /// 未启动的 host 数量
+    fn get_unstart_host_num(&self) -> usize {
+        self.unstart_host.len()
     }
 }
 

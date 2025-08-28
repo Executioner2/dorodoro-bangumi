@@ -65,6 +65,9 @@ impl Display for HostSource {
 /// 接收主机地址
 #[async_trait]
 pub trait ReceiveHost {
+    /// 本次查询任务完成
+    async fn find_task_finished(&self);
+
     /// 接收主机地址
     async fn receive_host(&self, host: SocketAddr, source: HostSource);
 
