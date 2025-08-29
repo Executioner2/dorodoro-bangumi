@@ -22,7 +22,7 @@ use tracing::{debug, error, info, trace};
 use url::Url;
 
 use crate::base_peer::error::{ErrorType, PeerExitReason};
-use crate::base_peer::rate_control::probe::Dashbord;
+use crate::base_peer::rate_control::probe::Dashboard;
 use crate::base_peer::{PeerInfoExt, PeerLaunch, PeerLaunchCallback};
 use crate::config::CHANNEL_BUFFER;
 use crate::context::Context;
@@ -141,8 +141,8 @@ impl PeerInfoExt for PeerInfo {
         self.addr
     }
 
-    fn get_dashbord(&self) -> Dashbord {
-        Dashbord::default()
+    fn get_dashboard(&self) -> Dashboard {
+        Dashboard::default()
     }
 
     fn get_name(&self) -> String {
@@ -483,7 +483,7 @@ impl ServantCallback for Dispatch {
     async fn on_handshake_success(&self, sc: Box<dyn ServantContext>) -> Result<()> {
         // 这里如果因为对面不支持扩展协议而请求失败，那么就会因为 Err 终止
         // 这个 peer，这是符合预期的
-        sc.get_peer().request_extend_handsake().await
+        sc.get_peer().request_extend_handshake().await
     }
 
     /// 扩展协议握手成功

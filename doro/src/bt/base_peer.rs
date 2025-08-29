@@ -38,7 +38,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, trace, error};
 
 use crate::base_peer::listener::{ReadFuture, WriteFuture};
-use crate::base_peer::rate_control::probe::{Dashbord, Probe};
+use crate::base_peer::rate_control::probe::{Dashboard, Probe};
 use crate::base_peer::rate_control::RateControl;
 use crate::bt::pe_crypto::{self, CryptoProvide};
 use crate::bt::socket::TcpStreamWrapper;
@@ -46,6 +46,8 @@ use crate::command::CommandHandler;
 use crate::config::CHANNEL_BUFFER;
 use crate::context::{AsyncSemaphore, Context};
 use crate::default_servant::extend_data::{HandshakeData, Metadata};
+use crate::dht;
+use crate::dht::DHT;
 use crate::emitter::transfer::TransferPtr;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 use crate::servant::Servant;
@@ -74,7 +76,7 @@ macro_rules! try_get_servant_or_err {
 }
 
 /// 尝试获取 servant 实例，如果没有，这直接 break
-macro_rules! try_get_servant_or_brack {
+macro_rules! try_get_servant_or_break {
     ($self: expr) => {
         match $self.servant.upgrade() {
             Some(servant) => servant,
@@ -339,9 +341,9 @@ pub struct BasePeerInner {
     handles: Mutex<Option<JoinSet<()>>>,
 
     /// 下载速率仪表盘
-    dashbord: Dashbord,
+    dashboard: Dashboard,
 
-    /// wrtier
+    /// writer
     writer: Writer,
 
     /// 对端的 peer id
@@ -373,7 +375,7 @@ impl Deref for BasePeer {
 pub struct BasePeer(Arc<BasePeerInner>);
 
 impl BasePeer {
-    pub fn new(id: Id, addr: SocketAddr, servant: Weak<impl Servant>, dashbord: Dashbord) -> Self {
+    pub fn new(id: Id, addr: SocketAddr, servant: Weak<impl Servant>, dashboard: Dashboard) -> Self {
         let buf_limit = Context::get_config().buf_limit();
         let (tx, rx) = channel(buf_limit);
         Self(Arc::new(BasePeerInner {
@@ -381,7 +383,7 @@ impl BasePeer {
             addr,
             servant,
             handles: Mutex::new(Some(JoinSet::new())),
-            dashbord,
+            dashboard,
             writer: Writer::new(),
             opposite_peer_id: Mutex::new(None),
             opposite_reserved: AtomicU64::new(0),
@@ -441,6 +443,13 @@ impl BasePeer {
 
         anyhow_eq!(info_hash, resp_info_hash, "对端的 info_hash 与本地不符");
 
+        // 支持 ltep，就往 dht 路由表中添加
+        if reserved & reserved::LTEP != 0 {
+            let rt = DHT::global().routing_table.clone();
+            let dr = DHT::global().dht_request.clone();
+            dht::check_add_node(&rt, &dr, None, &self.addr).await;
+        }
+
         *self.opposite_peer_id.lock_pe() = Some(PeerId::new(peer_id.try_into()?));
         self.opposite_reserved.store(reserved, Ordering::Relaxed);
 
@@ -452,7 +461,7 @@ impl BasePeer {
     fn start_listener(&self, socket: TcpStreamWrapper) {
         let (reader, writer) = socket.into_split();
         let (send, recv) = channel(CHANNEL_BUFFER);
-        let probe = Probe::new(self.dashbord.clone());
+        let probe = Probe::new(self.dashboard.clone());
 
         // 异步写入
         self.handles.lock_pe().as_mut()
@@ -506,7 +515,7 @@ impl BasePeer {
                     if let Some(cmd) = cmd {
                         let cmd: command::Command = cmd.instance();
                         let ts = self.take_async_semaphore(&task_pool);
-                        let servant = try_get_servant_or_brack!(self);
+                        let servant = try_get_servant_or_break!(self);
                         if ts.is_none() {
                             if let Err(e) = cmd.handle((servant.clone(), ts)).await {
                                 servant.happen_exeception(self.id, e).await;
@@ -521,7 +530,7 @@ impl BasePeer {
                     }
                 }
                 ret = task_pool.join_next(), if !task_pool.is_empty() => {
-                    let servant = try_get_servant_or_brack!(self);
+                    let servant = try_get_servant_or_break!(self);
                     match ret {
                         Some(Ok(Err(e))) => {
                             servant.happen_exeception(self.id, e).await;
@@ -561,7 +570,7 @@ impl BasePeer {
         let peer = Peer::new(
             self.id, self.addr,
             self.writer.clone(),
-            self.dashbord.clone(),
+            self.dashboard.clone(),
             handles, self.opposite_reserved.load(Ordering::Relaxed)
         );
         let servant = try_get_servant_or_err!(self);
@@ -693,7 +702,7 @@ pub struct PeerInner {
     recv_bitfield: AtomicBool,
 
     /// 速度仪表盘
-    dashbord: Dashbord,
+    dashboard: Dashboard,
 
     /// 异步任务句柄
     handles: Mutex<Option<JoinSet<()>>>,
@@ -736,7 +745,7 @@ impl Deref for Peer {
 pub struct Peer(Arc<PeerInner>);
 
 impl Peer {
-    fn new(id: Id, addr: SocketAddr, writer: Writer, dashbord: Dashbord, handles: JoinSet<()>, op_reserved: u64) -> Self {
+    fn new(id: Id, addr: SocketAddr, writer: Writer, dashboard: Dashboard, handles: JoinSet<()>, op_reserved: u64) -> Self {
         let extend_id_map = DashMap::new();
         extend_id_map.insert(0, ExtendedId::Handshake.get_value()); // 扩展协议的握手 id 固定为 0
 
@@ -752,7 +761,7 @@ impl Peer {
             op_bitfield: Arc::new(RwLock::new(BytesMut::new())),
             op_reserved,
             recv_bitfield: AtomicBool::new(false),
-            dashbord,
+            dashboard,
             handles: Mutex::new(Some(handles)),
             extend_id_map,
             extend_handshake_data: OnceLock::new(),
@@ -814,8 +823,8 @@ impl Peer {
         *self.status.read_pe() == Status::UnChoke && self.recv_bitfield.load(Ordering::Relaxed)
     }
 
-    pub fn dashbord(&self) -> &Dashbord {
-        &self.dashbord
+    pub fn dashboard(&self) -> &Dashboard {
+        &self.dashboard
     }
 
     pub fn is_can_be_request_metadata(&self) -> bool {
@@ -961,7 +970,7 @@ impl Peer {
     /// 是否还有传输数据（指等待响应的数据，或者对方已经 UnChoke，但是我们还没有收到对方的 bitfield）    
     /// ture 表示还有数据，false 表示没有数据
     pub fn has_transfer_data(&self) -> bool {
-        (!self.response_pieces.is_empty() && self.dashbord.inflight() > 0) || (
+        (!self.response_pieces.is_empty() && self.dashboard.inflight() > 0) || (
             self.status() == Status::UnChoke &&
             !self.recv_bitfield.load(Ordering::Relaxed)
         )
@@ -969,7 +978,7 @@ impl Peer {
 
     /// 是否可以发送数据，即 inflight 数据小于 cwnd
     pub fn has_send_window_space(&self) -> bool {
-        self.dashbord.inflight() <= self.dashbord.cwnd()
+        self.dashboard.inflight() <= self.dashboard.cwnd()
     }
 
     /// 重置分片请求的起始位置
@@ -1012,7 +1021,7 @@ impl Peer {
     }
 
     /// 收到新的响应分片后，更新响应分片记录
-    pub fn update_resoponse_piece(&self, piece_idx: u32, block_offset: u32) {
+    pub fn update_response_piece(&self, piece_idx: u32, block_offset: u32) {
         self.response_pieces.get_mut(&piece_idx)
             .map_ext(|mut piece| piece.add_finish(block_offset))
     }
@@ -1082,7 +1091,7 @@ impl Peer {
     }
 
     /// 请求扩展协议握手数据
-    pub async fn request_extend_handsake(&self) -> Result<()> {
+    pub async fn request_extend_handshake(&self) -> Result<()> {
         self.check_runnable()?;
         if !self.is_ltep() {
             return Err(anyhow!("对端不支持扩展协议，无法请求扩展协议握手数据"));
@@ -1166,8 +1175,8 @@ pub trait PeerInfoExt: Send + Debug {
     /// 获取 peer 地址
     fn get_addr(&self) -> SocketAddr;
 
-    /// 获取 dashbord
-    fn get_dashbord(&self) -> Dashbord;
+    /// 获取 dashboard
+    fn get_dashboard(&self) -> Dashboard;
 
     /// 获取 peer 名称
     fn get_name(&self) -> String;
@@ -1224,6 +1233,9 @@ impl<T, S, C> Drop for PeerLaunch<T, S, C> {
     }
 }
 
+/// 当等待队列长度是 peer_limit 的 n 倍时，触发快速启动
+const FAST_START_CRITICAL_VALUE: usize = 3;
+
 impl<T, S, C> PeerLaunch<T, S, C>
 where 
     T: PeerInfoExt + Send + 'static,
@@ -1254,8 +1266,8 @@ where
         config.async_peer_start_limit().max(config.torrent_peer_conn_limit().saturating_sub(self.peers.len()))
     }
 
-    fn take_async_semaphore(&self) -> Option<AsyncSemaphore> {
-        if self.join_set.len() < self.get_async_start_limit() {
+    fn take_async_semaphore(&self, fast_start: bool) -> Option<AsyncSemaphore> {
+        if fast_start || self.join_set.len() < self.get_async_start_limit() {
             Context::take_async_peer_start_semaphore()
         } else {
             None
@@ -1294,16 +1306,19 @@ where
 
                             self.unstart_host.insert(peer_info.get_addr());
                             let limit = peer_info.get_peer_conn_limit();
-                            if self.peers.len() + self.join_set.len() >= limit  {
+                            let running_num = self.peers.len() + self.join_set.len();
+                            let wait_num = self.wait_queue.lock_pe().len();
+                            let fast_start = running_num * FAST_START_CRITICAL_VALUE < wait_num;
+                            if !fast_start && running_num >= limit {
                                 self.wait_queue.lock_pe().push_back(peer_info);
                                 continue;
                             }
 
                             let bp = BasePeer::new(
                                 peer_info.get_id(), peer_info.get_addr(), 
-                                self.servant.clone(), peer_info.get_dashbord()
+                                self.servant.clone(), peer_info.get_dashboard()
                             );
-                            let ts = self.take_async_semaphore();
+                            let ts = self.take_async_semaphore(fast_start);
                             if ts.is_none() {
                                 self.handle_peer_start_result(bp.async_run((peer_info, ts)).await).await;
                             } else {

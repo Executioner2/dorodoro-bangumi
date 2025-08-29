@@ -25,7 +25,7 @@ use tracing::{debug, error, info, trace};
 use crate::base_peer::{PeerInfoExt, PeerLaunch, PeerLaunchCallback};
 use crate::base_peer::error::{deadly_error, ErrorType, PeerExitReason};
 use crate::base_peer::rate_control::RateControl;
-use crate::base_peer::rate_control::probe::Dashbord;
+use crate::base_peer::rate_control::probe::Dashboard;
 use crate::config::CHANNEL_BUFFER;
 use crate::context::Context;
 use crate::default_servant::{DefaultServant, DefaultServantBuilder};
@@ -53,7 +53,7 @@ pub struct PeerInfo {
     source: HostSource,
 
     /// 速率仪表盘
-    dashbord: Dashbord,
+    dashboard: Dashboard,
 
     /// 是否长期运行
     lt_running: bool,
@@ -66,12 +66,12 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
-    fn new(id: Id, addr: SocketAddr, source: HostSource, dashbord: Dashbord) -> Self {
+    fn new(id: Id, addr: SocketAddr, source: HostSource, dashboard: Dashboard) -> Self {
         Self {
             id,
             addr,
             source,
-            dashbord,
+            dashboard,
             lt_running: true,
             waited: false,
             error_piece_cnt: 0,
@@ -84,7 +84,7 @@ impl PeerInfo {
 
     fn reset(&mut self) {
         self.lt_running = true;
-        self.dashbord.clear_ing();
+        self.dashboard.clear_ing();
     }
 
     fn set_lt_running(&mut self, running: bool) {
@@ -105,8 +105,8 @@ impl PeerInfoExt for PeerInfo {
         self.addr
     }
 
-    fn get_dashbord(&self) -> Dashbord {
-        self.dashbord.clone()
+    fn get_dashboard(&self) -> Dashboard {
+        self.dashboard.clone()
     }
 
     fn get_name(&self) -> String {
@@ -505,7 +505,7 @@ impl Dispatch {
         }
 
         let id = GlobalId::next_id();
-        let pi = PeerInfo::new(id, addr, source, Dashbord::new());
+        let pi = PeerInfo::new(id, addr, source, Dashboard::new());
 
         self.do_start_peer(pi, true).await
     }
@@ -753,8 +753,8 @@ impl PeerSwitch for Dispatch {
     fn find_slowest_lt_peer(&self) -> Option<PeerSpeed> {
         self.peers.iter()
             .filter(|peer| peer.is_lt())
-            .min_by_key(|peer| peer.dashbord.bw())
-            .map(|peer| PeerSpeed::new(peer.id, peer.addr, peer.dashbord.bw()))
+            .min_by_key(|peer| peer.dashboard.bw())
+            .map(|peer| PeerSpeed::new(peer.id, peer.addr, peer.dashboard.bw()))
     }
 
     /// 找到最快的 temp peer
@@ -762,8 +762,8 @@ impl PeerSwitch for Dispatch {
     fn find_fastest_temp_peer(&self) -> Option<PeerSpeed> {
         self.peers.iter()
             .filter(|peer| !peer.is_lt())
-            .max_by_key(|peer| peer.dashbord.bw())
-            .map(|peer| PeerSpeed::new(peer.id, peer.addr, peer.dashbord.bw()))
+            .max_by_key(|peer| peer.dashboard.bw())
+            .map(|peer| PeerSpeed::new(peer.id, peer.addr, peer.dashboard.bw()))
     }
 
     /// 拿走累计的 peer 传输速度
@@ -801,7 +801,7 @@ impl PeerSwitch for Dispatch {
     /// 返回值: (peer_name, peer_bw, peer_cwnd, peer_lt)
     fn list_rate_info(&self) -> Vec<(String, u64, u32, bool)> {
         self.peers.iter().map(|peer| {
-            (peer.get_name(), peer.dashbord.bw(), peer.dashbord.cwnd(), peer.is_lt())
+            (peer.get_name(), peer.dashboard.bw(), peer.dashboard.cwnd(), peer.is_lt())
         }).collect::<Vec<_>>()
     }
 

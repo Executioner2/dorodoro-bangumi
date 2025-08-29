@@ -17,7 +17,7 @@ use anyhow::Result;
 use doro_util::bytes_util::Bytes2Int;
 use doro_util::{anyhow_eq, datetime};
 use tokio::sync::Mutex;
-use tracing::{debug, trace};
+use tracing::debug;
 
 use crate::task::{HostSource, ReceiveHost};
 use crate::task_manager::PeerId;
@@ -107,7 +107,6 @@ impl AnnounceInfo {
 fn parse_tracker_host(
     announce: &str, info_hash: Arc<[u8; 20]>, peer_id: PeerId,
 ) -> Option<TrackerInstance> {
-    // let announce = form_urlencoded::parse(announce.as_bytes()).
     if announce.starts_with("http") {
         Some(TrackerInstance::HTTP(HttpTracker::new(
             announce.to_string(),
@@ -115,21 +114,15 @@ fn parse_tracker_host(
             peer_id.clone(),
         )))
     } else if let Some(announce) = announce.strip_prefix("udp://") {
-        if let Some(end) = announce.find("/announce") {
-            let announce = announce[6..end + 6].to_string();
-            Some(TrackerInstance::UDP(UdpTracker::new(
-                announce,
-                info_hash.clone(),
-                peer_id.clone(),
-            )))
-        } else {
-            let announce = announce.to_string();
-            Some(TrackerInstance::UDP(UdpTracker::new(
-                announce,
-                info_hash.clone(),
-                peer_id.clone(),
-            )))
-        }
+        let announce_str = announce.find("/announce")
+            .map(|end| announce[0..end].to_string())
+            .unwrap_or_else(|| announce.to_string());
+
+        Some(TrackerInstance::UDP(UdpTracker::new(
+            announce_str,
+            info_hash.clone(),
+            peer_id.clone(),
+        )))
     } else {
         None
     }
@@ -165,7 +158,7 @@ async fn scan_udp_tracker<T: ReceiveHost + Send + Sync + 'static>(
             Ok(announce) => {
                 *event = Event::None;
                 let peers = announce.peers.clone();
-                trace!(
+                debug!(
                     "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
                     tracker.announce(),
                     peers.len()
@@ -177,7 +170,7 @@ async fn scan_udp_tracker<T: ReceiveHost + Send + Sync + 'static>(
             }
             Err(e) => {
                 debug!(
-                    "从 tracker [{}] 那里获取 peer 失败\t{}",
+                    "从 tracker [{:?}] 那里获取 peer 失败\t{}",
                     tracker.announce(),
                     e
                 );
@@ -198,7 +191,7 @@ async fn scan_http_tracker<T: ReceiveHost + Send + Sync + 'static>(
             Ok(announce) => {
                 *event = Event::None;
                 let peers = announce.peers.clone();
-                trace!(
+                debug!(
                     "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
                     tracker.announce(),
                     peers.len()
@@ -213,7 +206,7 @@ async fn scan_http_tracker<T: ReceiveHost + Send + Sync + 'static>(
             }
             Err(e) => {
                 debug!(
-                    "从 tracker [{}] 那里获取 peer 失败\t{}",
+                    "从 tracker [{:?}] 那里获取 peer 失败\t{}",
                     tracker.announce(),
                     e
                 );

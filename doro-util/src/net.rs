@@ -9,6 +9,31 @@ use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tracing::debug;
 
+#[derive(Debug)]
+pub enum FutureRet<T: Debug> {
+    Ok(T),
+    Err(io::Error),
+}
+
+#[macro_export]
+macro_rules! pin_poll {
+    ($reader_handle:expr, $cx:expr) => {
+        match pin!($reader_handle).poll($cx) {
+            Poll::Ready(Ok(data)) => data,
+            Poll::Ready(Err(e)) => return Poll::Ready(FutureRet::Err(e.into())),
+            Poll::Pending => return Poll::Pending,
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! is_disconnect {
+    ($e:expr) => {
+        $e.kind() == std::io::ErrorKind::ConnectionAborted
+            || $e.kind() == std::io::ErrorKind::ConnectionReset
+    };
+}
+
 pub struct ReaderHandle<'a, T: AsyncRead + Unpin> {
     stream: &'a mut T,
     buf: BytesMut,
@@ -175,27 +200,17 @@ impl TcpStreamExt for tokio::net::TcpStream {
     }
 }
 
-#[derive(Debug)]
-pub enum FutureRet<T: Debug> {
-    Ok(T),
-    Err(io::Error),
-}
+/// 域名解析
+pub async fn domain_resolve(domain: &str) -> Option<SocketAddr> {
+    let addrs = tokio::net::lookup_host(domain).await.ok()?;
+    let mut ret = None;
 
-#[macro_export]
-macro_rules! pin_poll {
-    ($reader_handle:expr, $cx:expr) => {
-        match pin!($reader_handle).poll($cx) {
-            Poll::Ready(Ok(data)) => data,
-            Poll::Ready(Err(e)) => return Poll::Ready(FutureRet::Err(e.into())),
-            Poll::Pending => return Poll::Pending,
+    for addr in addrs {
+        ret = Some(addr);
+        if addr.is_ipv4() {
+            break;
         }
-    };
-}
+    }
 
-#[macro_export]
-macro_rules! is_disconnect {
-    ($e:expr) => {
-        $e.kind() == std::io::ErrorKind::ConnectionAborted
-            || $e.kind() == std::io::ErrorKind::ConnectionReset
-    };
+    ret
 }

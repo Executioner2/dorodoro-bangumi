@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
 use crate::task_manager::PeerId;
@@ -169,6 +169,8 @@ impl HttpTracker {
             left,
             event,
         );
+        
+        debug!("向 HTTP Tracker 发起 announcing: {query_url}");
         let response = if let Ok(Ok(response)) =
             tokio::time::timeout(HTTP_REQUEST_TIMEOUT, reqwest::get(&query_url)).await
         {

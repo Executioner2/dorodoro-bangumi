@@ -29,7 +29,7 @@ use tracing::{level_enabled, trace, Level};
 use super::{PacketAck, PacketSend, RateControl};
 
 #[derive(Clone, Default, Debug)]
-pub struct Dashbord {
+pub struct Dashboard {
     /// 拥塞窗口大小
     cwnd: Arc<AtomicU32>,
 
@@ -45,7 +45,7 @@ pub struct Dashbord {
     // rate: Arc<AtomicU32>,
 }
 
-impl Dashbord {
+impl Dashboard {
     pub fn new() -> Self {
         Self {
             cwnd: Arc::new(AtomicU32::new(MIN_CWND)),
@@ -56,7 +56,7 @@ impl Dashbord {
     }
 }
 
-impl Dashbord {
+impl Dashboard {
     pub fn update_bw(&self, bw: u32) {
         let item = (bw, datetime::now_millis() as u64);
         match self.bw.lock().as_mut() {
@@ -70,7 +70,7 @@ impl Dashbord {
     }
 }
 
-impl RateControl for Dashbord {
+impl RateControl for Dashboard {
     fn cwnd(&self) -> u32 {
         self.cwnd.load(Ordering::Relaxed)
     }
@@ -96,7 +96,7 @@ impl RateControl for Dashbord {
     }
 }
 
-impl PacketSend for Dashbord {
+impl PacketSend for Dashboard {
     fn send(&self, _write_size: u32) {
         self.inflight.fetch_add(1, Ordering::Relaxed);
     }
@@ -226,7 +226,7 @@ impl TimeFixeQueue {
 /// 暴力探测
 pub struct Probe {
     /// 速率仪表盘
-    dashbord: Dashbord,
+    dashboard: Dashboard,
 
     /// 传输带宽
     bw: Minmax,
@@ -278,9 +278,9 @@ pub struct Probe {
 }
 
 impl Probe {
-    pub fn new(dashbord: Dashbord) -> Self {
+    pub fn new(dashboard: Dashboard) -> Self {
         Self {
-            dashbord,
+            dashboard,
             bw: Minmax::new(),
             last_ack_stamp: 0,
             last_ack_bytes: 0,
@@ -301,13 +301,13 @@ impl Probe {
     }
 
     fn inflight_dec(&self) {
-        self.dashbord.inflight.fetch_sub(1, Ordering::Relaxed);
+        self.dashboard.inflight.fetch_sub(1, Ordering::Relaxed);
     }
 
     fn get_rate_sample(&mut self) -> RateSample {
         let now = datetime::now_millis() as u64;
         let interval_ms = now - self.last_ack_stamp;
-        let acked_bytes = self.dashbord.acked_bytes();
+        let acked_bytes = self.dashboard.acked_bytes();
         let interval_bytes = acked_bytes - self.last_ack_bytes;
         self.last_ack_stamp = now;
         self.last_ack_bytes = acked_bytes;
@@ -319,7 +319,7 @@ impl Probe {
     }
 
     fn update_avg_bw(&mut self, rs: &RateSample) {
-        self.dashbord.update_bw(rs.bw as u32);
+        self.dashboard.update_bw(rs.bw as u32);
     }
 
     fn update_bw(&mut self, rs: &RateSample) -> u32 {
@@ -331,7 +331,7 @@ impl Probe {
 
     fn check_full_bw(&mut self) {
         if self.full_bw_reached {
-            if self.dashbord.cwnd() <= MIN_CWND
+            if self.dashboard.cwnd() <= MIN_CWND
                 || self.bw.minmax_get() < (self.full_bw * FULL_BW_THRESH) >> SCALE
             {
                 self.full_bw = 0;
@@ -420,7 +420,7 @@ impl Probe {
     }
 
     fn update_cwnd(&mut self, gain: u32) {
-        let mut cwnd = self.dashbord.cwnd.load(Ordering::Acquire);
+        let mut cwnd = self.dashboard.cwnd.load(Ordering::Acquire);
 
         if gain == CWND_HIGHT_GAIN || gain == STARTUP_GAIN {
             cwnd += 2; // 防止小窗口增益过小
@@ -429,20 +429,20 @@ impl Probe {
         }
 
         cwnd = ((cwnd as u64 * gain as u64) >> SCALE) as u32;
-        self.dashbord
+        self.dashboard
             .cwnd
             .store(cwnd.clamp(MIN_CWND, MAX_CWND), Ordering::Release);
     }
 
-    pub fn dashbord(&self) -> Dashbord {
-        self.dashbord.clone()
+    pub fn dashboard(&self) -> Dashboard {
+        self.dashboard.clone()
     }
 }
 
 impl PacketAck for Probe {
     fn ack(&mut self, read_size: u32) {
         self.inflight_dec();
-        self.dashbord
+        self.dashboard
             .acked_bytes
             .fetch_add(read_size as u64, Ordering::Relaxed);
 
@@ -463,7 +463,7 @@ impl PacketAck for Probe {
             trace!(
                 "\ncwnd: {}\tmax bw: {:.2}{}\tnew bw: {:.2}{}\tcwnd_gain: {}\t\
                 down thresh: {}\tnew bw bytes: {}\t new_bw <= down_thresh: {}\tfbr: {}",
-                self.dashbord.cwnd(),
+                self.dashboard.cwnd(),
                 rate1,
                 unit1,
                 rate2,

@@ -9,11 +9,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use doro_util::buffer::ByteBuffer;
 use doro_util::bytes_util::{Bytes2Int, WriteBytesBigEndian};
-use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime};
+use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, anyhow_ne, datetime, net};
 use tokio::net::UdpSocket;
 use tracing::warn;
 
@@ -174,8 +174,9 @@ impl UdpTracker {
     /// # Returns
     /// 正常的情况下，返回接收到的数据。
     async fn send_recv(&self, data: &[u8], target: &str, expect_size: isize) -> Result<Bytes> {
+        let addr = net::domain_resolve(target).await.ok_or(anyhow!("无法解析的域名 [{target:?}]"))?;
         let socket = UdpSocket::bind(DEFAULT_ADDR).await?;
-        socket.connect(target).await?;
+        socket.connect(addr).await?;
 
         tokio::time::timeout(SOCKET_WRITE_TIMEOUT, socket.send(data)).await??;
         let expect_size = if expect_size < 0 {

@@ -16,6 +16,7 @@ use futures::stream::FuturesUnordered;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, error, info, trace};
+use doro_util::net;
 
 use crate::config::{DHT_EXPECT_PEERS, DHT_FIND_PEERS_INTERVAL, DHT_WAIT_PEER_LIMIT};
 use crate::context::Context;
@@ -40,11 +41,11 @@ const EXPECT_CLOSEST_NODE_NUM: usize = 30;
 /// 并发进行的 get_peers 任务数量
 const GET_PEERS_CONCURRENCY: usize = 10;
 
-type RoutingTableAM = Arc<Mutex<RoutingTable>>;
+pub type RoutingTableAM = Arc<Mutex<RoutingTable>>;
 
-type DHTRequestA = Arc<DHTRequest>;
+pub type DHTRequestA = Arc<DHTRequest>;
 
-struct DHTRequest {
+pub struct DHTRequest {
     /// 请求的节点 ID
     own_id: Arc<NodeId>,
 
@@ -131,10 +132,10 @@ pub struct DHTInner {
     own_id: Arc<NodeId>,
 
     /// dht 请求
-    dht_request: DHTRequestA,
+    pub dht_request: DHTRequestA,
 
     /// 路由表
-    routing_table: RoutingTableAM,
+    pub routing_table: RoutingTableAM,
 
     /// 启动节点
     bootstrap_nodes: Vec<String>,
@@ -174,10 +175,6 @@ impl DHT {
 
     pub fn global() -> &'static Self {
         DHT_INSTANCE.get().unwrap()
-    }
-
-    async fn domain_resolve(&self, domain: &str) -> Option<SocketAddr> {
-        tokio::net::lookup_host(domain).await.ok()?.next()
     }
 
     pub fn min_dist(&self, info_hash: &NodeId) -> Arc<[u8; 20]> {
@@ -229,7 +226,9 @@ impl DHT {
             // 更新路由表
             let routing_table = routing_table.lock_pe();
             debug!("更新 dht 路由表到本地");
-            conn.update_routing_table(&routing_table).unwrap();
+            if let Err(e) = conn.update_routing_table(&routing_table) {
+                error!("更新 DHT 路由表失败: {e}");
+            }
             let node_num = routing_table.get_node_num();
             debug!("刷新 dht 路由表结束\t当前已知节点数: {}", node_num);
         }));
@@ -253,7 +252,7 @@ impl DHT {
 }
 
 /// 检查队列中的 nodes 是否可用，并加入到路由表中
-async fn check_add_node(
+pub async fn check_add_node(
     rt: &RoutingTableAM, dr: &DHTRequestA, node_id: Option<NodeId>, addr: &SocketAddr,
 ) -> bool {
     let ping_resp = dr.ping(addr).await;
@@ -267,9 +266,15 @@ async fn check_add_node(
 
     // 能 ping 通，那么加入到路由表中
     let ping_resp = ping_resp.unwrap();
+    let conn = Context::get_conn().await.unwrap();
     let mut routing_table = rt.lock_pe();
     let node_id = ping_resp.r.unwrap().id.into_owned();
-    routing_table.add_node(Node::new(node_id, *addr));
+    if routing_table.add_node(Node::new(node_id, *addr)) {
+        if let Err(e) = conn.update_routing_table(&routing_table) {
+            error!("更新 DHT 路由表失败: {e}");
+        }
+    }
+
     true // 只要能 ping 通，就认为是可用节点（和有没有成功加入到路由表无关）
 }
 
@@ -347,7 +352,7 @@ pub async fn find_peers<T>(
             while used_bootstrap_num < this.bootstrap_nodes.len() {
                 let domain = &this.bootstrap_nodes[used_bootstrap_num];
                 used_bootstrap_num += 1;
-                if let Some(addr) = this.domain_resolve(domain).await {
+                if let Some(addr) = net::domain_resolve(domain).await {
                     queue.push_back((None, addr));
                     break;
                 }

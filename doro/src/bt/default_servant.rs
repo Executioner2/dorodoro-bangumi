@@ -369,7 +369,7 @@ impl DefaultServant {
         // 注意，一定要在获取 real_offset 之后更新，否则会出现【线程1】走到了下面的 piece_recv.finish，
         // 原本还差【线程2】的数据，但是【线程2】在【线程1】之前更新了，然后【线程1】刚好又把这个完成的 piece
         // 给删掉了，就会导致【线程2】无法再拿到 real_offset。
-        peer.update_resoponse_piece(piece_idx, block_offset); 
+        peer.update_response_piece(piece_idx, block_offset);
         callback.on_store_block_success(
             self.servant_context(peer.clone()), piece_idx, block_offset, block_size as u32
         ).await;
@@ -446,7 +446,7 @@ impl DefaultServant {
         } else {
             // let mut peers = self.peers
             // .iter().filter(|item| *item.key() != peer.get_id())
-            // .map(|item| (item.value().name(), item.dashbord().bw(), item.get_response_pieces().len()))
+            // .map(|item| (item.value().name(), item.dashboard().bw(), item.get_response_pieces().len()))
             // .collect::<Vec<_>>();
             // peers.sort_unstable_by_key(|peer| peer.1);
             // let println = {
@@ -472,7 +472,7 @@ impl DefaultServant {
             //     }
             //     str
             // };
-            // let rate = doro_util::net::rate_formatting(peer.dashbord().bw());
+            // let rate = doro_util::net::rate_formatting(peer.dashboard().bw());
             // info!("[{}] 尝试抢夺慢速 peer 的 piece 下载任务失败\tresponse_pieces: [{}]bw: [{:.2}{}]\npeers: [{println}]\n还没下载完的 piece: [{re_bit}]",
             // peer.name(), peer.get_response_pieces().len(), rate.0, rate.1);
             if !peer.has_transfer_data() { 
@@ -498,12 +498,12 @@ impl DefaultServant {
             .iter().filter(|item| *item.key() != peer.get_id())
             .map(|item| item.value().wrapper())
             .collect::<Vec<_>>();
-        peers.sort_unstable_by_key(|peer| peer.dashbord().bw());
+        peers.sort_unstable_by_key(|peer| peer.dashboard().bw());
         let mut free_piece = vec![];
 
-        let bw = peer.dashbord().bw();
+        let bw = peer.dashboard().bw();
         for p in peers.iter() {
-            if !coordinator::faster(bw, p.dashbord().bw()) {
+            if !coordinator::faster(bw, p.dashboard().bw()) {
                 break;
             }
             
@@ -624,9 +624,9 @@ impl Servant for DefaultServant {
                 let piece_length = torrent.piece_length(piece_idx);
                 let block_size = default_block_size.min(piece_length - block_offset);
                 peer.request_piece(piece_idx, block_offset, block_size).await?;
-                peer.dashbord().send(block_size);
+                peer.dashboard().send(block_size);
             } else {
-                if peer.dashbord().inflight() == 0 && !peer.get_response_pieces().is_empty() && peer.get_request_pieces().is_empty() { 
+                if peer.dashboard().inflight() == 0 && !peer.get_response_pieces().is_empty() && peer.get_request_pieces().is_empty() {
                     // 响应丢失，没有传输的数据，但是有等待响应的数据，
                     // 同时请求记录又没了的情况。那么重置请求记录
                     let pieces = peer.get_response_pieces().iter().map(|piece| {
