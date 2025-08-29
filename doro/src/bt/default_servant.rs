@@ -353,12 +353,12 @@ impl DefaultServant {
         for block_info in block_infos {
             let data = block_data.split_to(block_info.len);
             let file_path = block_info.filepath.clone();
-            if Store::global().write(block_info, data).await.is_err() {
+            if let Err(e) = Store::global().write(block_info, data).await {
                 peer.reset_request_piece_origin(piece_idx, block_offset, piece_length); // 写入失败，从这个位置重新请求
                 let sc = self.servant_context(peer.clone());
                 callback.on_store_block_failed(
                     sc, piece_idx, block_offset, block_data.len() as u32,
-                    anyhow!("write file failed - [{file_path:?}]")
+                    anyhow!("write file failed - [{file_path:?}] - error: {e:?}")
                 ).await;
                 return;
             }
