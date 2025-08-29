@@ -231,7 +231,7 @@ impl ParseMagnet {
             servant: servant.clone(),
             task_control: task_control.clone(),
             wait_queue: wait_queue.clone(),
-            peer_launch_signal: peer_launch_signal,
+            peer_launch_signal,
             dht_peer_scan_signal: dht_tx,
             tracker_peer_scan_signal: tracker_tx,
             peers: peers.clone(),
@@ -418,6 +418,7 @@ struct Dispatch {
     dht_peer_scan_signal: Sender<()>,
     
     /// tracker peer 主动扫描信号
+    #[allow(dead_code)]
     tracker_peer_scan_signal: Sender<()>,
 
     /// 不可启动的主机地址
@@ -456,9 +457,17 @@ impl Dispatch {
             pi.set_waited(true);
             Some(pi)
         } else {
-            if !self.peer_find_flag.load(Ordering::Relaxed) {
+            let flag = self.peer_find_flag
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    if !current {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                });
+            if flag.is_ok() {
                 self.dht_peer_scan_signal.send(()).await.unwrap();
-                self.tracker_peer_scan_signal.send(()).await.unwrap();
+                // self.tracker_peer_scan_signal.send(()).await.unwrap();
                 self.peer_find_flag.store(true, Ordering::Relaxed);
             }
             None

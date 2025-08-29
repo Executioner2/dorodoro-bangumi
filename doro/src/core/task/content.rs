@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-#[cfg(target_has_atomic = "64")]
-use std::sync::atomic::AtomicU64;
 use portable_atomic::AtomicBool;
 #[cfg(not(target_has_atomic = "64"))]
 use portable_atomic::AtomicU64;
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
@@ -22,18 +22,18 @@ use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace};
 
-use crate::base_peer::{PeerInfoExt, PeerLaunch, PeerLaunchCallback};
 use crate::base_peer::error::{deadly_error, ErrorType, PeerExitReason};
-use crate::base_peer::rate_control::RateControl;
 use crate::base_peer::rate_control::probe::Dashboard;
+use crate::base_peer::rate_control::RateControl;
+use crate::base_peer::{PeerInfoExt, PeerLaunch, PeerLaunchCallback};
+use crate::bt::default_servant::coordinator::{Coordinator, PeerSpeed, PeerSwitch};
 use crate::config::CHANNEL_BUFFER;
 use crate::context::Context;
 use crate::default_servant::{DefaultServant, DefaultServantBuilder};
-use crate::dht::DHTTimedTask;
 use crate::dht::routing::NodeId;
+use crate::dht::DHTTimedTask;
 use crate::mapper::torrent::{PieceStatus, TorrentEntity, TorrentMapper, TorrentStatus};
 use crate::servant::{Servant, ServantCallback, ServantContext};
-use crate::bt::default_servant::coordinator::{Coordinator, PeerSpeed, PeerSwitch};
 use crate::task::{Async, HostSource, ReceiveHost, Subscriber, Task, TaskCallback};
 use crate::task_manager::PeerId;
 use crate::torrent::TorrentArc;
@@ -93,7 +93,7 @@ impl PeerInfo {
 
     fn set_waited(&mut self, b: bool) {
         self.waited = b;
-    } 
+    }
 }
 
 impl PeerInfoExt for PeerInfo {
@@ -116,7 +116,7 @@ impl PeerInfoExt for PeerInfo {
     fn get_source(&self) -> HostSource {
         self.source
     }
-    
+
     fn get_peer_conn_limit(&self) -> usize {
         if_else!(self.lt_running, 
             Context::get_config().torrent_lt_peer_conn_limit(), 
@@ -482,8 +482,9 @@ struct Dispatch {
 
     /// dht peer 主动扫描信号
     dht_peer_scan_signal: Sender<()>,
-    
+
     /// tracker peer 主动扫描信号
+    #[allow(dead_code)]
     tracker_peer_scan_signal: Sender<()>,
 
     /// 主动查询标记
@@ -521,9 +522,17 @@ impl Dispatch {
             pi.set_waited(true);
             Some(pi)
         } else {
-            if !self.peer_find_flag.load(Ordering::Relaxed) {
+            let flag = self.peer_find_flag
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    if !current {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                });
+            if flag.is_ok() {
                 self.dht_peer_scan_signal.send(()).await.unwrap();
-                self.tracker_peer_scan_signal.send(()).await.unwrap();
+                // self.tracker_peer_scan_signal.send(()).await.unwrap();
                 self.peer_find_flag.store(true, Ordering::Relaxed);
             }
             None
