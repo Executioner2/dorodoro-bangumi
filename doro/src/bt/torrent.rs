@@ -175,7 +175,7 @@ impl FromBencode for Torrent {
 
         let announce = announce.ok_or_else(|| Error::missing_field("announce"))?;
         let announce_list = announce_list.ok_or_else(|| Error::missing_field("announce_list"))?;
-        let creation_date = creation_date.ok_or_else(|| Error::missing_field("creation_date"))?;
+        let creation_date = creation_date.unwrap_or_default();
         let info = info.ok_or_else(|| Error::missing_field("info"))?;
         let info_hash = info_hash.ok_or_else(|| Error::missing_field("info_hash"))?;
 
