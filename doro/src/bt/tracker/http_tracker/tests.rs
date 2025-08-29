@@ -10,7 +10,7 @@ use tracing::info;
 use crate::task_manager::PeerId;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::http_tracker::HttpTracker;
-use crate::tracker::{AnnounceInfo, Event};
+use crate::tracker::{AnnounceInfo, Event, TrackerInstance};
 
 /// HTTP tracker 握手测试
 #[tokio::test]

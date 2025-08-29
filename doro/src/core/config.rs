@@ -26,8 +26,11 @@ pub const DHT_WAIT_PEER_LIMIT: usize = 20;
 /// 期望每次 dht 扫描能找到 25 个 peer
 pub const DHT_EXPECT_PEERS: usize = 25;
 
-/// 每间隔一分钟扫描一次 peers
+/// 每间隔一分钟从 dht 扫描一次 peers
 pub const DHT_FIND_PEERS_INTERVAL: Duration = Duration::from_secs(60);
+
+/// 每隔一分钟从 tracker 扫描一次 peers
+pub const TRACKER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default)]
 pub struct Config {

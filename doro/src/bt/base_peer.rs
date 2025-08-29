@@ -1299,6 +1299,7 @@ where
                 peer_info = self.channel.1.recv() => {
                     match peer_info {
                         Some(peer_info) => {
+                            debug!("启动 [{}]，启动队列有[{}]个正在启动", peer_info.get_name(), self.join_set.len());
                             if !peer_info.is_from_waited() && self.unstart_host.contains(&peer_info.get_addr()) {
                                 debug!("[{}] 已在启动队列中，或者被禁用", peer_info.get_name());
                                 continue;
@@ -1310,6 +1311,7 @@ where
                             let wait_num = self.wait_queue.lock_pe().len();
                             let fast_start = running_num * FAST_START_CRITICAL_VALUE < wait_num;
                             if !fast_start && running_num >= limit {
+                                debug!("达到启动上限，把 [{}] 加入等待队列", peer_info.get_name());
                                 self.wait_queue.lock_pe().push_back(peer_info);
                                 continue;
                             }

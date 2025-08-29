@@ -214,7 +214,7 @@ impl ParseMagnet {
 
         let peers = Arc::new(DashMap::new());
         let channel = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
-        let peer_launch_singal = channel.0.clone();
+        let peer_launch_signal = channel.0.clone();
 
         let task_control = TaskControl(Arc::new(TaskControlInner {
             id,
@@ -222,7 +222,8 @@ impl ParseMagnet {
             subscribers: RwLock::new(Vec::new()),
         }));
 
-        let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+        let (dht_tx, dht_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+        let (tracker_tx, tracker_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
 
         let dispatch = Arc::new(Dispatch {
             id,
@@ -230,8 +231,9 @@ impl ParseMagnet {
             servant: servant.clone(),
             task_control: task_control.clone(),
             wait_queue: wait_queue.clone(),
-            peer_launch_singal,
-            dht_peer_scan_signal: tx,
+            peer_launch_signal: peer_launch_signal,
+            dht_peer_scan_signal: dht_tx,
+            tracker_peer_scan_signal: tracker_tx,
             peers: peers.clone(),
             unstart_host: unstart_host.clone(),
             finished: AtomicBool::new(false),
@@ -253,6 +255,7 @@ impl ParseMagnet {
             vec![magnet.trackers.clone()],
             AnnounceInfo::default(),
             info_hash,
+            tracker_rx
         );
 
         let dht_timed_task = DHTTimedTask::new(
@@ -260,7 +263,7 @@ impl ParseMagnet {
             NodeId::new(info_hash),
             wait_queue,
             Arc::downgrade(&dispatch),
-            rx,
+            dht_rx,
         );
 
         servant.set_callback(Arc::downgrade(&dispatch));
@@ -294,7 +297,7 @@ impl Task for ParseMagnet {
         self.id
     }
 
-    fn set_callback(&self, callback: Box<dyn super::TaskCallback>) {
+    fn set_callback(&self, callback: Box<dyn TaskCallback>) {
         self.task_control.set_callback(callback);
     }
 
@@ -371,7 +374,7 @@ impl TaskControl {
         self.subscribers.write_pe().push(subscriber);
     }
 
-    async fn notify_event(&self, message: event::Event) {
+    async fn notify_event(&self, message: Event) {
         let mut idx = 0;
         while idx < self.subscribers.read_pe().len() {
             let sub = {
@@ -413,6 +416,9 @@ struct Dispatch {
 
     /// dht peer 主动扫描信号
     dht_peer_scan_signal: Sender<()>,
+    
+    /// tracker peer 主动扫描信号
+    tracker_peer_scan_signal: Sender<()>,
 
     /// 不可启动的主机地址
     unstart_host: Arc<DashSet<SocketAddr>>,
@@ -421,7 +427,7 @@ struct Dispatch {
     finished: AtomicBool,
 
     /// peer 启动信号
-    peer_launch_singal: Sender<PeerInfo>,
+    peer_launch_signal: Sender<PeerInfo>,
 
     /// 主动查询标记
     peer_find_flag: AtomicBool,
@@ -435,13 +441,13 @@ impl Drop for Dispatch {
 
 impl Dispatch {
     fn is_finished(&self) -> bool {
-        self.finished.load(std::sync::atomic::Ordering::SeqCst)
+        self.finished.load(Ordering::SeqCst)
     }
 
     /// 任务完成
     async fn finish(&self) {
         self.finished
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+            .store(true, Ordering::SeqCst);
         self.task_control.finish().await;
     }
 
@@ -452,6 +458,7 @@ impl Dispatch {
         } else {
             if !self.peer_find_flag.load(Ordering::Relaxed) {
                 self.dht_peer_scan_signal.send(()).await.unwrap();
+                self.tracker_peer_scan_signal.send(()).await.unwrap();
                 self.peer_find_flag.store(true, Ordering::Relaxed);
             }
             None
@@ -473,7 +480,7 @@ impl Dispatch {
             return;
         }
 
-        self.peer_launch_singal.send(pi).await.unwrap();
+        self.peer_launch_signal.send(pi).await.unwrap();
     }
 }
 

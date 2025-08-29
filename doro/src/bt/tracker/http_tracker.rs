@@ -3,11 +3,13 @@
 #[cfg(test)]
 mod tests;
 
+use std::mem;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anyhow::{Result, anyhow};
+use async_trait::async_trait;
 use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 use doro_util::bendy_ext::{Bytes2Object, SocketAddrExt};
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
@@ -15,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::bt::constant::http_tracker::HTTP_REQUEST_TIMEOUT;
 use crate::task_manager::PeerId;
-use crate::tracker::{AnnounceInfo, Event};
+use crate::tracker::{AnnounceInfo, AnnounceTrait, Event, TrackerInstance};
 
 #[derive(Debug)]
 pub struct Announce {
@@ -39,6 +41,12 @@ pub struct Announce {
 
     /// peer 主机列表（IPv6）
     pub peers6: Vec<SocketAddr>,
+}
+
+impl AnnounceTrait for Announce {
+    fn take_peers(&mut self) -> Vec<SocketAddr> {
+        mem::replace(&mut self.peers, vec![])
+    }
 }
 
 impl FromBencode for Announce {
@@ -123,16 +131,16 @@ impl FromBencode for Announce {
 }
 
 pub struct HttpTracker {
-    announce: String,
+    host: String,
     info_hash: Arc<[u8; 20]>,
     peer_id: PeerId,
     next_request_time: u64,
 }
 
 impl HttpTracker {
-    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: PeerId) -> Self {
+    pub fn new(host: String, info_hash: Arc<[u8; 20]>, peer_id: PeerId) -> Self {
         Self {
-            announce,
+            host,
             info_hash,
             peer_id,
             next_request_time: 0,
@@ -149,18 +157,26 @@ impl HttpTracker {
     }
 
     pub fn announce(&self) -> &str {
-        &self.announce
+        &self.host
     }
+}
 
+#[async_trait]
+impl TrackerInstance for HttpTracker {
+    /// 返回主机地址
+    fn host(&self) -> &str {
+        &self.host
+    }
+    
     /// 向 Tracker 发送广播请求
     ///
     /// 正常情况下返回可用资源的地址
-    pub async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
+    async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Box<dyn AnnounceTrait>> {
         let download = info.download.load(Ordering::Acquire);
         let left = info.resource_size.saturating_sub(download);
         let query_url = format!(
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event={}",
-            self.announce,
+            self.host,
             percent_encode(self.info_hash.as_slice(), NON_ALPHANUMERIC),
             percent_encode(self.peer_id.value().as_slice(), NON_ALPHANUMERIC),
             info.port,
@@ -169,7 +185,7 @@ impl HttpTracker {
             left,
             event,
         );
-        
+
         debug!("向 HTTP Tracker 发起 announcing: {query_url}");
         let response = if let Ok(Ok(response)) =
             tokio::time::timeout(HTTP_REQUEST_TIMEOUT, reqwest::get(&query_url)).await
@@ -189,5 +205,6 @@ impl HttpTracker {
 
         let resp = response.bytes().await?;
         Announce::from_bencode(&resp).map_err(|e| anyhow!("解析 tracker 返回数据失败: {}", e))
+            .map(|a| Box::new(a) as Box<dyn AnnounceTrait>)
     }
 }

@@ -26,7 +26,7 @@ use crate::bt::base_peer::MsgType;
 use crate::task_manager::PeerId;
 use crate::torrent::{Parse, Torrent};
 use crate::tracker::udp_tracker::UdpTracker;
-use crate::tracker::{AnnounceInfo, Event};
+use crate::tracker::{AnnounceInfo, Event, TrackerInstance};
 
 /// 测试是否能发起 connect 请求
 #[tokio::test]
@@ -62,9 +62,9 @@ async fn test_announce() {
         resource_size: torrent.info.length,
         port: 9987,
     };
-    let announce = tracker.announcing(Event::None, &info).await.unwrap();
+    let mut announce = tracker.announcing(Event::None, &info).await.unwrap();
     info!("announce result: {:?}", announce);
-    info!("peers length: {}", announce.peers.len());
+    info!("peers length: {}", announce.take_peers().len());
 }
 
 // ===========================================================================

@@ -141,7 +141,7 @@ pub struct DownloadContentInner {
     task_control: TaskControl,
 
     /// tracker
-    tracker: Tracker<Dispatch>,
+    tracker: Mutex<Option<Tracker<Dispatch>>>,
 
     /// 异步任务
     handles: Mutex<Option<JoinSet<()>>>,
@@ -213,9 +213,10 @@ impl DownloadContent {
             subscribers: RwLock::new(Vec::new()),
         }));
 
-        let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+        let (dht_tx, dht_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
+        let (tracker_tx, tracker_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
         let channel = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
-        let peer_launch_singal = channel.0.clone();
+        let peer_launch_signal = channel.0.clone();
 
         let dispatch = Arc::new(Dispatch {
             id,
@@ -228,8 +229,9 @@ impl DownloadContent {
             peer_transfer_speed: peer_transfer_speed.clone(),
             torrent: torrent.clone(),
             download: download.clone(),
-            peer_launch_singal,
-            dht_peer_scan_signal: tx,
+            peer_launch_signal,
+            dht_peer_scan_signal: dht_tx,
+            tracker_peer_scan_signal: tracker_tx,
             peer_find_flag: AtomicBool::new(false)
         });
 
@@ -244,7 +246,7 @@ impl DownloadContent {
             NodeId::new(torrent.info_hash),
             wait_queue.clone(),
             Arc::downgrade(&dispatch),
-            rx,
+            dht_rx,
         );
 
         servant.set_callback(Arc::downgrade(&dispatch));
@@ -257,14 +259,15 @@ impl DownloadContent {
         );
         let tracker = Tracker::new(
             Arc::downgrade(&dispatch), peer_id.clone(), 
-            torrent.get_trackers(), info, torrent.info_hash
+            torrent.get_trackers(), info, torrent.info_hash,
+            tracker_rx
         );
 
         Ok(Self(Arc::new(DownloadContentInner {
             id,
             dispatch,
             task_control,
-            tracker,
+            tracker: Mutex::new(Some(tracker)),
             handles: Mutex::new(None),
             peer_launch: Mutex::new(Some(peer_launch)),
             dht_timed_task: Mutex::new(Some(dht_timed_task)),
@@ -295,7 +298,7 @@ impl DownloadContent {
             *handles = Some(JoinSet::new());
         }
         let handles = handles.as_mut().unwrap();
-        handles.spawn(Box::pin(self.tracker.clone().run())); // 启动 tracker
+        handles.spawn(Box::pin(self.tracker.lock_pe().take().unwrap().run())); // 启动 tracker
         handles.spawn(Box::pin(self.dht_timed_task.lock_pe().take().unwrap().run())); // 启动 dht 扫描
         handles.spawn(Box::pin(Coordinator::new(self.dispatch.clone()).run())); // 启动下载协调器
         handles.spawn(Box::pin(self.peer_launch.lock_pe().take().unwrap().run())); // 启动 peer 启动器
@@ -475,10 +478,13 @@ struct Dispatch {
     download: Arc<AtomicU64>,
 
     /// peer 启动信号
-    peer_launch_singal: Sender<PeerInfo>,
+    peer_launch_signal: Sender<PeerInfo>,
 
     /// dht peer 主动扫描信号
     dht_peer_scan_signal: Sender<()>,
+    
+    /// tracker peer 主动扫描信号
+    tracker_peer_scan_signal: Sender<()>,
 
     /// 主动查询标记
     peer_find_flag: AtomicBool,
@@ -517,6 +523,7 @@ impl Dispatch {
         } else {
             if !self.peer_find_flag.load(Ordering::Relaxed) {
                 self.dht_peer_scan_signal.send(()).await.unwrap();
+                self.tracker_peer_scan_signal.send(()).await.unwrap();
                 self.peer_find_flag.store(true, Ordering::Relaxed);
             }
             None
@@ -535,7 +542,7 @@ impl Dispatch {
     async fn do_start_peer(&self, mut pi: PeerInfo, lt: bool) {
         pi.reset();
         pi.set_lt_running(lt);
-        let _ = self.peer_launch_singal.send(pi).await;
+        let _ = self.peer_launch_signal.send(pi).await;
     }
 
     /// 检查是否下载完成

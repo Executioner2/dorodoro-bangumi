@@ -2,27 +2,46 @@ pub mod http_tracker;
 pub mod udp_tracker;
 
 use core::fmt::Display;
+use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
-#[cfg(target_has_atomic = "64")]
-use std::sync::atomic::AtomicU64;
 #[cfg(not(target_has_atomic = "64"))]
 use portable_atomic::AtomicU64;
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
 
-use ahash::AHashSet;
-use anyhow::Result;
-use doro_util::bytes_util::Bytes2Int;
-use doro_util::{anyhow_eq, datetime};
-use tokio::sync::Mutex;
-use tracing::debug;
-
+use crate::config::TRACKER_ANNOUNCE_INTERVAL;
 use crate::task::{HostSource, ReceiveHost};
 use crate::task_manager::PeerId;
 use crate::tracker::http_tracker::HttpTracker;
 use crate::tracker::udp_tracker::UdpTracker;
+use ahash::AHashSet;
+use anyhow::Result;
+use async_trait::async_trait;
+use doro_util::bytes_util::Bytes2Int;
+use doro_util::anyhow_eq;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc::Receiver;
+use tokio::task::JoinSet;
+use tracing::debug;
+
+pub trait AnnounceTrait: Debug + Send {
+    /// 拿走 peers
+    fn take_peers(&mut self) -> Vec<SocketAddr>;
+}
+
+#[async_trait]
+pub trait TrackerInstance: Send {
+    /// 主机地址
+    fn host(&self) -> &str;
+
+    /// 进行公告获取
+    async fn announcing(
+        &mut self, event: Event, info: &AnnounceInfo,
+    ) -> Result<Box<dyn AnnounceTrait>>;
+}
 
 // ===========================================================================
 // Peer Host
@@ -106,20 +125,21 @@ impl AnnounceInfo {
 /// 解析 tracker 地址
 fn parse_tracker_host(
     announce: &str, info_hash: Arc<[u8; 20]>, peer_id: PeerId,
-) -> Option<TrackerInstance> {
+) -> Option<Box<dyn TrackerInstance>> {
     if announce.starts_with("http") {
-        Some(TrackerInstance::HTTP(HttpTracker::new(
+        Some(Box::new(HttpTracker::new(
             announce.to_string(),
             info_hash.clone(),
             peer_id.clone(),
         )))
     } else if let Some(announce) = announce.strip_prefix("udp://") {
-        let announce_str = announce.find("/announce")
+        let host = announce
+            .find("/announce")
             .map(|end| announce[0..end].to_string())
             .unwrap_or_else(|| announce.to_string());
 
-        Some(TrackerInstance::UDP(UdpTracker::new(
-            announce_str,
+        Some(Box::new(UdpTracker::new(
+            host,
             info_hash.clone(),
             peer_id.clone(),
         )))
@@ -128,9 +148,7 @@ fn parse_tracker_host(
     }
 }
 
-fn instance_tracker(
-    peer_id: PeerId, trackers: Vec<Vec<String>>, info_hash: [u8; 20],
-) -> Vec<Arc<Mutex<(Event, TrackerInstance)>>> {
+fn instance_tracker(peer_id: PeerId, trackers: Vec<Vec<String>>, info_hash: [u8; 20]) -> Trackers {
     let mut ret = vec![];
     let info_hash = Arc::new(info_hash);
     let mut visited = AHashSet::new();
@@ -148,148 +166,68 @@ fn instance_tracker(
     ret
 }
 
-async fn scan_udp_tracker<T: ReceiveHost + Send + Sync + 'static>(
-    event: &mut Event, tracker: &mut UdpTracker, scan_time: u64, info: &AnnounceInfo,
-    receive_host: Weak<T>,
-) -> u64 {
-    let mut nrt = u64::MAX;
-    if tracker.next_request_time() <= scan_time {
-        nrt = match tracker.announcing(event.clone(), info).await {
-            Ok(announce) => {
-                *event = Event::None;
-                let peers = announce.peers.clone();
-                debug!(
-                    "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
-                    tracker.announce(),
-                    peers.len()
-                );
-                if let Some(receive_host) = receive_host.upgrade() {
-                    receive_host.receive_hosts(peers, HostSource::Tracker).await;
-                }
-                announce.interval as u64
-            }
-            Err(e) => {
-                debug!(
-                    "从 tracker [{:?}] 那里获取 peer 失败\t{}",
-                    tracker.announce(),
-                    e
-                );
-                tracker.inc_retry_count()
-            }
-        };
-    }
-    nrt
-}
-
-async fn scan_http_tracker<T: ReceiveHost + Send + Sync + 'static>(
-    event: &mut Event, tracker: &mut HttpTracker, scan_time: u64, info: &AnnounceInfo,
-    receive_host: Weak<T>,
-) -> u64 {
-    let mut nrt = u64::MAX;
-    if tracker.next_request_time() <= scan_time {
-        nrt = match tracker.announcing(event.clone(), info).await {
-            Ok(announce) => {
-                *event = Event::None;
-                let peers = announce.peers.clone();
-                debug!(
-                    "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
-                    tracker.announce(),
-                    peers.len()
-                );
-                if let Some(receive_host) = receive_host.upgrade() {
-                    receive_host.receive_hosts(peers, HostSource::Tracker).await;
-                }
-                match announce.min_interval {
-                    Some(interval) => interval,
-                    None => announce.interval,
-                }
-            }
-            Err(e) => {
-                debug!(
-                    "从 tracker [{:?}] 那里获取 peer 失败\t{}",
-                    tracker.announce(),
-                    e
-                );
-                tracker.unusable()
-            }
-        };
-    }
-    nrt
-}
-
-async fn scan_tracker<T: ReceiveHost + Send + Sync + 'static>(
-    trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>, scan_time: u64, info: AnnounceInfo,
-    receive_host: Weak<T>,
-) -> u64 {
-    let mut interval: u64 = u64::MAX;
-    let mut join_handle = vec![];
-
-    for tracker in trackers.iter() {
-        let handle = tokio::spawn(Box::pin(tracker_handle_process(
-            tracker.clone(),
-            scan_time,
-            info.clone(),
-            receive_host.clone(),
-        )));
-        join_handle.push(handle);
-    }
-
-    for handle in join_handle {
-        let i = handle.await.unwrap();
-        interval = interval.min(i);
-    }
-
-    interval
-}
-
 async fn tracker_handle_process<T: ReceiveHost + Send + Sync + 'static>(
-    tracker: Arc<Mutex<(Event, TrackerInstance)>>, scan_time: u64, info: AnnounceInfo,
+    tracker: Arc<Mutex<(Event, Box<dyn TrackerInstance>)>>, info: AnnounceInfo,
     receive_host: Weak<T>,
-) -> u64 {
-    match tracker.lock().await.deref_mut() {
-        (event, TrackerInstance::UDP(tracker)) => {
-            scan_udp_tracker(event, tracker, scan_time, &info, receive_host).await
+) {
+    let mut tracker_lock = tracker.lock().await;
+    let (event, tracker_instance) = tracker_lock.deref_mut();
+    match tracker_instance.announcing(event.clone(), &info).await {
+        Ok(mut announce) => {
+            *event = Event::None;
+            let peers = announce.take_peers();
+            debug!(
+                "从 tracker [{}] 那里成功获取到了 peer 共计 [{}] 个",
+                tracker_instance.host(),
+                peers.len()
+            );
+            if let Some(receive_host) = receive_host.upgrade() {
+                receive_host.receive_hosts(peers, HostSource::Tracker).await;
+            }
         }
-        (event, TrackerInstance::HTTP(tracker)) => {
-            scan_http_tracker(event, tracker, scan_time, &info, receive_host).await
+        Err(e) => {
+            debug!(
+                "从 tracker [{:?}] 那里获取 peer 失败\t{}",
+                tracker_instance.host(),
+                e
+            );
         }
     }
 }
 
-pub enum TrackerInstance {
-    UDP(UdpTracker),
-    HTTP(HttpTracker),
+pub enum TrackerType {
+    /// udp 类型的 tracker
+    UDP,
+
+    /// http 类型的 tracker
+    HTTP,
 }
 
-pub struct TrackerInner<T> {
+type Trackers = Vec<Arc<Mutex<(Event, Box<dyn TrackerInstance>)>>>;
+
+pub struct Tracker<T> {
+    /// 回执的信息接收者
     receive_host: Weak<T>,
+
+    /// 公告数据
     info: AnnounceInfo,
-    trackers: Vec<Arc<Mutex<(Event, TrackerInstance)>>>,
-    scan_time: u64,
+
+    /// trackers
+    trackers: Trackers,
+
+    /// 强制刷新信号
+    recv: Receiver<()>,
+
+    /// 任务集合
+    join_set: JoinSet<()>,
 }
 
-impl<T> Drop for TrackerInner<T> {
+impl<T> Drop for Tracker<T> {
     fn drop(&mut self) {
         use tracing::info;
-        info!("TrackerInner 已 drop");
+        info!("Tracker 已 drop");
     }
 }
-
-impl<T> Deref for Tracker<T> {
-    type Target = Arc<TrackerInner<T>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> Clone for Tracker<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-pub struct Tracker<T>(Arc<TrackerInner<T>>);
 
 impl<T> Tracker<T>
 where
@@ -297,16 +235,17 @@ where
 {
     pub fn new(
         receive_host: Weak<T>, peer_id: PeerId, trackers: Vec<Vec<String>>, info: AnnounceInfo,
-        info_hash: [u8; 20],
+        info_hash: [u8; 20], recv: Receiver<()>,
     ) -> Self {
         let trackers = instance_tracker(peer_id, trackers, info_hash);
 
-        Self(Arc::new(TrackerInner {
+        Self {
             receive_host,
             info,
             trackers,
-            scan_time: datetime::now_secs(),
-        }))
+            recv,
+            join_set: JoinSet::new(),
+        }
     }
 
     /// 本地环境测试
@@ -323,7 +262,6 @@ where
             SocketAddr::from_str("192.168.2.113:6886").unwrap(),
             SocketAddr::from_str("192.168.2.113:6881").unwrap(),
             SocketAddr::from_str("192.168.2.113:6882").unwrap(),
-
             // SocketAddr::from_str("209.141.46.35:15982").unwrap(),
             // SocketAddr::from_str("123.156.68.196:20252").unwrap(),
             // SocketAddr::from_str("1.163.51.40:42583").unwrap(),
@@ -337,25 +275,39 @@ where
         9999999
     }
 
+    async fn scan_tracker(&mut self) {
+        for tracker in self.trackers.iter() {
+            self.join_set.spawn(Box::pin(tracker_handle_process(
+                tracker.clone(),
+                self.info.clone(),
+                self.receive_host.clone(),
+            )));
+        }
+    }
+
     /// 开始定时扫描
-    pub async fn run(self) {
-        let trackers = self.trackers.clone();
-        let scan_time = self.scan_time;
-        let info = self.info.clone();
-        let receive_host = self.receive_host.clone();
+    pub async fn run(mut self) {
+        let mut tick = tokio::time::interval(TRACKER_ANNOUNCE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // self.local_env_test().await;
-
         loop {
-            let task = scan_tracker(
-                trackers.clone(),
-                scan_time,
-                info.clone(),
-                receive_host.clone(),
-            );
-            let interval = Duration::from_secs(task.await);
-            debug!("下一次 tracker peer 请求时间: {interval:?}");
-            tokio::time::sleep(interval).await;
+            tokio::select! {
+                _ = tick.tick() => {
+                    self.scan_tracker().await;
+                }
+                ret = self.recv.recv() => {
+                    match ret {
+                        Some(()) => {
+                            tick.reset();
+                            self.scan_tracker().await;
+                        }
+                        None => {
+                            break
+                        }
+                    }
+                }
+            }
         }
     }
 }

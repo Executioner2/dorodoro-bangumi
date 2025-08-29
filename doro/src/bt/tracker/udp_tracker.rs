@@ -5,11 +5,13 @@ pub mod socket;
 #[cfg(test)]
 mod tests;
 
+use std::mem;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use bytes::Bytes;
 use doro_util::buffer::ByteBuffer;
 use doro_util::bytes_util::{Bytes2Int, WriteBytesBigEndian};
@@ -20,7 +22,7 @@ use tracing::warn;
 use crate::bt::constant::udp_tracker::*;
 use crate::task_manager::PeerId;
 use crate::tracker;
-use crate::tracker::{AnnounceInfo, Event};
+use crate::tracker::{AnnounceInfo, AnnounceTrait, Event, TrackerInstance};
 
 type Buffer = Vec<u8>;
 
@@ -64,12 +66,18 @@ pub struct Announce {
     pub peers: Vec<SocketAddr>,
 }
 
+impl AnnounceTrait for Announce {
+    fn take_peers(&mut self) -> Vec<SocketAddr> {
+        mem::replace(&mut self.peers, vec![])
+    }
+}
+
 pub struct Scrape {}
 
 pub struct UdpTracker {
     connect: Connect,
     retry_count: u8,
-    announce: String,
+    host: String,
     info_hash: Arc<[u8; 20]>,
     peer_id: PeerId,
     next_request_time: u64,
@@ -77,11 +85,11 @@ pub struct UdpTracker {
 
 impl UdpTracker {
     /// 创建一个 UDP Tracker 实例（默认读超时时间为 15 秒）
-    pub fn new(announce: String, info_hash: Arc<[u8; 20]>, peer_id: PeerId) -> Self {
+    pub fn new(host: String, info_hash: Arc<[u8; 20]>, peer_id: PeerId) -> Self {
         Self {
             connect: Connect::default(),
             retry_count: 0,
-            announce,
+            host,
             info_hash,
             peer_id,
             next_request_time: 0,
@@ -90,54 +98,6 @@ impl UdpTracker {
 
     pub fn next_request_time(&self) -> u64 {
         self.next_request_time
-    }
-
-    /// 向 Tracker 发送广播请求
-    ///
-    /// 正常情况下返回可用资源的地址
-    pub async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Announce> {
-        self.update_connect().await?;
-        let (req_tran_id, mut req) =
-            Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
-
-        let download = info.download.load(Ordering::Acquire);
-        let left = info.resource_size.saturating_sub(download);
-        req.write_bytes(self.info_hash.as_slice())?;
-        req.write_bytes(self.peer_id.value().as_slice())?;
-        req.write_u64(download)?;
-        req.write_u64(left)?;
-        req.write_u64(info.uploaded.load(Ordering::Acquire))?;
-        req.write_u32(event as u32)?;
-        req.write_u32(0)?; // ip
-        req.write_u32(doro_util::rand::gen_process_key())?;
-        req.write_i32(-1)?; // 期望的 peer 数量
-        req.write_u16(info.port)?;
-
-        let resp = self.send(&req, -1).await?;
-
-        // 解析响应数据
-        anyhow_ge!(resp.len(), MIN_ANNOUNCE_RESP_SIZE, "响应数据长度不足");
-        self.check_resp_data(&resp, req_tran_id)?;
-        let interval = u32::from_be_slice(&resp[8..12]);
-        let leechers = u32::from_be_slice(&resp[12..16]); // 未完成下载的 peer 数
-        let seedrs = u32::from_be_slice(&resp[16..20]);
-
-        // 解析 peers 列表
-        let peers = tracker::parse_peers_v4(&resp[20..])?;
-        // let peers = if self.socket.local_addr()?.is_ipv4() {
-        //     tracker::parse_peers_v4(&resp[20..])?
-        // } else {
-        //     tracker::parse_peers_v6(&resp[20..])?
-        // };
-
-        self.next_request_time = datetime::now_secs() + interval as u64;
-
-        Ok(Announce {
-            interval,
-            leechers,
-            seedrs,
-            peers,
-        })
     }
 
     /// 向 Tracker 发送抓取请求
@@ -160,7 +120,7 @@ impl UdpTracker {
     }
 
     pub fn announce(&self) -> &str {
-        &self.announce
+        &self.host
     }
 
     /// 发送数据到指定地址，并接收期望大小的数据。如果 expect_size 为负数，则接收默认大小（）的数据。
@@ -269,7 +229,7 @@ impl UdpTracker {
     async fn send(&mut self, data: &[u8], expect_size: isize) -> Result<Bytes> {
         anyhow_le!(self.retry_count, MAX_RETRY_NUM, "请求超时，且重试次数过多");
 
-        match self.send_recv(data, &self.announce, expect_size).await {
+        match self.send_recv(data, &self.host, expect_size).await {
             Ok(resp) => {
                 self.retry_count = 0;
                 Ok(resp)
@@ -286,5 +246,61 @@ impl UdpTracker {
                 // self.send(data, expect_size)
             }
         }
+    }
+}
+
+#[async_trait]
+impl TrackerInstance for UdpTracker {
+    /// 返回主机地址
+    fn host(&self) -> &str {
+        &self.host
+    }
+    
+    /// 向 Tracker 发送广播请求
+    ///
+    /// 正常情况下返回可用资源的地址
+    async fn announcing(&mut self, event: Event, info: &AnnounceInfo) -> Result<Box<dyn AnnounceTrait>> {
+        self.update_connect().await?;
+        let (req_tran_id, mut req) =
+            Self::gen_protocol_head(self.connect.connection_id, Action::Announce);
+
+        let download = info.download.load(Ordering::Acquire);
+        let left = info.resource_size.saturating_sub(download);
+        req.write_bytes(self.info_hash.as_slice())?;
+        req.write_bytes(self.peer_id.value().as_slice())?;
+        req.write_u64(download)?;
+        req.write_u64(left)?;
+        req.write_u64(info.uploaded.load(Ordering::Acquire))?;
+        req.write_u32(event as u32)?;
+        req.write_u32(0)?; // ip
+        req.write_u32(doro_util::rand::gen_process_key())?;
+        req.write_i32(-1)?; // 期望的 peer 数量
+        req.write_u16(info.port)?;
+
+        let resp = self.send(&req, -1).await?;
+
+        // 解析响应数据
+        anyhow_ge!(resp.len(), MIN_ANNOUNCE_RESP_SIZE, "响应数据长度不足");
+        self.check_resp_data(&resp, req_tran_id)?;
+        let interval = u32::from_be_slice(&resp[8..12]);
+        let leechers = u32::from_be_slice(&resp[12..16]); // 未完成下载的 peer 数
+        let seedrs = u32::from_be_slice(&resp[16..20]);
+
+        // 解析 peers 列表
+        let peers = tracker::parse_peers_v4(&resp[20..])?;
+        // let peers = if self.socket.local_addr()?.is_ipv4() {
+        //     tracker::parse_peers_v4(&resp[20..])?
+        // } else {
+        //     tracker::parse_peers_v6(&resp[20..])?
+        // };
+
+        self.next_request_time = datetime::now_secs() + interval as u64;
+
+        Ok(Box::new(Announce {
+            interval,
+            leechers,
+            seedrs,
+            peers,
+        }))
     }
 }
