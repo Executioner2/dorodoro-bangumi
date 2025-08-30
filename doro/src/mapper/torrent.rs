@@ -25,7 +25,7 @@ pub enum TorrentStatus {
     Upload,
 
     /// 暂停
-    Pasue,
+    Pause,
 
     /// 完成
     Finished,
@@ -61,7 +61,7 @@ pub struct TorrentEntity {
     pub info_hash: Option<Vec<u8>>,
 
     /// 序列化后的 torrent 实例
-    pub serail: Option<TorrentArc>,
+    pub serial: Option<TorrentArc>,
 
     /// 任务状态
     pub status: Option<TorrentStatus>,
@@ -222,7 +222,7 @@ impl TorrentMapper for ConnWrapper {
             let save_path = PathBuf::from(row.get::<_, String>(2)?);
             let torrent = bytes_util::decode(serial.as_slice());
             list.push(TorrentEntity {
-                serail: Some(TorrentArc::new(torrent)),
+                serial: Some(TorrentArc::new(torrent)),
                 status: Some(status),
                 save_path: Some(save_path),
                 ..Default::default()

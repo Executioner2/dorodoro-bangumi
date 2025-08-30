@@ -44,8 +44,7 @@ impl ContextMapper for ConnWrapper {
             self.prepare_cached("select id, config from context order by id desc limit 1")?;
         let mut rows = stmt.query_and_then([], |row| {
             let serial: String = row.get(1)?;
-            let x = serde_json::from_str(&serial)?;
-            let config = Config::from_inner(x);
+            let config = Config::from_inner(serde_json::from_str(&serial)?);
             Ok(ContextEntity {
                 id: Some(row.get(0)?),
                 config: Some(config),

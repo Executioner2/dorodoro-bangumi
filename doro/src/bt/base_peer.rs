@@ -41,7 +41,7 @@ use crate::base_peer::listener::{ReadFuture, WriteFuture};
 use crate::base_peer::rate_control::probe::{Dashboard, Probe};
 use crate::base_peer::rate_control::RateControl;
 use crate::bt::pe_crypto::{self, CryptoProvide};
-use crate::bt::socket::TcpStreamWrapper;
+use crate::bt::socket::{CryptoPair, TcpStreamWrapper};
 use crate::command::CommandHandler;
 use crate::config::CHANNEL_BUFFER;
 use crate::context::{AsyncSemaphore, Context};
@@ -356,6 +356,12 @@ pub struct BasePeerInner {
     channel: (Sender<TransferPtr>, Mutex<Option<Receiver<TransferPtr>>>),
 }
 
+impl BasePeerInner {
+    fn name(&self) -> String {
+        format!("{} - {}", self.addr, self.id)
+    }
+}
+
 impl Drop for BasePeerInner {
     fn drop(&mut self) {
         trace!("base peer [{}] 已 drop", self.addr);
@@ -403,15 +409,20 @@ impl BasePeer {
 
     /// 加密握手
     #[rustfmt::skip]
-    async fn crypto_handshake(&self, socket: TcpStream) -> Result<TcpStreamWrapper> {
+    async fn crypto_handshake(&self, mut socket: TcpStream) -> Result<TcpStreamWrapper> {
         trace!("加密握手 peer_no: {}", self.id);
         let servant = try_get_servant_or_err!(self);
         let info_hash = servant.info_hash();
-        pe_crypto::init_handshake(
-            socket,
-            info_hash,
-            CryptoProvide::Rc4
-        ).await
+        match pe_crypto::init_handshake(&mut socket, info_hash, CryptoProvide::Rc4).await {
+            Ok(crypto_pair) => {
+                trace!("加密握手成功 peer_no: {}", self.id);
+                Ok(TcpStreamWrapper::new(socket, crypto_pair))
+            },
+            Err(e) => {
+                debug!("peer [{}] 加密握手失败，切换为明文传输。错误原因: {}", self.name(), e);
+                Ok(TcpStreamWrapper::new(socket, CryptoPair::plaintext()))
+            }
+        }
     }
 
     /// 协议握手
@@ -518,7 +529,7 @@ impl BasePeer {
                         let servant = try_get_servant_or_break!(self);
                         if ts.is_none() {
                             if let Err(e) = cmd.handle((servant.clone(), ts)).await {
-                                servant.happen_exeception(self.id, e).await;
+                                servant.happen_exception(self.id, e).await;
                                 break;
                             }
                         } else {
@@ -533,11 +544,11 @@ impl BasePeer {
                     let servant = try_get_servant_or_break!(self);
                     match ret {
                         Some(Ok(Err(e))) => {
-                            servant.happen_exeception(self.id, e).await;
+                            servant.happen_exception(self.id, e).await;
                             break;    
                         },
                         Some(Err(e)) => {
-                            servant.happen_exeception(self.id, e.into()).await;
+                            servant.happen_exception(self.id, e.into()).await;
                             break;    
                         }
                         _ => {}
@@ -968,7 +979,7 @@ impl Peer {
     }
 
     /// 是否还有传输数据（指等待响应的数据，或者对方已经 UnChoke，但是我们还没有收到对方的 bitfield）    
-    /// ture 表示还有数据，false 表示没有数据
+    /// true 表示还有数据，false 表示没有数据
     pub fn has_transfer_data(&self) -> bool {
         (!self.response_pieces.is_empty() && self.dashboard.inflight() > 0) || (
             self.status() == Status::UnChoke &&
@@ -981,6 +992,20 @@ impl Peer {
         self.dashboard.inflight() <= self.dashboard.cwnd()
     }
 
+    /// 从响应分片中重置请求分片的起始位置
+    pub fn reset_request_piece_from_response_piece(&self) {
+        for piece in self.response_pieces.iter() {
+            let piece_idx = *piece.key();
+            if let Some(mut origin_offset) = self.request_pieces.get_mut(&piece_idx) {
+                if *origin_offset.value() > piece.block_offset() {
+                    *origin_offset.value_mut() = piece.block_offset();
+                }
+            } else {
+                self.request_pieces.insert(piece_idx, piece.block_offset());
+            }
+        }
+    }
+
     /// 重置分片请求的起始位置
     pub fn reset_request_piece_origin(&self, piece_idx: u32, block_offset: u32, piece_length: u32) {
         if let Some(origin_offset) = self.request_pieces.get(&piece_idx) {
@@ -989,7 +1014,7 @@ impl Peer {
             // 收到的 0 号 和 1 号 都发生了写入错误，先把请求记录重置为
             // 了 0 号偏移，但是还没重新发起 0 号请求，就接着重置为了 1 号，
             // 导致一直缺失 0 号数据。
-            if *origin_offset < block_offset {
+            if *origin_offset.value() < block_offset {
                 return;
             }
         }

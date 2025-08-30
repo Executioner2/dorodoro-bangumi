@@ -42,6 +42,9 @@ pub trait Servant: Send + Sync + 'static {
     /// 检查 piece 是否接收完成
     fn check_piece_download_finished(&self) -> bool;
 
+    /// 重试请求分片
+    async fn retry_request_piece(&self, id: Id) -> Result<()>;
+
     /// 请求分片
     async fn request_piece(&self, id: Id) -> Result<()>;
 
@@ -49,7 +52,7 @@ pub trait Servant: Send + Sync + 'static {
     async fn request_metadata_piece(&self, id: Id) -> Result<()>;
 
     /// 发生异常
-    async fn happen_exeception(&self, id: Id, error: Error);
+    async fn happen_exception(&self, id: Id, error: Error);
 
     /// 处理心跳包
     async fn handle_heartbeat(&self, id: Id) -> Result<()>;

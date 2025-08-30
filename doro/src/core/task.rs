@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use doro_util::global::Id;
 use tokio::sync::mpsc::Sender;
 
+use crate::task_manager::TaskCallback;
+
 pub mod content;
 pub mod magnet;
 
@@ -22,9 +24,6 @@ pub type Async<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub trait Task: Send + Sync + 'static {
     /// 获取任务的唯一标识符
     fn get_id(&self) -> Id;
-
-    /// 设置任务的回调函数  
-    fn set_callback(&self, callback: Box<dyn TaskCallback>);
 
     /// 启动任务
     fn start(&self) -> Async<Result<()>>;
@@ -37,14 +36,6 @@ pub trait Task: Send + Sync + 'static {
 
     /// 订阅任务的内部执行信息
     fn subscribe_inside_info(&self, subscriber: Subscriber);
-}
-
-pub trait TaskCallback: Send + Sync + 'static {
-    /// 任务完成
-    fn finish(&self, id: Id) -> Async<()>;
-
-    /// 任务错误
-    fn error(&self, id: Id, error: anyhow::Error) -> Async<()>;
 }
 
 #[derive(Debug, Clone, Copy)]

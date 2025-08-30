@@ -254,14 +254,18 @@ where
         use std::str::FromStr;
         let peers = vec![
             // SocketAddr::from_str("192.168.2.242:3115").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6887").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6883").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6888").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6884").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6885").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6886").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6881").unwrap(),
-            SocketAddr::from_str("192.168.2.113:6882").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6887").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6883").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6888").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6884").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6885").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6886").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6881").unwrap(),
+            // SocketAddr::from_str("192.168.2.113:6882").unwrap(),
+            
+            SocketAddr::from_str("185.21.216.144:51178").unwrap(),
+
+
             // SocketAddr::from_str("209.141.46.35:15982").unwrap(),
             // SocketAddr::from_str("123.156.68.196:20252").unwrap(),
             // SocketAddr::from_str("1.163.51.40:42583").unwrap(),
@@ -290,7 +294,10 @@ where
         let mut tick = tokio::time::interval(TRACKER_ANNOUNCE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        // use std::time::Duration;
         // self.local_env_test().await;
+        // tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+
         loop {
             tokio::select! {
                 _ = tick.tick() => {

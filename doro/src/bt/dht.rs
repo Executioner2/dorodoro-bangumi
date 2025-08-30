@@ -189,7 +189,7 @@ impl DHT {
         tokio::spawn(Box::pin(async move {
             debug!("开始刷新 dht 路由表");
             loop {
-                let mut update_traget = None;
+                let mut update_target = None;
                 {
                     let mut routing_table = routing_table.lock_pe();
                     if let Some(bucket) = routing_table.next_refresh_bucket() {
@@ -199,16 +199,16 @@ impl DHT {
                             bucket.get_prefix_len(),
                             bucket.get_node_len()
                         );
-                        bucket.update_lastchange(); // 即便没有节点，也要更新 bucket 的 lastchange
+                        bucket.update_last_change(); // 即便没有节点，也要更新 bucket 的 last change
                         let target_id = bucket.random_node();
-                        update_traget = routing_table
+                        update_target = routing_table
                             .find_closest_nodes(&target_id, 1)
                             .first()
                             .map(|node| (target_id, node.addr()))
                     }
                 }
 
-                if let Some((info_hash, addr)) = update_traget {
+                if let Some((info_hash, addr)) = update_target {
                     let (nodes, _) = dht_request.get_peers(&addr, &info_hash).await;
                     trace!(
                         "开始刷新路由表节点 [{info_hash}]\t获取到的节点数量: {}",

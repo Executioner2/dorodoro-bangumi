@@ -27,12 +27,13 @@ fn load_torrent_from_local_file(file_path: &str) -> Result<TorrentArc> {
 
 /// 从磁力链接中加载种子
 async fn load_torrent_from_magnet_uri(magnet_uri: &str) -> Result<TorrentArc> {
-    let magent = Magnet::from_url(magnet_uri)?;
+    let magnet = Magnet::from_url(magnet_uri)?;
     let (tx, mut rx) = channel(CHANNEL_BUFFER);
 
     let id = GlobalId::next_id();
     let peer_id = TaskManager::global().get_peer_id();
-    let task = ParseMagnet::new(id, peer_id, magent);
+    let callback = TaskManager::global().get_callback();
+    let task = ParseMagnet::new(id, peer_id, magnet, callback);
     task.subscribe_inside_info(tx);
     TaskManager::global().handle_task(Box::new(task)).await?;
     
@@ -139,7 +140,8 @@ pub async fn add_task(task: Task) -> Result<bool> {
         // 保存数据库成功，添加到下载队列
         let id = GlobalId::next_id();
         let peer_id = TaskManager::global().get_peer_id();
-        let task = DownloadContent::new(id, peer_id, torrent, save_path).await?;
+        let callback = TaskManager::global().get_callback();
+        let task = DownloadContent::new(id, peer_id, torrent, save_path, callback);
         TaskManager::global().handle_task(Box::new(task)).await?;
     }
 

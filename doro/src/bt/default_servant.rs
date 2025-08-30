@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
@@ -12,7 +13,7 @@ use doro_util::sync::{MutexExt, ReadLockExt, WriteLockExt};
 use doro_util::{anyhow_eq, anyhow_ge, anyhow_le, bytes_util};
 use doro_util::global::Id;
 use doro_util::bytes_util::Bytes2Int;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, level_enabled, trace, warn, Level};
 
 use crate::base_peer::error::{exception, PeerExitReason};
 use crate::base_peer::rate_control::{PacketSend, RateControl};
@@ -126,7 +127,33 @@ impl DefaultServantBuilder {
     }
 
     pub fn arc_build(self) -> Arc<DefaultServant> {
-        Arc::new(self.build())
+        let servant = Arc::new(self.build());
+        if level_enabled!(Level::DEBUG) {
+            let servant_weak = Arc::downgrade(&servant);
+            tokio::spawn(Box::pin(async move {
+                loop {
+                    if let Some(servant) = servant_weak.upgrade() {
+                        let mut info = String::new();
+                        let mut peers = servant.peers.iter().map(|peer| peer.value().clone()).collect::<Vec<_>>();
+                        peers.sort_unstable_by_key(|a| std::cmp::Reverse(a.dashboard().bw()));
+                        for peer in peers {
+                            let request_pieces = peer.get_request_pieces().iter().map(|item| *item.key()).collect::<Vec<_>>();
+                            let response_pieces = peer.get_response_pieces().iter().map(|item| *item.key()).collect::<Vec<_>>();
+                            let (rate, unit) = doro_util::net::rate_formatting(peer.dashboard().bw());
+                            info.push_str(&format!(
+                                "{}: 正在进行的分片: {:?}\t等待响应的分片: {:?}\t待确认数据: {}\t速率: {:.2}{}\t是否可以请求分片: {}\n", 
+                                peer.name(), request_pieces, response_pieces, peer.dashboard().inflight(), rate, unit, peer.is_can_be_download()
+                            ));
+                        }
+                        debug!("peers 运行状态\n{}", info);
+                    } else {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }));
+        }
+        servant
     } 
 
     pub fn set_torrent(mut self, torrent: TorrentArc) -> Self {
@@ -255,7 +282,7 @@ impl DefaultServant {
     }
 
     #[rustfmt::skip]
-    fn try_find_downloadable_peice(&self, torrent: &TorrentArc, peer: &Peer) -> Option<(u32, u32)> {
+    fn try_find_downloadable_piece(&self, torrent: &TorrentArc, peer: &Peer) -> Option<(u32, u32)> {
         if !peer.is_can_be_download() {
             return None;
         }
@@ -537,6 +564,13 @@ impl DefaultServant {
 
         false
     }
+
+    // 归还进行中的分片
+    fn give_back_pieces(&self, peer: &Peer) {
+        for piece_idx in peer.get_response_pieces().iter() {
+            self.set_piece_status_pause(*piece_idx.key());
+        }
+    }
 }
 
 #[async_trait]
@@ -606,6 +640,18 @@ impl Servant for DefaultServant {
         true
     }
 
+    async fn retry_request_piece(&self, id: Id) -> Result<()> {
+        let peer = self.peers.get(&id)
+           .map(|peer| peer.value().clone())
+           .ok_or(anyhow!("peer id [{id}] not found"))?;
+        debug!("peer [{}] 长时间未响应，尝试重试", peer.name());
+
+        // 重置请求记录
+        peer.reset_request_piece_from_response_piece();
+        peer.dashboard().clear_ing();
+        self.request_piece(id).await
+    }
+
     async fn request_piece(&self, id: Id) -> Result<()> {
         let torrent = try_get_torrent!(self, "由于没有种子信息，无法进行 piece 请求");
         let peer = self.peers.get(&id)
@@ -619,7 +665,7 @@ impl Servant for DefaultServant {
         let sync_lock = peer.get_sync_lock();
         let lock = sync_lock.lock().await;
         while peer.has_send_window_space() {
-            if let Some((piece_idx, block_offset)) = self.try_find_downloadable_peice(torrent, &peer) {
+            if let Some((piece_idx, block_offset)) = self.try_find_downloadable_piece(torrent, &peer) {
                 let default_block_size = Context::get_config().block_size();
                 let piece_length = torrent.piece_length(piece_idx);
                 let block_size = default_block_size.min(piece_length - block_offset);
@@ -654,7 +700,7 @@ impl Servant for DefaultServant {
         peer.request_metadata_piece(piece).await
     }
 
-    async fn happen_exeception(&self, id: Id, error: Error) {
+    async fn happen_exception(&self, id: Id, error: Error) {
         self.peer_exit(id, exception(error)).await
     }
 
@@ -692,9 +738,7 @@ impl Servant for DefaultServant {
             peer.shutdown().await;
 
             // 归还进行中的分片
-            for piece_idx in peer.get_response_pieces().iter() {
-                self.set_piece_status_pause(*piece_idx.key());
-            }
+            self.give_back_pieces(peer);
 
             if let Some(callback) = self.callback() {
                 callback.on_peer_exit(dsc, reason).await;
@@ -710,13 +754,14 @@ impl DefaultServant {
     fn handle_choke(&self, peer: Peer) -> Result<()> {
         trace!("[{}] 对端不让我们请求下载数据", peer.name());
         peer.set_status(Status::Choke);
+        peer.dashboard().clear_ing();
+        self.give_back_pieces(&peer);
         Ok(())
     }
 
     /// 让我们请求数据
     async fn handle_un_choke(&self, peer: Peer) -> Result<()> {
         trace!("[{}] 对端告诉我们可以下载数据", peer.name());
-        // info!("[{}] 对端告诉我们可以下载数据", peer.name());
         peer.set_status(Status::UnChoke);
         try_get_callback!(self).request_available(self.servant_context(peer)).await
     }

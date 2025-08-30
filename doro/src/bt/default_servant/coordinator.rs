@@ -45,7 +45,7 @@ pub trait PeerSwitch {
     fn get_task_id(&self) -> Id;
 
     /// 升级为 lt peer
-    fn upgrage_lt_peer(&self, id: Id) -> Option<()>;
+    fn upgrade_lt_peer(&self, id: Id) -> Option<()>;
 
     /// 替换 peer
     async fn replace_peer(&self, old_id: Id, new_id: Id) -> Option<()>;
@@ -55,6 +55,9 @@ pub trait PeerSwitch {
 
     /// 开启一个新的临时 peer
     async fn start_temp_peer(&self);
+
+    /// 周期性检查
+    async fn cyclic_check(&self);
 
     /// 获得 lt peer 数量
     fn lt_peer_num(&self) -> usize;
@@ -138,7 +141,7 @@ impl<T: PeerSwitch> Coordinator<T> {
         let download = self.switch.download_length();
         let len = self.speed_window.lock_pe().len();
         let file_length = self.switch.file_length();
-        trace!(
+        debug!(
             "下载速度: {:.2} MiB/s\t当前进度: {:.2}%",
             speed as f64 / len as f64 / 1024.0 / 1024.0,
             download as f64 / file_length as f64 * 100.0
@@ -150,7 +153,7 @@ impl<T: PeerSwitch> Coordinator<T> {
         let lt_peer_num = self.switch.lt_peer_num();
         let ftp = self.switch.find_fastest_temp_peer();
         if lt_peer_num < Context::get_config().torrent_lt_peer_conn_limit() {
-            self.switch.upgrage_lt_peer(ftp.as_ref()?.id)?;
+            self.switch.upgrade_lt_peer(ftp.as_ref()?.id)?;
             debug!("将临时 peer 升级为 lt peer，addr: {}", ftp.as_ref()?.addr);
             return Some(());
         }
@@ -159,7 +162,7 @@ impl<T: PeerSwitch> Coordinator<T> {
 
         if stp.is_none() {
             // 没有 lt peer 了，那么直接把当前这个临时 peer 升级为 lt peer
-            self.switch.upgrage_lt_peer(ftp.as_ref()?.id)?;
+            self.switch.upgrade_lt_peer(ftp.as_ref()?.id)?;
             debug!("将临时 peer 升级为 lt peer，addr: {}", stp.as_ref()?.addr);
         } else if faster(ftp.as_ref()?.bw, stp.as_ref()?.bw) {
             // 替换 peer
@@ -176,7 +179,7 @@ impl<T: PeerSwitch> Coordinator<T> {
     }
 
     async fn peer_alloc(&mut self) {
-        if level_enabled!(Level::DEBUG) {
+        if level_enabled!(Level::TRACE) {
             self.printf_peer_status();
         }
 
@@ -206,7 +209,7 @@ impl<T: PeerSwitch> Coordinator<T> {
         }
         let len = self.switch.get_wait_queue_len();
         let unstart_host_num = self.switch.get_unstart_host_num();
-        debug!("\n[wait num: {}\tunstart host num: {}]\n当前 peer 状态:\n{}", len, unstart_host_num, str);
+        trace!("\n[wait num: {}\tunstart host num: {}]\n当前 peer 状态:\n{}", len, unstart_host_num, str);
     }
 }
 
@@ -223,6 +226,7 @@ impl<T: PeerSwitch> Coordinator<T> {
             }
             self.speed_rate_statistics();
             self.peer_alloc().await;
+            self.switch.cyclic_check().await;
         }
 
         info!("协调器已退出");

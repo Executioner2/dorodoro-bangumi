@@ -5,12 +5,13 @@
 //! 2. 一次对每个 peer 尝试请求获取内容（协议规定磁力链接的种子内容应该只向同一个 peer 获取）
 
 use std::collections::VecDeque;
+use std::mem;
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use doro_util::global::{GlobalId, Id};
@@ -156,7 +157,7 @@ impl PeerInfoExt for PeerInfo {
     fn get_peer_conn_limit(&self) -> usize {
         Context::get_config().torrent_peer_conn_limit()
     }
-    
+
     fn is_from_waited(&self) -> bool {
         self.waited
     }
@@ -167,12 +168,24 @@ pub struct ParseMagnetInner {
     /// 任务 id
     id: Id,
 
+    /// peer id
+    peer_id: PeerId,
+
+    /// 磁力链接
+    magnet: Arc<Magnet>,
+
+    /// 任务回调
+    callback: TaskCallback,
+
+    /// 订阅列表
+    subscribers: Mutex<VecDeque<Subscriber>>,
+
     /// 执行派遣
     #[allow(dead_code)] // 保证 dispatch 不会被 drop，因为其他地方都是用的弱引用
-    dispatch: Arc<Dispatch>,
+    dispatch: Mutex<Option<Arc<Dispatch>>>,
 
     /// 任务控制
-    task_control: TaskControl,
+    task_control: Mutex<Option<TaskControl>>,
 
     /// 异步任务
     handles: Mutex<Option<JoinSet<()>>>,
@@ -205,10 +218,25 @@ impl Drop for ParseMagnetInner {
 pub struct ParseMagnet(Arc<ParseMagnetInner>);
 
 impl ParseMagnet {
-    pub fn new(id: Id, peer_id: PeerId, magnet: Magnet) -> Self {
-        let info_hash = magnet.info_hash;
-        let magnet = Arc::new(magnet);
-        let servant = DefaultServantBuilder::new(info_hash, peer_id.clone()).arc_build();
+    pub fn new(id: Id, peer_id: PeerId, magnet: Magnet, callback: TaskCallback) -> Self {
+        Self(Arc::new(ParseMagnetInner {
+            id,
+            peer_id,
+            magnet: Arc::new(magnet),
+            callback,
+            subscribers: Mutex::new(VecDeque::new()),
+            dispatch: Mutex::new(None),
+            task_control: Mutex::new(None),
+            handles: Mutex::new(Some(JoinSet::new())),
+            peer_launch: Mutex::new(None),
+            dht_timed_task: Mutex::new(None),
+            tracker: Mutex::new(None),
+        }))
+    }
+
+    fn init(&self) {
+        let info_hash = self.magnet.info_hash;
+        let servant = DefaultServantBuilder::new(info_hash, self.peer_id.clone()).arc_build();
         let wait_queue = Arc::new(Mutex::new(VecDeque::new()));
         let unstart_host = Arc::new(DashSet::new());
 
@@ -217,17 +245,17 @@ impl ParseMagnet {
         let peer_launch_signal = channel.0.clone();
 
         let task_control = TaskControl(Arc::new(TaskControlInner {
-            id,
-            callback: OnceLock::new(),
-            subscribers: RwLock::new(Vec::new()),
+            id: self.id,
+            callback: self.callback.clone(),
+            subscribers: RwLock::new(mem::take(&mut *self.subscribers.lock_pe())),
         }));
 
         let (dht_tx, dht_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
         let (tracker_tx, tracker_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
 
         let dispatch = Arc::new(Dispatch {
-            id,
-            magnet: magnet.clone(),
+            id: self.id,
+            magnet: self.magnet.clone(),
             servant: servant.clone(),
             task_control: task_control.clone(),
             wait_queue: wait_queue.clone(),
@@ -251,15 +279,15 @@ impl ParseMagnet {
 
         let tracker = Tracker::new(
             Arc::downgrade(&dispatch),
-            peer_id.clone(),
-            vec![magnet.trackers.clone()],
+            self.peer_id.clone(),
+            vec![self.magnet.trackers.clone()],
             AnnounceInfo::default(),
             info_hash,
-            tracker_rx
+            tracker_rx,
         );
 
         let dht_timed_task = DHTTimedTask::new(
-            id,
+            self.id,
             NodeId::new(info_hash),
             wait_queue,
             Arc::downgrade(&dispatch),
@@ -268,15 +296,11 @@ impl ParseMagnet {
 
         servant.set_callback(Arc::downgrade(&dispatch));
 
-        Self(Arc::new(ParseMagnetInner {
-            id,
-            dispatch,
-            task_control,
-            handles: Mutex::new(Some(JoinSet::new())),
-            peer_launch: Mutex::new(Some(peer_launch)),
-            dht_timed_task: Mutex::new(Some(dht_timed_task)),
-            tracker: Mutex::new(Some(tracker)),
-        }))
+        *self.dispatch.lock_pe() = Some(dispatch);
+        *self.task_control.lock_pe() = Some(task_control);
+        *self.peer_launch.lock_pe() = Some(peer_launch);
+        *self.dht_timed_task.lock_pe() = Some(dht_timed_task);
+        *self.tracker.lock_pe() = Some(tracker);
     }
 
     #[rustfmt::skip]
@@ -297,24 +321,30 @@ impl Task for ParseMagnet {
         self.id
     }
 
-    fn set_callback(&self, callback: Box<dyn TaskCallback>) {
-        self.task_control.set_callback(callback);
-    }
-
     fn start(&self) -> Async<Result<()>> {
         let this = self.clone();
         Box::pin(async move {
             info!("启动任务 [{}]", this.get_id());
+            this.init();
             this.start_handle().await;
             Ok(())
         })
     }
 
-    /// todo - 暂停任务
+    /// 暂停任务
     fn pause(&self) -> Async<Result<()>> {
-        Box::pin(async move { Ok(()) })
+        let this = self.clone();
+        Box::pin(async move {
+            this.dispatch.lock_pe().take();
+            this.task_control.lock_pe().take();
+            this.peer_launch.lock_pe().take();
+            this.dht_timed_task.lock_pe().take();
+            this.tracker.lock_pe().take();
+            Ok(())
+        })
     }
 
+    /// 关闭任务
     fn shutdown(&self) -> Async<()> {
         let this = self.clone();
         Box::pin(async move {
@@ -325,7 +355,11 @@ impl Task for ParseMagnet {
 
     /// 订阅任务的内部执行信息
     fn subscribe_inside_info(&self, subscriber: Subscriber) {
-        self.task_control.add_subscribe(subscriber);
+        if let Some(task_control) = self.task_control.lock_pe().as_ref() {
+            task_control.add_subscribe(subscriber);
+        } else {
+            self.subscribers.lock_pe().push_back(subscriber);
+        }
     }
 }
 
@@ -334,10 +368,10 @@ struct TaskControlInner {
     id: Id,
 
     /// 任务回调句柄
-    callback: OnceLock<Box<dyn TaskCallback>>,
+    callback: TaskCallback,
 
     /// 执行消息订阅者
-    subscribers: RwLock<Vec<Subscriber>>,
+    subscribers: RwLock<VecDeque<Subscriber>>,
 }
 
 impl Deref for TaskControl {
@@ -352,26 +386,13 @@ impl Deref for TaskControl {
 struct TaskControl(Arc<TaskControlInner>);
 
 impl TaskControl {
-    /// 设置任务的回调句柄
-    fn set_callback(&self, callback: Box<dyn TaskCallback>) {
-        self.callback
-            .set(callback)
-            .map_err(|_| anyhow!("task callback has been set"))
-            .unwrap();
-    }
-
-    // 返回任务回调句柄
-    fn callback(&self) -> &dyn TaskCallback {
-        self.callback.get().unwrap().as_ref()
-    }
-
     /// 任务完成    
     async fn finish(&self) {
-        self.callback().finish(self.id).await;
+        self.callback.finish(self.id).await;
     }
 
     fn add_subscribe(&self, subscriber: Subscriber) {
-        self.subscribers.write_pe().push(subscriber);
+        self.subscribers.write_pe().push_back(subscriber);
     }
 
     async fn notify_event(&self, message: Event) {
@@ -416,7 +437,7 @@ struct Dispatch {
 
     /// dht peer 主动扫描信号
     dht_peer_scan_signal: Sender<()>,
-    
+
     /// tracker peer 主动扫描信号
     #[allow(dead_code)]
     tracker_peer_scan_signal: Sender<()>,
@@ -447,8 +468,7 @@ impl Dispatch {
 
     /// 任务完成
     async fn finish(&self) {
-        self.finished
-            .store(true, Ordering::SeqCst);
+        self.finished.store(true, Ordering::SeqCst);
         self.task_control.finish().await;
     }
 
@@ -457,14 +477,11 @@ impl Dispatch {
             pi.set_waited(true);
             Some(pi)
         } else {
-            let flag = self.peer_find_flag
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    if !current {
-                        Some(true)
-                    } else {
-                        None
-                    }
-                });
+            let flag =
+                self.peer_find_flag
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                        if !current { Some(true) } else { None }
+                    });
             if flag.is_ok() {
                 self.dht_peer_scan_signal.send(()).await.unwrap();
                 // self.tracker_peer_scan_signal.send(()).await.unwrap();
@@ -513,7 +530,9 @@ impl ServantCallback for Dispatch {
 
     /// metadata 下载完成
     async fn on_metadata_complete(&self, sc: Box<dyn ServantContext>) -> Result<()> {
-        let torrent = sc.get_peer().parse_torrent_from_metadata(self.magnet.clone())?;
+        let torrent = sc
+            .get_peer()
+            .parse_torrent_from_metadata(self.magnet.clone())?;
         self.task_control
             .notify_event(Event::ParseSuccess(torrent))
             .await;

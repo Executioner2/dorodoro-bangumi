@@ -72,11 +72,11 @@ impl FileWriter {
         let mmap = self.mmap.as_ref().unwrap();
         mmap.flush()?;
 
-        let wrtie_len = self.buf_size;
-        self.write_len += wrtie_len as u64;
+        let write_len = self.buf_size;
+        self.write_len += write_len as u64;
         self.buf_size = 0;
 
-        Ok((self.write_len >= self.file_len, wrtie_len))
+        Ok((self.write_len >= self.file_len, write_len))
     }
 
     fn write(&mut self, offset: u64, data: Bytes) -> Result<()> {
@@ -118,6 +118,9 @@ pub struct Store {
 
     /// hash 计算并发控制
     hash_semaphore: Arc<Semaphore>,
+    
+    /// 写入并发控制
+    write_semaphore: Arc<Semaphore>,
 }
 
 impl Store {
@@ -125,12 +128,14 @@ impl Store {
         static STORE: OnceLock<Store> = OnceLock::new();
         STORE.get_or_init(|| {
             let config = Context::get_config().clone();
-            let permits = config.hash_concurrency();
+            let hash_permits = config.hash_concurrency();
+            let write_permits = config.data_write_concurrency();
             Self {
                 config,
                 file_writer: Arc::new(DashMap::new()),
                 buf_size: Arc::new(AtomicUsize::new(0)),
-                hash_semaphore: Arc::new(Semaphore::new(permits)),
+                hash_semaphore: Arc::new(Semaphore::new(hash_permits)),
+                write_semaphore: Arc::new(Semaphore::new(write_permits)),
             }
         })
     }
@@ -148,7 +153,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn flush_all(&self) -> Result<()> {
+    pub async fn flush_all(&self) -> Result<()> {
+        let _permit = self.write_semaphore.clone().acquire_owned().await?;
+        self.do_flush_all()
+    }
+
+    fn do_flush_all(&self) -> Result<()> {
         let mut remove_keys = vec![];
         for mut item in self.file_writer.iter_mut() {
             if item.flush()?.0 {
@@ -163,6 +173,7 @@ impl Store {
     }
 
     pub async fn write(&self, block_info: BlockInfo, data: Bytes) -> Result<()> {
+        let _permit = self.write_semaphore.clone().acquire_owned().await?;
         self.buf_size
             .fetch_add(block_info.len, AtomicOrdering::Release);
         self.file_writer
@@ -171,7 +182,7 @@ impl Store {
             .write(block_info.start, data)?;
 
         if self.buf_size.load(AtomicOrdering::Acquire) >= self.config.buf_limit() {
-            self.flush_all()
+            self.do_flush_all()
         } else {
             Ok(())
         }

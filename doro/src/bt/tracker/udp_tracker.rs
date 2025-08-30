@@ -5,7 +5,6 @@ pub mod socket;
 #[cfg(test)]
 mod tests;
 
-use std::mem;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -68,7 +67,7 @@ pub struct Announce {
 
 impl AnnounceTrait for Announce {
     fn take_peers(&mut self) -> Vec<SocketAddr> {
-        mem::replace(&mut self.peers, vec![])
+        std::mem::take(&mut self.peers)
     }
 }
 

@@ -5,20 +5,21 @@ use tracing::{error, info};
 use crate::base_peer::reserved;
 use crate::bt::pe_crypto;
 use crate::bt::pe_crypto::CryptoProvide;
+use crate::bt::socket::TcpStreamWrapper;
 use crate::protocol::{BIT_TORRENT_PAYLOAD_LEN, BIT_TORRENT_PROTOCOL, BIT_TORRENT_PROTOCOL_LEN};
 
 #[tokio::test]
 async fn test_init_handshake() {
     // let socket = TcpStreamExt::connect("106.73.62.197:40370").await.unwrap();
-    let socket = TcpStream::connect("192.168.2.242:3115").await.unwrap();
+    let mut socket = TcpStream::connect("192.168.2.242:3115").await.unwrap();
     let info_hash = hex::decode("c6bbdb50bd685bacf8c0d615bb58a3a0023986ef").unwrap();
     info!("开始握手");
-    let res = pe_crypto::init_handshake(socket, &info_hash, CryptoProvide::Plaintext).await;
+    let res = pe_crypto::init_handshake(&mut socket, &info_hash, CryptoProvide::Plaintext).await;
     if let Err(e) = res {
         error!("{}", e);
         return;
     }
-    let mut socket = res.unwrap();
+    let mut socket = TcpStreamWrapper::new(socket, res.unwrap());
 
     // 发送 peer 握手数据包
     let peer_id = doro_util::rand::gen_peer_id();

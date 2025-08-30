@@ -175,7 +175,7 @@ pub struct Node {
     id: NodeId,
     addr: SocketAddr,
     last_seen: Duration,
-    responsed: bool,
+    responded: bool,
 }
 
 impl Node {
@@ -184,13 +184,13 @@ impl Node {
             id,
             addr,
             last_seen: now_secs(),
-            responsed: true, // 创建 node 的时候，这个 node 是响应了的
+            responded: true, // 创建 node 的时候，这个 node 是响应了的
         }
     }
 
     pub fn touch(&mut self) {
         self.last_seen = now_secs();
-        self.responsed = true;
+        self.responded = true;
     }
 
     pub fn addr(&self) -> SocketAddr {
@@ -221,7 +221,7 @@ pub struct Bucket {
     prefix: NodeId,
     prefix_len: usize,
     nodes: VecDeque<Node>,
-    lastchange: Duration,
+    last_change: Duration,
     can_split: bool,
 }
 
@@ -231,7 +231,7 @@ impl Bucket {
             prefix,
             prefix_len,
             nodes: VecDeque::new(),
-            lastchange: now_secs(),
+            last_change: now_secs(),
             can_split,
         }
     }
@@ -244,8 +244,8 @@ impl Bucket {
         self.prefix_len
     }
 
-    pub fn update_lastchange(&mut self) {
-        self.lastchange = now_secs();
+    pub fn update_last_change(&mut self) {
+        self.last_change = now_secs();
     }
 
     pub fn contains(&self, node_id: &NodeId) -> bool {
@@ -266,14 +266,14 @@ impl Bucket {
             trace!("桶[{}]节点[{}]更新", self.prefix, node.id);
             self.nodes[pos] = node;
             self.move_to_end(pos);
-            self.lastchange = now_secs();
+            self.last_change = now_secs();
             return AddResult::Updated;
         }
 
         if !self.is_full() {
             trace!("桶[{}]节点[{}]新增", self.prefix, node.id);
             self.nodes.push_back(node);
-            self.lastchange = now_secs();
+            self.last_change = now_secs();
             return AddResult::Added;
         }
 
@@ -284,7 +284,7 @@ impl Bucket {
             );
             self.nodes.remove(pos);
             self.nodes.push_back(node);
-            self.lastchange = now_secs();
+            self.last_change = now_secs();
             return AddResult::ReplacedStale;
         }
 
@@ -330,7 +330,7 @@ impl Bucket {
             .iter()
             .enumerate()
             .find(|(_, n)| {
-                !n.responsed && now_secs().saturating_sub(n.last_seen) > REFRESH_INTERVAL
+                !n.responded && now_secs().saturating_sub(n.last_seen) > REFRESH_INTERVAL
             })
             .map(|(i, _)| i)
     }
@@ -416,8 +416,8 @@ impl RoutingTable {
         }
 
         if is_success {
-            // 更新桶的 lastchange 时间
-            self.buckets[bucket_index].update_lastchange();
+            // 更新桶的 last change 时间
+            self.buckets[bucket_index].update_last_change();
         }
 
         is_success
@@ -450,7 +450,7 @@ impl RoutingTable {
     pub fn next_refresh_bucket(&mut self) -> Option<&mut Bucket> {
         self.buckets
             .iter_mut()
-            .find(|bucket| now_secs().saturating_sub(bucket.lastchange) > REFRESH_INTERVAL)
+            .find(|bucket| now_secs().saturating_sub(bucket.last_change) > REFRESH_INTERVAL)
     }
 
     pub fn mark_node_responded(&mut self, node_id: &NodeId) {
@@ -473,7 +473,7 @@ impl RoutingTable {
                 .iter()
                 .position(|n| n.id == *node_id)
             {
-                self.buckets[index].nodes[pos].responsed = false;
+                self.buckets[index].nodes[pos].responded = false;
             }
         }
     }

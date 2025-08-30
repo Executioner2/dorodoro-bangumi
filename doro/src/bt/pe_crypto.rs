@@ -55,7 +55,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::bt::socket::{Crypto, TcpStreamWrapper};
+use crate::bt::socket::{Crypto, CryptoPair};
 
 lazy_static! {
     static ref PRIME: BigUint = BigUint::from_str_radix("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63A36210000000000090563", 16).unwrap();
@@ -330,17 +330,13 @@ pub fn decrypt_payload(remote_cipher: &mut Rc4Cipher, payload: &mut [u8]) {
 /// * `socket`: 待握手的 TcpStreamExt
 /// * `info_hash`: 种子哈希值
 ///
-/// returns: 正常情况返回 TcpStreamWrapper，包含密钥，实现读取和写入的加解密封装
+/// returns: 正常情况返回 CryptoPair，包含密钥，实现读取和写入的加解密封装
 pub async fn init_handshake(
-    mut socket: TcpStream, info_hash: &[u8], cp: CryptoProvide,
-) -> Result<TcpStreamWrapper> {
+    socket: &mut TcpStream, info_hash: &[u8], cp: CryptoProvide,
+) -> Result<CryptoPair> {
     debug!("进行 pe crypto 握手");
     if cp == CryptoProvide::Plaintext {
-        return Ok(TcpStreamWrapper::new(
-            socket,
-            Crypto::Plaintext,
-            Crypto::Plaintext,
-        ));
+        return Ok(CryptoPair::plaintext());
     }
 
     // 生成本地端密钥
@@ -377,17 +373,16 @@ pub async fn init_handshake(
     let mut recv = BytesMut::with_capacity(1134);
     socket.read_buf_with_timeout(&mut recv, TIMEOUT).await?;
     let (crypto_select, _) =
-        decrypt_b2a_handshake_packet(&mut socket, &mut remote_cipher, &mut recv).await?;
+        decrypt_b2a_handshake_packet(socket, &mut remote_cipher, &mut recv).await?;
     debug!("加密方式: {:?}", crypto_select);
 
-    let (lc, rc) = if crypto_select == CryptoProvide::Rc4 {
-        (
+    if crypto_select == CryptoProvide::Rc4 {
+        let (lc, rc) = (
             Crypto::Rc4(Box::new(local_cipher)),
             Crypto::Rc4(Box::new(remote_cipher)),
-        )
+        );
+        Ok(CryptoPair::new(lc, rc))
     } else {
-        (Crypto::Plaintext, Crypto::Plaintext)
-    };
-
-    Ok(TcpStreamWrapper::new(socket, lc, rc))
+        Ok(CryptoPair::plaintext())
+    }
 }

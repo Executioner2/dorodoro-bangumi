@@ -83,7 +83,7 @@ pub struct ConfigInner {
     con_req_piece_limit: usize,
 
     /// 在成功获取到 n 个 piece 响应后，增加一个分片请求
-    sucessed_recv_piece: usize,
+    success_recv_piece: usize,
 
     /// 刷入磁盘的缓存上限
     buf_limit: usize,
@@ -93,6 +93,12 @@ pub struct ConfigInner {
 
     /// hash 计算的队列长度，队列内的都是并发计算
     hash_concurrency: usize,
+
+    /// 磁盘写入的并发数量
+    data_write_concurrency: usize,
+
+    /// 任务并发数量
+    task_concurrency: usize,
 
     /// 总的 peer 配额
     peer_conn_limit: usize,
@@ -142,10 +148,12 @@ impl Default for ConfigInner {
             udp_packet_limit: 65535,
             block_size: 1 << 14,
             con_req_piece_limit: 100,
-            sucessed_recv_piece: 64, // 按照一次响应 16384 个字节，64 次响应成功，即为响应了 1MB 的数据
+            success_recv_piece: 64, // 按照一次响应 16384 个字节，64 次响应成功，即为响应了 1MB 的数据
             buf_limit: 16 << 20,     // 16MB 的写入缓存
             hash_chunk_size: 512,
-            hash_concurrency: 1, // 默认就一个
+            hash_concurrency: 1, // 默认就 1 个
+            data_write_concurrency: 5, // 默认 5 个并发
+            task_concurrency: 10, // 默认 10 个任务同时进行
             peer_conn_limit: 500,
             torrent_lt_peer_conn_limit: 10,
             torrent_temp_peer_conn_limit: 2,
@@ -184,8 +192,8 @@ impl ConfigInner {
         self.con_req_piece_limit = limit;
     }
 
-    pub fn set_sucessed_recv_piece(&mut self, limit: usize) {
-        self.sucessed_recv_piece = limit;
+    pub fn set_success_recv_piece(&mut self, limit: usize) {
+        self.success_recv_piece = limit;
     }
 
     pub fn set_buf_limit(&mut self, limit: usize) {
@@ -198,6 +206,14 @@ impl ConfigInner {
 
     pub fn set_hash_concurrency(&mut self, concurrency: usize) {
         self.hash_concurrency = concurrency;
+    }
+
+    pub fn set_data_write_concurrency(&mut self, concurrency: usize) {
+        self.data_write_concurrency = concurrency;
+    }
+
+    pub fn set_task_concurrency(&mut self, concurrency: usize) {
+        self.task_concurrency = concurrency;
     }
 
     pub fn set_peer_conn_limit(&mut self, limit: usize) {
@@ -296,8 +312,8 @@ impl Config {
         self.inner.read_pe().con_req_piece_limit
     }
 
-    pub fn sucessed_recv_piece(&self) -> usize {
-        self.inner.read_pe().sucessed_recv_piece
+    pub fn success_recv_piece(&self) -> usize {
+        self.inner.read_pe().success_recv_piece
     }
 
     pub fn buf_limit(&self) -> usize {
@@ -310,6 +326,14 @@ impl Config {
 
     pub fn hash_concurrency(&self) -> usize {
         self.inner.read_pe().hash_concurrency
+    }
+
+    pub fn data_write_concurrency(&self) -> usize {
+        self.inner.read_pe().data_write_concurrency
+    }
+
+    pub fn task_concurrency(&self) -> usize {
+        self.inner.read_pe().task_concurrency
     }
 
     pub fn peer_conn_limit(&self) -> usize {

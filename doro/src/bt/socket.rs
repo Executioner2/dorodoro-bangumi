@@ -25,11 +25,7 @@ pub enum Crypto {
     Rc4(Box<Rc4Cipher>),
 }
 
-/// TcpStreamExt 的扩展
-pub struct TcpStreamWrapper {
-    /// TcpStreamExt
-    stream: TcpStream,
-
+pub struct CryptoPair {
     /// 本端加密方式
     lc: Crypto,
 
@@ -37,13 +33,32 @@ pub struct TcpStreamWrapper {
     rc: Crypto,
 }
 
-impl TcpStreamWrapper {
-    pub fn new(stream: TcpStream, lc: Crypto, rc: Crypto) -> Self {
-        Self { stream, lc, rc }
+impl CryptoPair {
+    pub fn new(lc: Crypto, rc: Crypto) -> Self {
+        Self { lc, rc }
     }
 
+    pub fn plaintext() -> Self {
+        Self::new(Crypto::Plaintext, Crypto::Plaintext)
+    }
+}
+
+/// TcpStreamExt 的扩展
+pub struct TcpStreamWrapper {
+    /// TcpStreamExt
+    stream: TcpStream,
+
+    /// 加密方式
+    crypto: CryptoPair,
+}
+
+impl TcpStreamWrapper {
+    pub fn new(stream: TcpStream, crypto: CryptoPair) -> Self {
+        Self { stream, crypto }
+    }
+    
     pub async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match &mut self.rc {
+        match &mut self.crypto.rc {
             Crypto::Plaintext => self.stream.read(buf).await,
             Crypto::Rc4(rc4) => {
                 let size = self.stream.read(buf).await?;
@@ -54,7 +69,7 @@ impl TcpStreamWrapper {
     }
 
     pub async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        match &mut self.lc {
+        match &mut self.crypto.lc {
             Crypto::Plaintext => self.stream.write_all(buf).await,
             Crypto::Rc4(rc4) => {
                 let mut buf = buf.to_vec();
@@ -73,11 +88,11 @@ impl TcpStreamWrapper {
         (
             OwnedReadHalfExt {
                 inner: r,
-                crypto: self.rc,
+                crypto: self.crypto.rc,
             },
             OwnedWriteHalfExt {
                 inner: w,
-                crypto: self.lc,
+                crypto: self.crypto.lc,
             },
         )
     }
