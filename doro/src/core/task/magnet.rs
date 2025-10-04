@@ -85,7 +85,7 @@ impl Magnet {
                 "xl" => {
                     let size = v
                         .parse::<u64>()
-                        .map_err(|e| anyhow!("invalid file size: {}", e))?;
+                        .map_err(|e| anyhow!("invalid file size: {e}"))?;
                     file_size = Some(size);
                 }
                 _ => {}

@@ -274,7 +274,7 @@ impl TryFrom<u8> for MsgType {
     fn try_from(value: u8) -> Result<Self> {
         match value {
             0..=9 | 13..=17 | 20..=23 => Ok(unsafe { mem::transmute::<u8, MsgType>(value) }),
-            _ => Err(anyhow!("Invalid message type: {}", value)),
+            _ => Err(anyhow!("Invalid message type: {value}")),
         }
     }
 }
@@ -402,7 +402,7 @@ impl BasePeer {
         let timeout = Context::get_config().peer_connection_timeout();
         match tokio::time::timeout(timeout, TcpStream::connect(self.addr)).await {
             Ok(Ok(socket)) => Ok(socket),
-            Ok(Err(e)) => Err(anyhow!("连接对端 peer 失败\n{}", e)),
+            Ok(Err(e)) => Err(anyhow!("连接对端 peer 失败\n{e}")),
             Err(_) => Err(anyhow!("连接对端 peer 超时")),
         }
     }

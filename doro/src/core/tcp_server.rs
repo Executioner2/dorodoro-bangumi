@@ -127,7 +127,7 @@ impl TcpServer {
                         dispatcher.run().await;
                     }
                     FutureRet::Err(e) => {
-                        return Err(anyhow!("解析 RemoteControl 握手协议失败: {}", e));
+                        return Err(anyhow!("解析 RemoteControl 握手协议失败: {e}"));
                     }
                 }
             }
@@ -182,7 +182,7 @@ impl Runnable for TcpServer {
             }
             Err(e) => {
                 Context::global().cancel();
-                return Err(anyhow!("tcp server 绑定地址失败: {}", e));
+                return Err(anyhow!("tcp server 绑定地址失败: {e}"));
             }
         };
         self.listener = Some(listener);

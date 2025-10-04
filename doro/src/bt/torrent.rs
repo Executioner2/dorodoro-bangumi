@@ -452,7 +452,7 @@ impl Parse<Vec<u8>> for Torrent {
     fn parse_torrent(data: Vec<u8>) -> Result<Torrent> {
         match Torrent::from_bencode(&data) {
             Ok(torrent) => Ok(torrent),
-            Err(e) => Err(anyhow!("解析种子文件失败: {}", e)),
+            Err(e) => Err(anyhow!("解析种子文件失败: {e}")),
         }
     }
 }
@@ -461,7 +461,7 @@ impl Parse<Bytes> for Torrent {
     fn parse_torrent(data: Bytes) -> Result<Self> {
         match Torrent::from_bencode(&data) {
             Ok(torrent) => Ok(torrent),
-            Err(e) => Err(anyhow!("解析种子文件失败: {}", e)),
+            Err(e) => Err(anyhow!("解析种子文件失败: {e}")),
         }
     }
 }
@@ -479,7 +479,7 @@ impl Parse<&[u8]> for Torrent {
     fn parse_torrent(data: &[u8]) -> Result<Torrent> {
         match Torrent::from_bencode(data) {
             Ok(torrent) => Ok(torrent),
-            Err(e) => Err(anyhow!("解析种子文件失败: {}", e)),
+            Err(e) => Err(anyhow!("解析种子文件失败: {e}")),
         }
     }
 }

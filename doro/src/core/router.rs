@@ -117,7 +117,7 @@ impl Router {
             .routes
             .read_pe()
             .get(&code)
-            .ok_or_else(|| anyhow!("No handler for code {}", code))
+            .ok_or_else(|| anyhow!("No handler for code {code}"))
             .cloned()?;
 
         match handler {

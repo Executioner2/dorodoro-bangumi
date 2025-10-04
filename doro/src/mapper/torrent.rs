@@ -38,7 +38,7 @@ impl TryFrom<u8> for TorrentStatus {
         if value <= 8 {
             Ok(unsafe { mem::transmute::<u8, TorrentStatus>(value) })
         } else {
-            Err(anyhow!("invalid torrent status: {}", value))
+            Err(anyhow!{"invalid torrent status: {value}"})
         }
     }
 }

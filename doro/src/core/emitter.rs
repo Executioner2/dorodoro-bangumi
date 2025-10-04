@@ -32,10 +32,10 @@ impl Emitter {
         if let Some(sender) = self.mpsc_senders.get(transfer_id) {
             match sender.send(data).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(anyhow!("Failed to send data: {}", e)),
+                Err(e) => Err(anyhow!("Failed to send data: {e}")),
             }
         } else {
-            Err(anyhow!("Transfer id not found: {}", transfer_id))
+            Err(anyhow!("Transfer id not found: {transfer_id}"))
         }
     }
 

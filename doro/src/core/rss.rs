@@ -60,7 +60,7 @@ async fn consumer_not_read(url: &String, channel: Channel) -> Result<()> {
         let conn = Context::get_conn().await?;
         let rss_entity = conn
             .get_rss_by_url(url)?
-            .ok_or(anyhow!("not found subscribe by url: {}", url))?;
+            .ok_or(anyhow!("not found subscribe by url: {url}"))?;
 
         let read_guids = conn.list_mark_read_guid(url)?; // 已读的 guid
 

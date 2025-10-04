@@ -203,7 +203,7 @@ impl TrackerInstance for HttpTracker {
         }
 
         let resp = response.bytes().await?;
-        Announce::from_bencode(&resp).map_err(|e| anyhow!("解析 tracker 返回数据失败: {}", e))
+        Announce::from_bencode(&resp).map_err(|e| anyhow!("解析 tracker 返回数据失败: {e}"))
             .map(|a| Box::new(a) as Box<dyn AnnounceTrait>)
     }
 }

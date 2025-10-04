@@ -129,7 +129,7 @@ impl FromStr for NodeId {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = hex::decode(s).map_err(|e| anyhow!("Invalid hex string: {}", e))?;
+        let bytes = hex::decode(s).map_err(|e| anyhow!("Invalid hex string: {e}"))?;
         if bytes.len() == 20 {
             Ok(Self(bytes.try_into().unwrap()))
         } else {

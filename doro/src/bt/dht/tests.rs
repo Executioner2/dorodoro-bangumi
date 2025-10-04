@@ -62,7 +62,7 @@ async fn test_bootstrap_node_dns_resolve() -> Result<()> {
     // let host = "192.168.2.242:3315";
     let res = domain_node_dns_resolve(host).await;
     if res.is_none() {
-        return Err(anyhow!("解析域名失败: {}", host));
+        return Err(anyhow!("解析域名失败: {host}"));
     }
     info!("解析出来的ip地址: {}", res.unwrap());
     Ok(())
@@ -84,7 +84,7 @@ async fn send_ping(socket: &mut UdpSocket, addr: &SocketAddr, id: &NodeId) -> Re
             info!("响应内容: {:?}", resp);
         }
         Err(e) => {
-            return Err(anyhow!("解析响应失败: {}", e));
+            return Err(anyhow!("解析响应失败: {e}"));
         }
     }
 
@@ -115,7 +115,7 @@ async fn send_get_peers(
             info!("响应内容: {:?}", resp);
         }
         Err(e) => {
-            return Err(anyhow!("解析响应失败: {}", e));
+            return Err(anyhow!("解析响应失败: {e}"));
         }
     }
 
@@ -146,7 +146,7 @@ async fn send_find_node(
             info!("响应内容: {:?}", resp);
         }
         Err(e) => {
-            return Err(anyhow!("解析响应失败: {}", e));
+            return Err(anyhow!("解析响应失败: {e}"));
         }
     }
 
