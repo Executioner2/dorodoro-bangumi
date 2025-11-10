@@ -43,7 +43,7 @@ type Idx = (u32, u32);
 #[tokio::test]
 async fn test_net_rate() {
     let stream = TcpStream::connect("192.168.2.177:8000").await.unwrap();
-    let (read, mut wrtie) = stream.into_split();
+    let (read, mut write) = stream.into_split();
     let (tx, mut rx) = channel(1000);
     let rc = BBRRateControl::new(MSS);
     let throttle = rc.throttle();
@@ -53,13 +53,13 @@ async fn test_net_rate() {
     async_read(read, tx, rc, inflight.clone());
     let mut ct = CountdownTimer::new(Duration::from_secs(0));
 
-    ct = uniform_send_data(&mut wrtie, &throttle, &mut ct, &inflight, &mut idx).await;
+    ct = uniform_send_data(&mut write, &throttle, &mut ct, &inflight, &mut idx).await;
 
     loop {
         tokio::select! {
             res = rx.recv() => {
                 if let Some(_size) = res {
-                    ct = uniform_send_data(&mut wrtie, &throttle, &mut ct, &inflight, &mut idx).await;
+                    ct = uniform_send_data(&mut write, &throttle, &mut ct, &inflight, &mut idx).await;
                 } else {
                     error!("中断了 channel");
                     break;
